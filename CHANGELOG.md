@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Nothing yet beyond 0.1.0 packaging.
+- GitHub Actions release workflow: npm publish, GHCR Docker image, and GitHub Release assets on each push to master.
 
 ## [0.1.0] - 2026-09-20
 
