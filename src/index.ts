@@ -631,7 +631,7 @@ ${contextPackage.promptPayload}
           owner,
           repo: repoName,
           issue_number: pullNumber,
-          body: `🤖 **hq-jr** received review command from @${user.login}. Starting automated code review with High Thinking — line-by-line diff comments will appear directly under **Files changed**...`,
+          body: `🤖 **hq-jr** received review command from @${user.login}. Starting automated code review with High Thinking - line-by-line diff comments will appear directly under **Files changed**...`,
         });
 
         const prResponse = await context.octokit.pulls.get({
