@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Release workflow publishes to npm before pushing the version commit/tag (avoids registry lag on publish failure).
 - Restored GitHub Release step after Docker tarball; Dockerfile PATH includes `node_modules/.bin`.
 - Address hq-jr bot review: Dockerfile SIGTERM via tini + direct Probot CMD, broader `.env*` dockerignore, package author URL, release workflow order (bump → build → push → npm publish), scoped NODE_ENV, local Docker load for release tarball.
 
