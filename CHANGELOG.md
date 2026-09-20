@@ -7,13 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Packaging/release hardening from hq-jr re-audit (publish-before-tag, Dockerfile PATH, GitHub Release restore).
+## [0.1.2] - 2026-09-20
 
 ### Fixed
 
 - Release workflow publishes to npm before pushing the version commit/tag (avoids registry lag on publish failure).
-- Restored GitHub Release step after Docker tarball; Dockerfile PATH includes `node_modules/.bin`.
-- Address hq-jr bot review: Dockerfile SIGTERM via tini + direct Probot CMD, broader `.env*` dockerignore, package author URL, release workflow order (bump → build → push → npm publish), scoped NODE_ENV, local Docker load for release tarball.
+- Restored GitHub Release step after Docker tarball; Dockerfile `PATH` includes `node_modules/.bin` with `probot` CMD under tini.
+
+### Notes
+
+- Published to npm as `hq-jr@0.1.2`, GHCR as `ghcr.io/adi-il/hq-jr:0.1.2` / `:latest`, and GitHub Release with linux-amd64 image tarball.
+
+## [0.1.1] - 2026-09-20
+
+### Fixed
+
+- Dockerfile SIGTERM via tini + direct Probot CMD (not `npm` as PID 1).
+- `.dockerignore` excludes `.env*` except `.env.example`.
+- `package.json` author uses a GitHub URL.
+- Release workflow: bump → build (production) → publish/push ordering fixes, scoped `NODE_ENV`, local Docker load for release tarball.
 
 ### Changed
 
@@ -22,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- GitHub Actions release workflow: npm publish, GHCR Docker image, and GitHub Release assets on each push to master.
+- GitHub Actions release workflow: npm publish, GHCR Docker image, and GitHub Release assets on push to master (unless `[skip release]`).
 
 ## [0.1.0] - 2026-09-20
 
@@ -42,5 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default models match `src/config.ts`: `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` are `gemini-3.8-flash`. Override Tier 2 with `gemini-3.1-pro-preview` if you want Pro.
 - Tier 3 / Antigravity is experimental.
 
-[Unreleased]: https://github.com/adi-IL/hq-jr/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/adi-IL/hq-jr/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.2
+[0.1.1]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.1
 [0.1.0]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.0

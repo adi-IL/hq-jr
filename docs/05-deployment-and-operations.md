@@ -20,6 +20,29 @@
 +--------------------------------------------------------------------------+
 ```
 
+
+## Published container (GHCR)
+
+Release automation publishes multi-use tags to GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/adi-il/hq-jr:latest
+docker pull ghcr.io/adi-il/hq-jr:0.1.2
+```
+
+The image entrypoint is `tini` with `CMD ["probot", "run", "./dist/index.js"]` (App webhook daemon). This is separate from the npm global CLI (`npm i -g hq-jr`), which only exposes `health` / `review` / `sandbox-test`.
+
+Each successful release also attaches `hq-jr-<version>-linux-amd64.tar.gz` to the [GitHub Release](https://github.com/adi-IL/hq-jr/releases).
+
+## Release pipeline (maintainers)
+
+Pushes to `master` / `main` without `[skip release]` run `.github/workflows/release.yml`:
+
+1. Test and typecheck
+2. Bump patch version and build (`NODE_ENV=production`)
+3. **Publish to npm**, then push the version commit and tag (so a failed publish does not leave the repo ahead of the registry)
+4. Build/push GHCR image and create the GitHub Release with the Docker tarball asset
+
 ## Self-Hosted Linux VPS / Server Deployment
 
 `hq-jr` can be hosted on any Linux server or virtual machine:

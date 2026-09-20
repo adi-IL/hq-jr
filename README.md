@@ -175,12 +175,22 @@ npm run dev   # watch mode
 
 ### Docker
 
+Published image (App daemon):
+
+```bash
+docker pull ghcr.io/adi-il/hq-jr:0.1.2
+# or: docker pull ghcr.io/adi-il/hq-jr:latest
+docker run --rm -p 3000:3000 --env-file .env ghcr.io/adi-il/hq-jr:0.1.2
+```
+
+Build from source:
+
 ```bash
 docker build -t hq-jr:local .
 docker run --rm -p 3000:3000 --env-file .env hq-jr:local
 ```
 
-For Cloud Run and systemd options, see [docs/05-deployment-and-operations.md](docs/05-deployment-and-operations.md).
+Image runs Probot under `tini` (PID 1) with `probot` on `PATH`. For Cloud Run and systemd options, see [docs/05-deployment-and-operations.md](docs/05-deployment-and-operations.md).
 
 ---
 

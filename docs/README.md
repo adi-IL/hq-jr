@@ -17,4 +17,4 @@ This directory contains research, architectural designs, and implementation spec
    Manifest-driven registration, granular permissions (`checks: write`, `pull_requests: write`, `contents: write`, `issues: write`, `metadata: read`), authentication mechanics, credential redaction, RBAC enforcement, and repository isolation.
 
 5. [Deployment and Operations](05-deployment-and-operations.md)
-   Google Cloud Run deployment with native IAM identity, local development with Smee.io, environment variable specifications, and rate-limit mitigation.
+   Google Cloud Run deployment with native IAM identity, published GHCR image, npm CLI vs App daemon, local development with Smee.io, environment variable specifications, and rate-limit mitigation.

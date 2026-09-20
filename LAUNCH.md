@@ -27,6 +27,6 @@ npm: https://www.npmjs.com/package/hq-jr
 ## Checklist for Aditya
 
 - [ ] Confirm Security Advisories enabled on the public repo
-- [ ] Rotate any secrets that ever lived in old private notes
+- [ ] Optional: rotate any secrets that ever lived in old private notes
 - [ ] Post Show HN / social yourself when ready
 - [ ] Optional: GitHub Pages homepage later (homepage currently points at the repo)
