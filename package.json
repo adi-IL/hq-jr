@@ -1,0 +1,47 @@
+{
+  "name": "hq-jr",
+  "version": "0.1.0",
+  "description": "Automated whole-codebase and pull request review bot using Probot and Google Cloud Vertex AI",
+  "homepage": "https://github.com/adi-IL/hq-jr",
+  "repository": "https://github.com/adi-IL/hq-jr",
+  "main": "dist/index.js",
+  "bin": {
+    "hq-jr": "dist/cli.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "probot run ./dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": [
+    "probot",
+    "github-app",
+    "code-review",
+    "vertex-ai",
+    "gemini"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@google/genai": "^2.3.0",
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^16.4.5",
+    "probot": "^13.4.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.5.5",
+    "smee-client": "^5.0.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

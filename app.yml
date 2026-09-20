@@ -1,0 +1,17 @@
+name: hq-jr
+url: https://github.com/adi-IL/hq-jr
+hook_attributes:
+  url: https://smee.io/your_smee_channel_id
+description: Automated whole-codebase and pull request review bot using Probot and Google Cloud Vertex AI
+public: false
+default_permissions:
+  checks: write
+  pull_requests: write
+  contents: write
+  issues: write
+  metadata: read
+default_events:
+  - pull_request
+  - pull_request_review_comment
+  - issue_comment
+  - check_run

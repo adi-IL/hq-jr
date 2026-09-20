@@ -1,0 +1,72 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret & Credential Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog OSS Secret Scan
+        uses: trufflesecurity/trufflehog@v3.88.5
+        with:
+          path: ./
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          head: ${{ github.sha }}
+
+  build-and-test:
+    name: Lint, Typecheck, Test, and Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+      GOOGLE_CLOUD_PROJECT: test-gcp-project
+      GOOGLE_CLOUD_LOCATION: global
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Static Typecheck & Lint
+        run: npm run lint
+
+      - name: Execute Vitest Test Suites
+        run: npm test
+
+      - name: Production TypeScript Build
+        run: npm run build
+
+      - name: Verify CLI Binary Execution
+        run: node ./dist/cli.js --help
+
+      - name: Dependency Vulnerability Audit
+        run: npm audit --omit=dev --audit-level=high
