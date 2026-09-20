@@ -2,9 +2,8 @@ node_modules
 dist
 .git
 .github
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
 data
 *.db
 *.db-wal

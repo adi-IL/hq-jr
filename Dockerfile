@@ -25,7 +25,7 @@ ENV NODE_ENV=production \
     HQ_JR_DB_PATH=/app/data/hq-jr.db
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates tini \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --system --gid 1001 hqjr \
   && useradd --system --uid 1001 --gid hqjr --home-dir /app --shell /usr/sbin/nologin hqjr \
@@ -40,5 +40,6 @@ COPY --chown=hqjr:hqjr app.yml .env.example ./
 USER hqjr
 EXPOSE 3000
 
-# Probot loads dist/index.js; credentials via env / Secret Manager (see docs/05).
-CMD ["npm", "start"]
+# tini as PID 1 so SIGTERM reaches Node; run Probot directly (npm does not forward signals).
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["./node_modules/.bin/probot", "run", "./dist/index.js"]

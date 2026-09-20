@@ -21,9 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      NODE_ENV: test
-      GOOGLE_CLOUD_PROJECT: test-gcp-project
-      GOOGLE_CLOUD_LOCATION: global
       REGISTRY: ghcr.io
       IMAGE_NAME: adi-il/hq-jr
 
@@ -49,9 +46,10 @@ jobs:
 
       - name: Test
         run: npm test
-
-      - name: Build
-        run: npm run build
+        env:
+          NODE_ENV: test
+          GOOGLE_CLOUD_PROJECT: test-gcp-project
+          GOOGLE_CLOUD_LOCATION: global
 
       - name: Configure git identity
         run: |
@@ -66,15 +64,21 @@ jobs:
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Bumped to ${NEW_VERSION}"
 
-      - name: Publish to npm
-        run: npm publish --access public
+      - name: Build
+        run: npm run build
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_ENV: production
 
       - name: Push version commit and tag
         run: |
           git push origin HEAD:${{ github.ref_name }}
           git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_ENV: production
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -95,41 +99,23 @@ jobs:
             type=raw,value=${{ steps.version.outputs.version }}
             type=raw,value=latest
 
-      - name: Build and push Docker image
+      - name: Build and load image locally
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Push image tags to GHCR
+        run: |
+          docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
+          docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
       - name: Save Docker image tarball for release asset
         run: |
-          docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
           docker save "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}" \
             | gzip > "hq-jr-${{ steps.version.outputs.version }}-linux-amd64.tar.gz"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
-          generate_release_notes: true
-          files: |
-            hq-jr-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
-          body: |
-            ## hq-jr v${{ steps.version.outputs.version }}
-
-            ### Install
-            ```bash
-            npm install -g hq-jr@${{ steps.version.outputs.version }}
-            ```
-
-            ### Docker
-            ```bash
-            docker pull ghcr.io/adi-il/hq-jr:${{ steps.version.outputs.version }}
-            ```
-
-            Image also attached as `hq-jr-${{ steps.version.outputs.version }}-linux-amd64.tar.gz`.

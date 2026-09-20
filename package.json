@@ -34,7 +34,7 @@
     "vertex-ai",
     "hq-jr"
   ],
-  "author": "Aditya Gaurav <adi-IL>",
+  "author": "Aditya Gaurav (https://github.com/adi-IL)",
   "license": "Apache-2.0",
   "dependencies": {
     "@google/genai": "^2.3.0",

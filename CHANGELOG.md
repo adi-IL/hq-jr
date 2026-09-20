@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Address hq-jr bot review: Dockerfile SIGTERM via tini + direct Probot CMD, broader `.env*` dockerignore, package author URL, release workflow order (bump → build → push → npm publish), scoped NODE_ENV, local Docker load for release tarball.
+
 ### Changed
 
 - Docs honesty: Tier 1 and Tier 2 both use High Thinking; triage vs deep review differ by schema/prompt. Clarified overall risk (`LOW`/`MEDIUM`/`HIGH`) vs finding severity (`CRITICAL`/`WARNING`/`SUGGESTION`).
