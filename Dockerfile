@@ -41,5 +41,6 @@ USER hqjr
 EXPOSE 3000
 
 # tini as PID 1 so SIGTERM reaches Node; run Probot directly (npm does not forward signals).
+ENV PATH="/app/node_modules/.bin:${PATH}"
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["./node_modules/.bin/probot", "run", "./dist/index.js"]
+CMD ["probot", "run", "./dist/index.js"]

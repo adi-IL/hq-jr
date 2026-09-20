@@ -119,3 +119,26 @@ jobs:
           docker save "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}" \
             | gzip > "hq-jr-${{ steps.version.outputs.version }}-linux-amd64.tar.gz"
 
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            hq-jr-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+          body: |
+            ## hq-jr v${{ steps.version.outputs.version }}
+
+            ### Install
+            ```bash
+            npm install -g hq-jr@${{ steps.version.outputs.version }}
+            ```
+
+            ### Docker
+            ```bash
+            docker pull ghcr.io/adi-il/hq-jr:${{ steps.version.outputs.version }}
+            ```
+
+            Image also attached as `hq-jr-${{ steps.version.outputs.version }}-linux-amd64.tar.gz`.
+
