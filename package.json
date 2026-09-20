@@ -1,6 +1,6 @@
 {
   "name": "hq-jr",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Self-hosted GitHub App that reviews PRs with Vertex AI, remembers past findings, and can reproduce bugs in a sandbox before it speaks.",
   "homepage": "https://github.com/adi-IL/hq-jr",
   "repository": {
