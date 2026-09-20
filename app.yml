@@ -3,7 +3,7 @@ url: https://github.com/adi-IL/hq-jr
 hook_attributes:
   url: https://smee.io/your_smee_channel_id
 description: Self-hosted GitHub App that reviews PRs with Vertex AI, remembers past findings, and can reproduce bugs in a sandbox before it speaks.
-public: false
+public: true
 default_permissions:
   checks: write
   pull_requests: write
