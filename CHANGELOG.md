@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Packaging/release hardening from hq-jr re-audit (publish-before-tag, Dockerfile PATH, GitHub Release restore).
+
 ### Fixed
 
 - Release workflow publishes to npm before pushing the version commit/tag (avoids registry lag on publish failure).
