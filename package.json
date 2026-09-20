@@ -1,7 +1,7 @@
 {
   "name": "hq-jr",
   "version": "0.1.0",
-  "description": "Automated whole-codebase and pull request review bot using Probot and Google Cloud Vertex AI",
+  "description": "Self-hosted GitHub App that reviews PRs with Vertex AI, remembers past findings, and can reproduce bugs in a sandbox before it speaks.",
   "homepage": "https://github.com/adi-IL/hq-jr",
   "repository": "https://github.com/adi-IL/hq-jr",
   "main": "dist/index.js",
@@ -18,13 +18,20 @@
     "lint": "tsc --noEmit"
   },
   "keywords": [
-    "probot",
-    "github-app",
+    "ai-code-review",
     "code-review",
+    "developer-tools",
+    "github-app",
+    "pull-request",
+    "probot",
+    "sandbox",
+    "self-hosted",
+    "sqlite",
+    "typescript",
     "vertex-ai",
-    "gemini"
+    "hq-jr"
   ],
-  "author": "",
+  "author": "Aditya Gaurav <adi-IL>",
   "license": "Apache-2.0",
   "dependencies": {
     "@google/genai": "^2.3.0",
@@ -43,5 +50,12 @@
   },
   "engines": {
     "node": ">=22.0.0"
-  }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "app.yml",
+    ".env.example"
+  ]
 }
