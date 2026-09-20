@@ -60,5 +60,8 @@
     "LICENSE",
     "app.yml",
     ".env.example"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }
