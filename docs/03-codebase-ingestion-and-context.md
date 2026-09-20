@@ -52,8 +52,8 @@ For all live GitHub PR reviews, `hq-jr` operates entirely in memory using GitHub
 +-------------------------------------------------------------+
 | Context Packager & Vertex AI Evaluation (src/services/ai.ts)|
 | - Budget token limits per file                              |
-| - Tier 1: Gemini 3.8 Flash Fast Triage                      |
-| - Tier 2: Gemini 3.8 Flash High Thinking Deep Audit         |
+| - Tier 1: Flash + High Thinking (triage schema)             |
+| - Tier 2: Flash + High Thinking (deep review schema)        |
 +-------------------------------------------------------------+
 ```
 

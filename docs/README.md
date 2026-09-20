@@ -8,7 +8,7 @@ This directory contains research, architectural designs, and implementation spec
    Core event loop, webhook handling, review memory across commits, autonomous remediation, Octokit REST and GraphQL integration, and GitHub CLI workflow integration.
 
 2. [Model Orchestration and Vertex AI ADC](02-model-orchestration-and-vertex-adc.md)
-   Application Default Credentials (ADC) setup, multi-tier routing (Gemini 3.8 Flash with High Thinking, antigravity-preview-05-2026), token budgeting, and structured JSON output schemas.
+   Application Default Credentials (ADC) setup, multi-tier routing (Flash + High Thinking for triage and deep review, antigravity-preview-05-2026 for experimental sandbox), token budgeting, and structured JSON output schemas.
 
 3. [Codebase Ingestion and Context Pipeline](03-codebase-ingestion-and-context.md)
    Handling full codebase audits vs incremental PR diffs, tarball streaming vs shallow clones, Tree-sitter symbol indexing, and context window optimization.

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Docs honesty: Tier 1 and Tier 2 both use High Thinking; triage vs deep review differ by schema/prompt. Clarified overall risk (`LOW`/`MEDIUM`/`HIGH`) vs finding severity (`CRITICAL`/`WARNING`/`SUGGESTION`).
+- CLI help and Quickstart: global `hq-jr` is CLI-only; App daemon still needs `npm start` / Docker.
+
 ### Added
 
 - GitHub Actions release workflow: npm publish, GHCR Docker image, and GitHub Release assets on each push to master.

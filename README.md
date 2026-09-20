@@ -31,7 +31,7 @@
 
 Junior sits on your webhook path. Humans skim diffs and type LGTM. Junior does not skim.
 
-It filters noise, scrubs credentials, triages with a fast model, then deep-reviews risky hunks. SQLite WAL memory tracks prior findings across pushes. When a break looks real, it can ask the experimental sandbox path to reproduce before speaking loudly. Tag `@hq-jr fix` if you want a remediation branch.
+It filters noise, scrubs credentials, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. SQLite WAL memory tracks prior findings across pushes. When a break looks real, it can ask the experimental sandbox path to reproduce before speaking loudly. Tag `@hq-jr fix` if you want a remediation branch.
 
 ### Generic AI review bots vs hq-jr
 
@@ -61,7 +61,7 @@ flowchart TD
     Route -->|"PR Sync, Open, or @hq-jr review"| Filter["Diff Parser & Heuristic Filter"]
     Filter -->|"Zero Reviewable Hunks"| FastPass["Complete Check Run: Neutral"]
     Filter -->|"Reviewable Diffs"| Scrubber["Secret & Credential Scrubber"]
-    Scrubber --> Tier1["Tier 1: Fast Triage"]
+    Scrubber --> Tier1["Tier 1: Triage + High Thinking"]
     
     Tier1 --> TriageDecision{"Any shouldReview files?"}
     TriageDecision -->|"No"| LowRiskExit["Complete Check Run: Low Risk"]
@@ -83,11 +83,12 @@ Defaults match [`src/config.ts`](src/config.ts): Tier 1 and Tier 2 use `gemini-3
    - Excludes lockfiles, compiled artifacts (`dist/`, `build/`), vendor bundles, minified JS, and binary assets.
    - Parses unified diffs including quoted paths, Git submodules (`160000`), and permission changes.
    - Passes content through the credential scrubber ([`src/services/scrubber.ts`](src/services/scrubber.ts)).
-2. **Tier 1: Fast Triage** ([`src/services/ai.ts`](src/services/ai.ts)):
-   - Screening with **Gemini 3.8 Flash** (`HQ_JR_MODEL_TIER1`).
-   - Sets `risk` and `shouldReview` per file; skips deep review for low-risk changes.
+2. **Tier 1: Triage** ([`src/services/ai.ts`](src/services/ai.ts)):
+   - **Gemini 3.8 Flash** with **High Thinking** (`HQ_JR_MODEL_TIER1`), narrow triage prompt and schema.
+   - Sets per-file **overall risk** as `LOW` | `MEDIUM` | `HIGH` and `shouldReview`; skips deep review for low-risk changes.
 3. **Tier 2: Deep Semantic Audit** ([`src/services/ai.ts`](src/services/ai.ts)):
-   - Deep review with **Gemini 3.8 Flash + High Thinking** (`HQ_JR_MODEL_TIER2`, same default model; optional override e.g. `gemini-3.1-pro-preview`).
+   - Same default model with **High Thinking** (`HQ_JR_MODEL_TIER2`; optional override e.g. `gemini-3.1-pro-preview`), wider review prompt.
+   - Finding **severity** is `CRITICAL` | `WARNING` | `SUGGESTION` (separate from triage risk).
    - Loads prior findings via [`src/services/review-memory.ts`](src/services/review-memory.ts).
    - Line-anchored comments with suggestion blocks; HTTP 422 fallback if lines drift.
 4. **Tier 3: Sandbox Verification (experimental)** (CLI & runner):
@@ -127,6 +128,8 @@ npm i -g hq-jr
 hq-jr --help
 hq-jr health
 ```
+
+The global install is the **CLI** (`health`, `review`, `sandbox-test`). It does not start the GitHub App webhook server. For the App daemon use from-source / Docker below (`npm start`).
 
 **GitHub App / from source:**
 

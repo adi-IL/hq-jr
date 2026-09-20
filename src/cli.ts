@@ -40,6 +40,9 @@ function printHelp() {
   console.log(`
 hq-jr - Automated Code Review CLI (Powered by Vertex AI & Gemini)
 
+This binary is the CLI only (health, review, sandbox-test).
+It does not start the GitHub App webhook server. For the App daemon, clone the repo and run npm start (or use Docker).
+
 Usage:
   hq-jr health                          Check Vertex AI ADC connectivity and latency
   hq-jr review --diff <path>            Run review on a local unified diff file
@@ -135,7 +138,7 @@ async function handleReview(args: string[]) {
   }
 
   // 3. Tier 1 Triage
-  console.log(`\n--- Tier 1: Fast Triage (${config.HQ_JR_MODEL_TIER1}) ---`);
+  console.log(`\n--- Tier 1: Triage + High Thinking (${config.HQ_JR_MODEL_TIER1}) ---`);
   const triage = await runTriage(context.promptPayload);
   console.log(`Overall Risk: [${triage.overallRisk}]`);
   console.log(`Summary:      ${triage.summary}\n`);

@@ -5,8 +5,8 @@
 `hq-jr` is an automated code review bot built as a GitHub App. It analyzes entire codebases and incremental pull requests for public and private repositories. The bot uses the Probot framework on Node.js and TypeScript.
 
 The system uses Google Cloud Vertex AI via Application Default Credentials (ADC) for all model interactions. It distributes review tasks across three model tiers:
-- Gemini 3.8 Flash for rapid triage, AST diff mapping, and file filtering.
-- Gemini 3.8 Flash with High Thinking for deep semantic review, memory-backed incremental audits, and inline diff comments.
+- Gemini 3.8 Flash with High Thinking for triage (narrow schema: overall risk `LOW`/`MEDIUM`/`HIGH`, `shouldReview`).
+- Gemini 3.8 Flash with High Thinking for deep semantic review (finding severity `CRITICAL`/`WARNING`/`SUGGESTION`), memory-backed audits, and inline comments.
 - antigravity-preview-05-2026 for asynchronous sandbox verification, build and test execution, and remediation synthesis.
 
 ## Probot Core Mechanics
@@ -49,8 +49,8 @@ Probot abstracts webhook verification, GitHub App authentication, and Octokit cl
 |                                    v                                   |
 |  +------------------------------------------------------------------+  |
 |  | AI Execution Engine (Vertex AI via ADC)                          |  |
-|  | - Tier 1: Gemini 3.8 Flash (Triage & Syntax Filter)              |  |
-|  | - Tier 2: Gemini 3.8 Flash + High Thinking (Deep Semantic Audit) |  |
+|  | - Tier 1: Flash + High Thinking (triage schema)                  |  |
+|  | - Tier 2: Flash + High Thinking (deep review schema)             |  |
 |  | - Tier 3: antigravity-preview-05-2026 (Sandbox Verification)     |  |
 |  +---------------------------------+--------------------------------+  |
 |                                    |                                   |

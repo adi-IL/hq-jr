@@ -46,25 +46,24 @@ Both local development environments and production servers use Application Defau
 
 The system splits operational responsibilities according to capabilities: direct models handle synchronous line-by-line review comments with schema enforcement, while managed agents handle asynchronous test execution in sandboxed environments.
 
-### Tier 1: Gemini 3.8 Flash (`gemini-3.8-flash`)
+### Tier 1: Gemini 3.8 Flash triage (`gemini-3.8-flash`)
 
-- **Role.** Rapid ingestion, AST chunk filtering, and syntax triage.
-- **Latency.** Sub-second to 2 seconds.
-- **Execution Mode.** Synchronous direct model inference via Interactions API.
-- **Context Window.** Up to 1,000,000 tokens.
-- **Output.** Structured JSON adhering to triage schema.
+- **Role.** Narrow triage: which files need deep review, and overall risk per file.
+- **Thinking.** Uses `thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }` like Tier 2. Cost and latency stay lower because the triage prompt and JSON schema are smaller.
+- **Execution Mode.** Synchronous direct model inference via Vertex / `@google/genai`.
+- **Output.** Structured JSON triage schema.
+- **Risk field.** Per-file and overall risk: `LOW` | `MEDIUM` | `HIGH` (not finding severity).
 - **Tasks:**
-  - Ingest raw git diffs and full directory trees.
-  - Exclude auto-generated files, lockfiles, and minified bundles.
-  - Extract changed function signatures and references.
-  - Produce initial risk scores (Low, Medium, High) for each file.
-  - Terminate early with a passing Check Run if all changes are cosmetic.
+  - Ingest packaged diffs / context from the review pipeline.
+  - Mark auto-generated, lockfile, and trivial paths as `shouldReview: false` with risk `LOW` when appropriate.
+  - Produce initial risk scores (`LOW`, `MEDIUM`, `HIGH`) for each file.
+  - Terminate early with a passing Check Run if nothing needs deep review.
 
-### Tier 2: Gemini 3.8 Flash with High Thinking (`gemini-3.8-flash`)
+### Tier 2: Gemini 3.8 Flash deep review (`gemini-3.8-flash`)
 
-- **Role.** Deep semantic review, security vulnerability audit, prior review verification, and invariant analysis. Configurable to `gemini-3.1-pro-preview` via `HQ_JR_MODEL_TIER2`.
-- **Latency.** 3 to 10 seconds.
-- **Execution Mode.** Synchronous direct model reasoning with `thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }`.
+- **Role.** Deep semantic review, security audit, prior-finding verification, and invariant analysis. Configurable to `gemini-3.1-pro-preview` via `HQ_JR_MODEL_TIER2`.
+- **Thinking.** Synchronous reasoning with `thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }`.
+- **Finding severity.** Each finding uses `CRITICAL` | `WARNING` | `SUGGESTION`. Do not confuse this with Tier 1 overall risk.
 - **Context Window.** Up to 1,000,000 tokens.
 - **Output.** Strict JSON Schema conforming to GitHub review comment specifications.
 - **Tasks:**
@@ -103,7 +102,7 @@ The system splits operational responsibilities according to capabilities: direct
 GitHub Webhook Event (pull_request.opened / synchronize)
        │
        ▼
-[ Tier 1: Gemini 3.8 Flash ]
+[ Tier 1: Flash + High Thinking (triage schema) ]
   ├─ Drop generated files & lockfiles
   ├─ Fast lint & syntactic boundary check
   ├─ Risk classification (Low / Medium / High)
@@ -112,7 +111,7 @@ GitHub Webhook Event (pull_request.opened / synchronize)
         ├── All Low Risk ──► [ Complete Check Run: Success ]
         │
         ▼ High / Medium Risk Chunks
-[ Tier 2: Gemini 3.8 Flash + High Thinking ]
+[ Tier 2: Flash + High Thinking (deep review schema) ]
   ├─ Deep semantic trace on modified call sites
   ├─ Audit verification against prior review memory
   ├─ Security vulnerability & concurrency audit
