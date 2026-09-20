@@ -120,6 +120,16 @@ Defaults match [`src/config.ts`](src/config.ts): Tier 1 and Tier 2 use `gemini-3
 
 ### Installation
 
+**CLI (published package):**
+
+```bash
+npm i -g hq-jr
+hq-jr --help
+hq-jr health
+```
+
+**GitHub App / from source:**
+
 ```bash
 git clone https://github.com/adi-IL/hq-jr.git
 cd hq-jr
