@@ -202,21 +202,6 @@ hq-jr/
 
 ---
 
-## Release automation
-
-Pushes to `master` / `main` run `.github/workflows/release.yml` when the commit message does not contain `[skip release]`:
-
-1. Lint, test, and build
-2. Bump the patch version in `package.json`
-3. Publish to npm as `hq-jr`
-4. Push the version commit and tag
-5. Build and push `ghcr.io/adi-il/hq-jr` (version + `latest`)
-6. Create a GitHub Release with the Docker image tarball attached
-
-Required secret: `NPM_TOKEN` (Automation token on npmjs.com).
-
-CI-only commits should include `[skip release]` in the message (the workflow adds this on its own version bumps).
-
 ## License
 
 Apache-2.0
