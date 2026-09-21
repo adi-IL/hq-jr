@@ -15,7 +15,7 @@
 
 ### Why hq-jr
 
-- **Sandbox proof.** Suspicious findings can be reproduced in an isolated container before the bot files a strong claim. Tier 3 / Antigravity is experimental.
+- **Sandbox proof.** Suspicious findings can be dispatched to an isolated Antigravity container; hq-jr polls for a real verdict (not success-on-dispatch). Tier 3 remains experimental until validated in your environment.
 - **Mention manners.** Peer-to-peer PR chat is ignored until someone addresses `@hq-jr`.
 - **Self-hosted on Vertex.** Runs in your account. Diffs go to your GCP project via Vertex AI, not a third-party review SaaS.
 
@@ -31,14 +31,14 @@
 
 Junior sits on your webhook path. Humans skim diffs and type LGTM. Junior does not skim.
 
-It filters noise, scrubs credentials, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. SQLite WAL memory tracks prior findings across pushes. When a break looks real, it can ask the experimental sandbox path to reproduce before speaking loudly. Tag `@hq-jr fix` if you want a remediation branch.
+It filters noise, scrubs credentials, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. SQLite WAL stores prior findings across pushes (GitHub hq-jr reviews still supplement). When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
 
 ### Generic AI review bots vs hq-jr
 
 | Dimension | Generic AI review bots | hq-jr |
 | :--- | :--- | :--- |
-| **Verification** | Guesses from completions. | Can reproduce in a sandbox before strong claims (Tier 3 experimental). |
-| **Memory** | Stateless; repeats nags after force-push. | SQLite WAL remembers prior findings. |
+| **Verification** | Guesses from completions. | Polls Tier 3 sandbox for a real verdict before concluding the check (experimental). |
+| **Memory** | Stateless; repeats nags after force-push. | SQLite WAL stores findings; GitHub reviews used as supplement. |
 | **Noise** | Reviews lockfiles and vendor junk. | Heuristic filter + Tier 1 triage skip low-risk diffs. |
 | **Etiquette** | Hijacks human threads. | Speaks when `@hq-jr` is mentioned (or already in-thread). |
 | **Hosting** | Third-party SaaS sees your diffs. | Self-hosted; Vertex AI in *your* GCP project. |
@@ -93,7 +93,8 @@ Defaults match [`src/config.ts`](src/config.ts): Tier 1 and Tier 2 use `gemini-3
    - Line-anchored comments with suggestion blocks; HTTP 422 fallback if lines drift.
 4. **Tier 3: Sandbox Verification (experimental)** (CLI & runner):
    - Antigravity agent (`HQ_JR_AGENT_TIER3`, default `antigravity-preview-05-2026`) for empirical reproduction in isolated containers via `src/cli.ts` / [`src/services/sandbox-runner.ts`](src/services/sandbox-runner.ts).
-   - Treat as experimental until you validate it in your environment.
+   - After dispatch the Check Run stays `in_progress` while `pollSandboxInteraction` waits for a verdict; conclusion is success/failure/neutral from that result (not success-on-dispatch).
+   - Treat as experimental until you validate live Antigravity in your environment.
 
 ---
 
@@ -103,7 +104,9 @@ Defaults match [`src/config.ts`](src/config.ts): Tier 1 and Tier 2 use `gemini-3
 - **GitHub Check Runs**: Status via `hq-jr AI Code Review`.
 - **Interactive PR Chat**: Mention `@hq-jr` to ask questions. Human-to-human threads stay quiet.
 - **On-Demand Review**: `@hq-jr review`, `@hq-jr audit`, or `@hq-jr scan`.
-- **Remediation with RBAC**: `@hq-jr fix` / `@hq-jr patch` synthesizes a fix branch `hq-jr/fix-pr-<id>`. `@hq-jr fix and merge` when permissions allow. Requires collaborator `admin` or `write`.
+- **Remediation with RBAC**: Explicit `@hq-jr fix` / `@hq-jr patch` / `@hq-jr remediate` (optional `and merge`) only; loose wording like "how to fix naming" does not trigger. Synthesizes branch `hq-jr/fix-pr-<id>`. Requires collaborator `admin` or `write`.
+- **Commit repro test**: Check action **Commit Repro Test** or `@hq-jr commit-repro` commits the synthesized test from the sandbox check summary.
+- **Re-run sandbox**: Check action **Re-run Sandbox** re-dispatches Tier 3 with prior probes when available.
 
 ---
 
