@@ -35,7 +35,7 @@ Both local development environments and production servers use Application Defau
 |  |                        |  | preview            |  | preview-      |  |
 |  | - Fast file triage     |  |                    |  | 05-2026       |  |
 |  | - AST diff mapping     |  | - Deep logic trace |  |               |  |
-|  | - Noise filtering      |  | - Security audit  |  | - Sandbox VM  |  |
+|  | - Noise filtering      |  | - Security audit   |  | - Sandbox VM  |  |
 |  | - Strict JSON schema   |  | - Concurrency bugs |  | - Runs tests  |  |
 |  | - Synchronous          |  | - Strict patch JSON|  | - Asynchronous|  |
 |  +------------------------+  +--------------------+  +---------------+  |
