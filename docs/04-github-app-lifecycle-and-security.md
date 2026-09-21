@@ -94,4 +94,4 @@ For automated code remediation commands (`@hq-jr fix`, `@hq-jr patch`, `@hq-jr f
 
 ### 5. Memory Management and Denial-of-Service Defense
 - In-flight check runs are tracked via a `Set<string>` guarded strictly inside `try ... finally` blocks to prevent deadlock upon API failures.
-- Historical remediation commit hashes are capped via a FIFO-evicting `BoundedShaCache(500)` to ensure predictable memory usage during long-running production uptime.
+- Historical remediation commit hashes are stored in SQLite `remediation_commits` (pruned retention) so they survive process restarts and stay bounded.
