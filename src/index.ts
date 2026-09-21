@@ -11,6 +11,18 @@ import { executeSandboxCheckRun } from "./services/sandbox-runner.js";
 import type { SandboxProbeRequest } from "./schemas/review.js";
 
 /** Remediation only on explicit @hq-jr fix|patch|remediate (optional and merge). */
+
+/** True when path is a file under tests/ (not bare tests, not traversal). */
+export function isSafeReproTestPath(path: string | undefined | null): boolean {
+  const normalized = (path ?? "").replace(/^\/+/, "").replace(/\/+$/, "");
+  return (
+    normalized.startsWith("tests/") &&
+    normalized.length > "tests/".length &&
+    !normalized.includes("..") &&
+    !normalized.endsWith("/")
+  );
+}
+
 export const REMEDIATE_COMMAND_RE =
   /@hq-jr(?:\[bot\])?\s+(fix|patch|remediate)(\s+and\s+merge)?\b/i;
 export const COMMIT_REPRO_COMMAND_RE = /@hq-jr(?:\[bot\])?\s+commit-repro\b/i;
@@ -83,14 +95,10 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
     }
 
     let testFileName: string;
-    const normalizedExtracted = extractedPath?.replace(/^\/+/, "") ?? "";
-    // Only honor agent-supplied paths under tests/ (never overwrite src/ or workflows).
-    const safeExtractedPath =
-      normalizedExtracted.length > 0 &&
-      !normalizedExtracted.includes("..") &&
-      (normalizedExtracted === "tests" || normalizedExtracted.startsWith("tests/"))
-        ? normalizedExtracted
-        : null;
+    const normalizedExtracted = extractedPath?.replace(/^\/+/, "").replace(/\/+$/, "") ?? "";
+    const safeExtractedPath = isSafeReproTestPath(normalizedExtracted)
+      ? normalizedExtracted
+      : null;
     if (safeExtractedPath) {
       testFileName = safeExtractedPath;
     } else {
