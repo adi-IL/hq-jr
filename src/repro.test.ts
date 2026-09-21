@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import appFn, { REMEDIATE_COMMAND_RE, COMMIT_REPRO_COMMAND_RE } from "./index.js";
+import appFn, { REMEDIATE_COMMAND_RE, COMMIT_REPRO_COMMAND_RE, isSafeReproTestPath } from "./index.js";
 import { safeParseJson } from "./services/json-repair.js";
 import { executeRemediation } from "./services/remediation.js";
 import { ai } from "./services/ai.js";
@@ -242,5 +242,16 @@ describe("Command hardening", () => {
     });
     expect(remediationStart).toBeUndefined();
     expect(discussionModule.replyToDiscussion).toHaveBeenCalled();
+  });
+});
+
+describe("isSafeReproTestPath", () => {
+  it("accepts only file paths under tests/", () => {
+    expect(isSafeReproTestPath("tests/repro_issue_1.test.ts")).toBe(true);
+    expect(isSafeReproTestPath("tests/foo/bar_test.go")).toBe(true);
+    expect(isSafeReproTestPath("tests")).toBe(false);
+    expect(isSafeReproTestPath("tests/")).toBe(false);
+    expect(isSafeReproTestPath("src/index.ts")).toBe(false);
+    expect(isSafeReproTestPath("tests/../src/index.ts")).toBe(false);
   });
 });
