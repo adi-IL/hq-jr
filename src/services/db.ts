@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import { config } from "../config.js";
+import { scrubSecrets } from "./scrubber.js";
 
 let defaultDbInstance: Database.Database | null = null;
 
@@ -36,6 +37,43 @@ export function initSchema(db: Database.Database): void {
       PRIMARY KEY (repo, commit_sha, file_path)
     );
     CREATE INDEX IF NOT EXISTS idx_symbol_cache_repo_hash ON symbol_cache (repo, content_hash);
+
+    CREATE TABLE IF NOT EXISTS review_findings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      pull_number INTEGER NOT NULL,
+      head_sha TEXT NOT NULL,
+      path TEXT NOT NULL,
+      line INTEGER,
+      side TEXT,
+      severity TEXT,
+      title TEXT,
+      body TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_review_findings_pr
+      ON review_findings (owner, repo, pull_number, created_at);
+    CREATE INDEX IF NOT EXISTS idx_review_findings_pr_sha
+      ON review_findings (owner, repo, pull_number, head_sha);
+
+    CREATE TABLE IF NOT EXISTS sandbox_jobs (
+      interaction_id TEXT PRIMARY KEY,
+      check_run_id INTEGER NOT NULL,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      pull_number INTEGER NOT NULL,
+      head_sha TEXT NOT NULL,
+      branch TEXT,
+      verification_goal TEXT,
+      probes_json TEXT,
+      test_command TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'dispatched'
+    );
+    CREATE INDEX IF NOT EXISTS idx_sandbox_jobs_check
+      ON sandbox_jobs (owner, repo, check_run_id);
   `);
 }
 
@@ -194,4 +232,230 @@ export function getCachedSymbol(
   );
   const row = stmt.get({ repo: params.repo, commitSha: params.commitSha, filePath: params.filePath });
   return row?.symbols_json ?? null;
+}
+
+
+export interface ReviewFindingRow {
+  id?: number;
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  headSha: string;
+  path: string;
+  line?: number | null;
+  side?: string | null;
+  severity?: string | null;
+  title?: string | null;
+  body: string;
+  createdAt?: number;
+}
+
+export function saveReviewFindings(
+  findings: ReviewFindingRow[],
+  dbInstance?: Database.Database
+): void {
+  if (findings.length === 0) return;
+  const db = dbInstance ?? getDatabase();
+  const insert = db.prepare(
+    `INSERT INTO review_findings
+      (owner, repo, pull_number, head_sha, path, line, side, severity, title, body, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const tx = db.transaction((rows: ReviewFindingRow[]) => {
+    const now = Date.now();
+    for (const f of rows) {
+      const scrubbedTitle =
+        f.title != null ? scrubSecrets(f.title).scrubbed : null;
+      const scrubbedBody = scrubSecrets(f.body).scrubbed;
+      insert.run(
+        f.owner,
+        f.repo,
+        f.pullNumber,
+        f.headSha,
+        f.path,
+        f.line ?? null,
+        f.side ?? null,
+        f.severity ?? null,
+        scrubbedTitle,
+        scrubbedBody,
+        f.createdAt ?? now
+      );
+    }
+  });
+  tx(findings);
+}
+
+export function getReviewFindingsForPull(
+  params: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    excludeHeadSha?: string;
+  },
+  dbInstance?: Database.Database
+): ReviewFindingRow[] {
+  const db = dbInstance ?? getDatabase();
+  type Row = {
+    id: number;
+    owner: string;
+    repo: string;
+    pull_number: number;
+    head_sha: string;
+    path: string;
+    line: number | null;
+    side: string | null;
+    severity: string | null;
+    title: string | null;
+    body: string;
+    created_at: number;
+  };
+
+  let rows: Row[];
+  if (params.excludeHeadSha) {
+    const stmt = db.prepare<
+      { owner: string; repo: string; pullNumber: number; excludeHeadSha: string },
+      Row
+    >(
+      `SELECT * FROM review_findings
+       WHERE owner = :owner AND repo = :repo AND pull_number = :pullNumber
+         AND head_sha != :excludeHeadSha
+       ORDER BY created_at ASC`
+    );
+    rows = stmt.all({
+      owner: params.owner,
+      repo: params.repo,
+      pullNumber: params.pullNumber,
+      excludeHeadSha: params.excludeHeadSha,
+    });
+  } else {
+    const stmt = db.prepare<
+      { owner: string; repo: string; pullNumber: number },
+      Row
+    >(
+      `SELECT * FROM review_findings
+       WHERE owner = :owner AND repo = :repo AND pull_number = :pullNumber
+       ORDER BY created_at ASC`
+    );
+    rows = stmt.all({
+      owner: params.owner,
+      repo: params.repo,
+      pullNumber: params.pullNumber,
+    });
+  }
+
+  return rows.map((r) => ({
+    id: r.id,
+    owner: r.owner,
+    repo: r.repo,
+    pullNumber: r.pull_number,
+    headSha: r.head_sha,
+    path: r.path,
+    line: r.line,
+    side: r.side,
+    severity: r.severity,
+    title: r.title,
+    body: r.body,
+    createdAt: r.created_at,
+  }));
+}
+
+export interface SandboxJobRow {
+  interactionId: string;
+  checkRunId: number;
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  headSha: string;
+  branch?: string | null;
+  verificationGoal?: string | null;
+  probesJson?: string | null;
+  testCommand?: string | null;
+  status?: string;
+}
+
+export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Database): void {
+  const db = dbInstance ?? getDatabase();
+  const now = Date.now();
+  const stmt = db.prepare(
+    `INSERT INTO sandbox_jobs
+      (interaction_id, check_run_id, owner, repo, pull_number, head_sha, branch,
+       verification_goal, probes_json, test_command, created_at, updated_at, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(interaction_id) DO UPDATE SET
+       check_run_id = excluded.check_run_id,
+       branch = excluded.branch,
+       verification_goal = excluded.verification_goal,
+       probes_json = excluded.probes_json,
+       test_command = excluded.test_command,
+       updated_at = excluded.updated_at,
+       status = excluded.status`
+  );
+  stmt.run(
+    job.interactionId,
+    job.checkRunId,
+    job.owner,
+    job.repo,
+    job.pullNumber,
+    job.headSha,
+    job.branch ?? null,
+    job.verificationGoal ?? null,
+    job.probesJson ?? null,
+    job.testCommand ?? null,
+    now,
+    now,
+    job.status ?? "dispatched"
+  );
+}
+
+export function updateSandboxJobStatus(
+  interactionId: string,
+  status: string,
+  dbInstance?: Database.Database
+): void {
+  const db = dbInstance ?? getDatabase();
+  db.prepare(
+    "UPDATE sandbox_jobs SET status = ?, updated_at = ? WHERE interaction_id = ?"
+  ).run(status, Date.now(), interactionId);
+}
+
+export function getSandboxJobByCheckRun(
+  params: { owner: string; repo: string; checkRunId: number },
+  dbInstance?: Database.Database
+): SandboxJobRow | null {
+  const db = dbInstance ?? getDatabase();
+  type Row = {
+    interaction_id: string;
+    check_run_id: number;
+    owner: string;
+    repo: string;
+    pull_number: number;
+    head_sha: string;
+    branch: string | null;
+    verification_goal: string | null;
+    probes_json: string | null;
+    test_command: string | null;
+    status: string;
+  };
+  const row = db
+    .prepare<{ owner: string; repo: string; checkRunId: number }, Row>(
+      `SELECT * FROM sandbox_jobs
+       WHERE owner = :owner AND repo = :repo AND check_run_id = :checkRunId
+       ORDER BY created_at DESC LIMIT 1`
+    )
+    .get(params);
+  if (!row) return null;
+  return {
+    interactionId: row.interaction_id,
+    checkRunId: row.check_run_id,
+    owner: row.owner,
+    repo: row.repo,
+    pullNumber: row.pull_number,
+    headSha: row.head_sha,
+    branch: row.branch,
+    verificationGoal: row.verification_goal,
+    probesJson: row.probes_json,
+    testCommand: row.test_command,
+    status: row.status,
+  };
 }

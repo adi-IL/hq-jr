@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Review-fix follow-ups: fail-closed sandbox conclusions on agent failure, no actions on completed checks, incomplete poll status for infra get failures, fork-safe commit-repro, scrub secrets at SQLite save, GitHub-preferred review-memory merge with title normalization.
+
+### Added
+
+- Tier 3 `pollSandboxInteraction` polls Antigravity interactions and sets Check Run conclusions from real verdicts (with backoff; tests inject short polls).
+- SQLite `review_findings` table plus merge path in `review-memory` (prefer prior SHAs; scrub bodies; hq-jr-only GitHub filter).
+- SQLite `sandbox_jobs` for interaction/check linkage and rerun context.
+- `@hq-jr commit-repro` comment command sharing logic with the Commit Repro Test check action.
+- `rerun_sandbox` requested_action handler (write/admin RBAC).
+
+### Changed
+
+- Sandbox Check Run stays `in_progress` after dispatch (no success-on-dispatch).
+- Remediation triggers only on explicit `@hq-jr fix|patch|remediate` (optional `and merge`).
+- Docs aligned: SQLite concurrency (not BoundedShaCache), `generateContent` + `responseSchema`, Flash remediation (not Antigravity), honest Tier 3 poll wording, `withRetry` count, Cloud Run SQLite persistence note.
+
 ## [0.1.2] - 2026-09-20
 
 ### Fixed

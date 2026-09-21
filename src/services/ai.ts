@@ -342,3 +342,214 @@ Execution Contract:
 
   return interaction.id;
 }
+
+/**
+ * Parsed fields from /workspace/reproduction-verdict.json (or best-effort JSON in agent output).
+ */
+export interface SandboxVerdict {
+  baselinePassed?: boolean;
+  probesExecuted?: number;
+  probesFailed?: number;
+  reproduced?: boolean;
+  patchCured?: boolean;
+  summary?: string;
+  synthesizedTestCode?: string;
+  testFilePath?: string;
+}
+
+export interface PollSandboxOptions {
+  /** Cap total wait. Production default ~3 minutes. */
+  maxWaitMs?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface PollSandboxResult {
+  status: "completed" | "failed" | "cancelled" | "timed_out" | "incomplete";
+  interactionStatus?: string;
+  outputText?: string;
+  verdict: SandboxVerdict | null;
+  errorMessage?: string;
+}
+
+const TERMINAL_OK = new Set(["completed"]);
+const TERMINAL_FAIL = new Set(["failed", "cancelled", "incomplete", "budget_exceeded"]);
+
+
+/**
+ * Extract complete top-level `{...}` objects, respecting strings so braces
+ * inside synthesizedTestCode do not truncate the match.
+ */
+export function extractBalancedJsonObjects(text: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let j = i; j < text.length; j++) {
+      const c = text[j];
+      if (inString) {
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (c === "\\") {
+          escape = true;
+          continue;
+        }
+        if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') {
+        inString = true;
+        continue;
+      }
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) {
+          out.push(text.slice(i, j + 1));
+          break;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Best-effort extract of reproduction-verdict.json fields from agent output text.
+ */
+export function extractSandboxVerdict(outputText: string | undefined | null): SandboxVerdict | null {
+  if (!outputText) return null;
+
+  const candidates: string[] = [];
+
+  // Prefer every fenced block (agents often emit prose then several JSON fences).
+  for (const fenceMatch of outputText.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    if (fenceMatch[1]?.trim()) candidates.push(fenceMatch[1].trim());
+  }
+
+  // Balanced `{...}` objects (string-aware) so braces inside synthesizedTestCode
+  // do not truncate un-fenced verdict JSON.
+  for (const obj of extractBalancedJsonObjects(outputText)) {
+    if (
+      obj.includes('"reproduced"') ||
+      obj.includes('"patchCured"') ||
+      obj.includes('"baselinePassed"') ||
+      obj.includes('"synthesizedTestCode"')
+    ) {
+      candidates.push(obj);
+    }
+  }
+
+  candidates.push(outputText);
+
+  for (const raw of candidates) {
+    try {
+      const parsed = safeParseJson<Record<string, unknown>>(raw);
+      if (!parsed || typeof parsed !== "object") continue;
+      const hasSignal =
+        "reproduced" in parsed ||
+        "patchCured" in parsed ||
+        "baselinePassed" in parsed ||
+        "synthesizedTestCode" in parsed;
+      if (!hasSignal) continue;
+      return {
+        baselinePassed: typeof parsed.baselinePassed === "boolean" ? parsed.baselinePassed : undefined,
+        probesExecuted: typeof parsed.probesExecuted === "number" ? parsed.probesExecuted : undefined,
+        probesFailed: typeof parsed.probesFailed === "number" ? parsed.probesFailed : undefined,
+        reproduced: typeof parsed.reproduced === "boolean" ? parsed.reproduced : undefined,
+        patchCured: typeof parsed.patchCured === "boolean" ? parsed.patchCured : undefined,
+        summary: typeof parsed.summary === "string" ? parsed.summary : undefined,
+        synthesizedTestCode:
+          typeof parsed.synthesizedTestCode === "string" ? parsed.synthesizedTestCode : undefined,
+        testFilePath: typeof parsed.testFilePath === "string" ? parsed.testFilePath : undefined,
+      };
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+/**
+ * Poll ai.interactions.get until the background Antigravity job finishes or times out.
+ */
+export async function pollSandboxInteraction(
+  interactionId: string,
+  options: PollSandboxOptions = {}
+): Promise<PollSandboxResult> {
+  const maxWaitMs = options.maxWaitMs ?? 3 * 60 * 1000;
+  const initialDelayMs = options.initialDelayMs ?? 2000;
+  const maxDelayMs = options.maxDelayMs ?? 15000;
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+
+  const started = Date.now();
+  let delay = initialDelayMs;
+  let lastStatus = "in_progress";
+
+  while (Date.now() - started < maxWaitMs) {
+    await sleep(delay);
+
+    let interaction: { status?: string; output_text?: string; errors?: Array<{ message?: string }> };
+    try {
+      interaction = (await ai.interactions.get(interactionId)) as typeof interaction;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Infra / API get failures are inconclusive (neutral via mapVerdictToConclusion).
+      return {
+        status: "incomplete",
+        interactionStatus: lastStatus,
+        verdict: null,
+        errorMessage: `interactions.get failed: ${msg}`,
+      };
+    }
+
+    lastStatus = interaction.status || "unknown";
+    const outputText = interaction.output_text || "";
+
+    if (TERMINAL_OK.has(lastStatus)) {
+      return {
+        status: "completed",
+        interactionStatus: lastStatus,
+        outputText,
+        verdict: extractSandboxVerdict(outputText),
+      };
+    }
+
+    if (TERMINAL_FAIL.has(lastStatus)) {
+      const errMsg =
+        interaction.errors?.map((e) => e.message).filter(Boolean).join("; ") ||
+        `Interaction ended with status ${lastStatus}`;
+      let status: PollSandboxResult["status"];
+      if (lastStatus === "cancelled") {
+        status = "cancelled";
+      } else if (lastStatus === "incomplete") {
+        status = "incomplete";
+      } else {
+        // failed / budget_exceeded
+        status = "failed";
+      }
+      return {
+        status,
+        interactionStatus: lastStatus,
+        outputText,
+        verdict: extractSandboxVerdict(outputText),
+        errorMessage: errMsg,
+      };
+    }
+
+    delay = Math.min(delay * 2, maxDelayMs);
+  }
+
+  return {
+    status: "timed_out",
+    interactionStatus: lastStatus,
+    verdict: null,
+    errorMessage: `Sandbox interaction ${interactionId} did not finish within ${maxWaitMs}ms`,
+  };
+}

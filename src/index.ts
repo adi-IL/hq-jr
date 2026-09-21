@@ -6,11 +6,164 @@ import { replyToDiscussion } from "./services/discussion.js";
 import { getPreviousReviewContext, getReviewCommentThread } from "./services/review-memory.js";
 import { executeRemediation } from "./services/remediation.js";
 import { scrubSecrets } from "./services/scrubber.js";
-import { addRemediationCommit, hasRemediationCommit, acquireRunLock, releaseRunLock } from "./services/db.js";
+import { addRemediationCommit, hasRemediationCommit, acquireRunLock, releaseRunLock, saveReviewFindings, getSandboxJobByCheckRun } from "./services/db.js";
 import { executeSandboxCheckRun } from "./services/sandbox-runner.js";
+import type { SandboxProbeRequest } from "./schemas/review.js";
+
+/** Remediation only on explicit @hq-jr fix|patch|remediate (optional and merge). */
+
+/** True when path is a file under tests/ (not bare tests, not traversal). */
+export function isSafeReproTestPath(path: string | undefined | null): boolean {
+  const normalized = (path ?? "").replace(/^\/+/, "").replace(/\/+$/, "");
+  return (
+    normalized.startsWith("tests/") &&
+    normalized.length > "tests/".length &&
+    !normalized.includes("..") &&
+    !normalized.endsWith("/")
+  );
+}
+
+export const REMEDIATE_COMMAND_RE =
+  /@hq-jr(?:\[bot\])?\s+(fix|patch|remediate)(\s+and\s+merge)?\b/i;
+export const COMMIT_REPRO_COMMAND_RE = /@hq-jr(?:\[bot\])?\s+commit-repro\b/i;
 
 
 export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any } = {}) => {
+  async function resolveInstallationToken(octokit: any): Promise<string | undefined> {
+    try {
+      if (typeof octokit.auth !== "function") return undefined;
+      const authResult = await octokit.auth({ type: "installation" });
+      const token = authResult?.token;
+      return typeof token === "string" && token.length > 0 ? token : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function commitReproTestFromSummary(params: {
+    octokit: any;
+    owner: string;
+    repoName: string;
+    pullNumber: number;
+    sender: string;
+    summaryText: string;
+    headSha: string;
+    targetBranch: string;
+  }): Promise<{ ok: boolean; message: string }> {
+    const { octokit, owner, repoName, pullNumber, sender, summaryText, headSha, targetBranch } = params;
+
+    // Fail closed on fork PRs: never updateRef into a head that is not this repo.
+    try {
+      const { data: prMeta } = await octokit.pulls.get({
+        owner,
+        repo: repoName,
+        pull_number: pullNumber,
+      });
+      const headFullName = prMeta?.head?.repo?.full_name as string | undefined;
+      const expected = `${owner}/${repoName}`;
+      if (!headFullName || headFullName !== expected) {
+        return {
+          ok: false,
+          message:
+            `⚠️ **hq-jr** refuses to commit a reproduction test on fork PR heads ` +
+            `(head repo: \`${headFullName || "unknown"}\`, expected \`${expected}\`). ` +
+            `Open the PR from a branch in this repository or push the test manually.`,
+        };
+      }
+    } catch (forkErr: unknown) {
+      const msg = forkErr instanceof Error ? forkErr.message : String(forkErr);
+      return {
+        ok: false,
+        message: `⚠️ **hq-jr** could not verify PR head repository before commit-repro: ${msg}`,
+      };
+    }
+
+    // Prefer the synthesized-test section (heading + optional path in parentheses + fence).
+    const sectionMatch = summaryText.match(
+      /###\s*Synthesized Reproduction Test(?:\s*\(([^)]+)\))?[\s\S]*?```(?:rust|typescript|javascript|python|go)?\s*([\s\S]*?)```/i
+    );
+    const extractedPath = sectionMatch?.[1]?.trim() || undefined;
+    const testCode = sectionMatch?.[2]?.trim()
+      || summaryText.match(/```(?:rust|typescript|javascript|python|go)?\s*([\s\S]*?)```/)?.[1]?.trim()
+      || null;
+
+    if (!testCode) {
+      return {
+        ok: false,
+        message: `⚠️ **hq-jr** could not extract a synthesized reproduction test from this check run output.`,
+      };
+    }
+
+    let testFileName: string;
+    const normalizedExtracted = extractedPath?.replace(/^\/+/, "").replace(/\/+$/, "") ?? "";
+    const safeExtractedPath = isSafeReproTestPath(normalizedExtracted)
+      ? normalizedExtracted
+      : null;
+    if (safeExtractedPath) {
+      testFileName = safeExtractedPath;
+    } else {
+      const isRust = summaryText.includes("cargo") || summaryText.includes(".rs") || /\brust\b/i.test(summaryText);
+      const isPython = summaryText.includes("pytest") || summaryText.includes(".py");
+      const isGo = summaryText.includes("go test") || summaryText.includes(".go");
+      testFileName = isRust
+        ? `tests/repro_issue_${pullNumber}.rs`
+        : isPython
+          ? `tests/test_repro_issue_${pullNumber}.py`
+          : isGo
+            ? `tests/repro_issue_${pullNumber}_test.go`
+            : `tests/repro_issue_${pullNumber}.test.ts`;
+    }
+
+    const { data: blob } = await octokit.git.createBlob({
+      owner,
+      repo: repoName,
+      content: Buffer.from(testCode).toString("base64"),
+      encoding: "base64",
+    });
+
+    const { data: baseCommit } = await octokit.git.getCommit({
+      owner,
+      repo: repoName,
+      commit_sha: headSha,
+    });
+
+    const { data: newTree } = await octokit.git.createTree({
+      owner,
+      repo: repoName,
+      base_tree: baseCommit.tree.sha,
+      tree: [
+        {
+          path: testFileName,
+          mode: "100644",
+          type: "blob",
+          sha: blob.sha,
+        },
+      ],
+    });
+
+    const { data: newCommit } = await octokit.git.createCommit({
+      owner,
+      repo: repoName,
+      message: `test: add synthesized adversarial reproduction test for PR #${pullNumber} [skip ci]`,
+      tree: newTree.sha,
+      parents: [headSha],
+    });
+
+    addRemediationCommit(newCommit.sha);
+
+    await octokit.git.updateRef({
+      owner,
+      repo: repoName,
+      ref: `heads/${targetBranch}`,
+      sha: newCommit.sha,
+    });
+
+    return {
+      ok: true,
+      message: `✅ **Reproduction Test Committed:** \`${testFileName}\` has been committed directly to branch \`${targetBranch}\` (Commit: \`${newCommit.sha.slice(0, 7)}\`) by @${sender}.`,
+    };
+  }
+
   process.on("unhandledRejection", (reason) => {
     app.log.warn({ reason }, "Handled unhandledRejection to ensure daemon stability");
   });
@@ -184,6 +337,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         owner,
         repo: repoName,
         pullNumber,
+        currentHeadSha: pr.head.sha,
       });
 
       if (previousReview) {
@@ -301,6 +455,28 @@ ${contextPackage.promptPayload}
         }
       }
 
+
+      // Persist review findings to SQLite for cross-push memory
+      try {
+        const findingRows = review.comments.map((c) => ({
+          owner,
+          repo: repoName,
+          pullNumber,
+          headSha: pr.head.sha,
+          path: c.path,
+          line: c.line,
+          side: c.side,
+          severity: c.severity,
+          title: c.title,
+          body: c.body,
+        }));
+        if (findingRows.length > 0) {
+          saveReviewFindings(findingRows);
+        }
+      } catch (persistErr) {
+        app.log.warn({ persistErr, pullNumber }, "Failed to persist review findings to SQLite");
+      }
+
       // 7. Complete Check Run
       if (checkRun?.data?.id) {
         const conclusion =
@@ -327,6 +503,7 @@ ${contextPackage.promptPayload}
       if (review.requiresSandboxVerification) {
         const goal = review.verificationGoal || "Verify flagged critical issues in isolated container sandbox";
         app.log.info({ pullNumber, goal }, "Triggering Tier 3 asynchronous sandbox check run");
+        const authToken = await resolveInstallationToken(octokit);
         executeSandboxCheckRun({
           octokit,
           owner,
@@ -337,6 +514,7 @@ ${contextPackage.promptPayload}
           verificationGoal: goal,
           modifiedFiles: parsedDiff.files.map((f) => f.newPath || f.oldPath),
           probes: review.sandboxProbes,
+          authToken,
         }).catch((sandboxErr: unknown) => {
           app.log.warn({ sandboxErr, pullNumber }, "Async sandbox verification check run encountered error");
         });
@@ -524,11 +702,8 @@ ${contextPackage.promptPayload}
 
     try {
       const lower = body.toLowerCase();
-      const isRemediateCommand =
-        lower.includes("fix") ||
-        lower.includes("patch") ||
-        lower.includes("remediate") ||
-        lower.includes("resolve");
+      const remediateMatch = body.match(REMEDIATE_COMMAND_RE);
+      const isRemediateCommand = Boolean(remediateMatch);
 
       if (isRemediateCommand) {
         // Enforce RBAC: Verify commenter has write or admin permissions to repo
@@ -573,6 +748,7 @@ ${contextPackage.promptPayload}
           owner,
           repo: repoName,
           pullNumber,
+          currentHeadSha: prResponse.data.head.sha,
         });
 
         if (!prevReview || prevReview.openIssues.length === 0) {
@@ -586,7 +762,8 @@ ${contextPackage.promptPayload}
         }
 
         const hasNegativeMerge = /\b(?:do not|don't|no|never)\s+merge\b/i.test(body);
-        const hasExplicitMergeCommand = /\b(?:and\s+merge|auto-?merge)\b/i.test(body);
+        const hasExplicitMergeCommand =
+          Boolean(remediateMatch?.[2]) || /\b(?:and\s+merge|auto-?merge)\b/i.test(body);
         const autoMerge = hasExplicitMergeCommand && !hasNegativeMerge;
         const result = await executeRemediation({
           octokit: context.octokit,
@@ -619,7 +796,72 @@ ${contextPackage.promptPayload}
         return;
       }
 
-      const isReviewCommand =
+      if (COMMIT_REPRO_COMMAND_RE.test(body)) {
+        let hasWrite = false;
+        try {
+          const { data: perm } = await context.octokit.repos.getCollaboratorPermissionLevel({
+            owner,
+            repo: repoName,
+            username: user.login,
+          });
+          hasWrite = perm.permission === "admin" || perm.permission === "write";
+        } catch (permErr) {
+          app.log.warn({ permErr, user: user.login }, "Failed to verify collaborator permissions for commit-repro; failing closed");
+        }
+
+        if (!hasWrite) {
+          await context.octokit.issues.createComment({
+            owner,
+            repo: repoName,
+            issue_number: pullNumber,
+            body: `⛔ **Access Denied:** Only repository collaborators with write or admin permissions can commit reproduction tests.`,
+          });
+          return;
+        }
+
+        const prResponse = await context.octokit.pulls.get({
+          owner,
+          repo: repoName,
+          pull_number: pullNumber,
+        });
+        const pr = prResponse.data;
+
+        let summaryText = "";
+        try {
+          const checks = await context.octokit.checks.listForRef({
+            owner,
+            repo: repoName,
+            ref: pr.head.sha,
+            check_name: "hq-jr AI Sandbox Verification",
+            per_page: 10,
+          });
+          const latest = (checks.data.check_runs || [])[0];
+          summaryText = latest?.output?.summary || "";
+        } catch (checkErr) {
+          app.log.warn({ checkErr }, "Could not list sandbox check runs for commit-repro");
+        }
+
+        const result = await commitReproTestFromSummary({
+          octokit: context.octokit,
+          owner,
+          repoName,
+          pullNumber,
+          sender: user.login,
+          summaryText,
+          headSha: pr.head.sha,
+          targetBranch: pr.head.ref,
+        });
+
+        await context.octokit.issues.createComment({
+          owner,
+          repo: repoName,
+          issue_number: pullNumber,
+          body: result.message,
+        });
+        return;
+      }
+
+            const isReviewCommand =
         lower.includes("review") ||
         lower.includes("audit") ||
         lower.includes("scan") ||
@@ -842,7 +1084,7 @@ ${contextPackage.promptPayload}
     });
   });
 
-  // Handle Check Run action buttons (e.g. Commit Repro Test)
+  // Handle Check Run action buttons (e.g. Commit Repro Test / Re-run Sandbox)
   app.on("check_run.requested_action", async (context) => {
     const { check_run: checkRun, requested_action: requestedAction } = context.payload;
     const identifier = requestedAction.identifier;
@@ -850,117 +1092,132 @@ ${contextPackage.promptPayload}
     const repoName = context.payload.repository.name;
     const sender = context.payload.sender.login;
 
+    const pullRequests = checkRun.pull_requests;
+    if (!pullRequests || pullRequests.length === 0) {
+      app.log.warn({ checkRunId: checkRun.id }, "No pull request attached to check run action");
+      return;
+    }
+    const pullNumber = pullRequests[0].number;
+
+    let hasWrite = false;
+    try {
+      const { data: perm } = await context.octokit.repos.getCollaboratorPermissionLevel({
+        owner,
+        repo: repoName,
+        username: sender,
+      });
+      hasWrite = perm.permission === "admin" || perm.permission === "write";
+    } catch (permErr: unknown) {
+      app.log.warn({ permErr, sender }, "Failed to verify collaborator permissions for check action; failing closed");
+    }
+
+    if (!hasWrite) {
+      await context.octokit.issues.createComment({
+        owner,
+        repo: repoName,
+        issue_number: pullNumber,
+        body: `⛔ **Access Denied:** Only repository collaborators with write or admin permissions can trigger sandbox check actions.`,
+      });
+      return;
+    }
+
     if (identifier === "commit_repro_test") {
-      let hasWrite = false;
-      try {
-        const { data: perm } = await context.octokit.repos.getCollaboratorPermissionLevel({
-          owner,
-          repo: repoName,
-          username: sender,
-        });
-        hasWrite = perm.permission === "admin" || perm.permission === "write";
-      } catch (permErr: unknown) {
-        app.log.warn({ permErr, sender }, "Failed to verify collaborator permissions for check action; failing closed");
-      }
-
-      const pullRequests = checkRun.pull_requests;
-      if (!pullRequests || pullRequests.length === 0) {
-        app.log.warn({ checkRunId: checkRun.id }, "No pull request attached to check run action");
-        return;
-      }
-      const pullNumber = pullRequests[0].number;
-
-      if (!hasWrite) {
-        await context.octokit.issues.createComment({
-          owner,
-          repo: repoName,
-          issue_number: pullNumber,
-          body: `⛔ **Access Denied:** Only repository collaborators with write or admin permissions can commit reproduction tests.`,
-        });
-        return;
-      }
-
       const prResponse = await context.octokit.pulls.get({
         owner,
         repo: repoName,
         pull_number: pullNumber,
       });
       const pr = prResponse.data;
-      const targetBranch = pr.head.ref;
-
       const outputText = checkRun.output?.summary || "";
-      const testCodeMatch = outputText.match(/```(?:rust|typescript|javascript|python)?\s*([\s\S]*?)```/);
-      const testCode = testCodeMatch ? testCodeMatch[1].trim() : null;
 
-      if (!testCode) {
-        await context.octokit.issues.createComment({
-          owner,
-          repo: repoName,
-          issue_number: pullNumber,
-          body: `⚠️ **hq-jr** could not extract a synthesized reproduction test from this check run output.`,
-        });
-        return;
-      }
-
-      const isRust = outputText.includes("cargo") || outputText.includes(".rs");
-      const isPython = outputText.includes("pytest") || outputText.includes(".py");
-      const testFileName = isRust
-        ? `tests/repro_issue_${pullNumber}.rs`
-        : isPython
-          ? `tests/test_repro_issue_${pullNumber}.py`
-          : `tests/repro_issue_${pullNumber}.test.ts`;
-
-      const { data: blob } = await context.octokit.git.createBlob({
+      const result = await commitReproTestFromSummary({
+        octokit: context.octokit,
         owner,
-        repo: repoName,
-        content: Buffer.from(testCode).toString("base64"),
-        encoding: "base64",
-      });
-
-      const { data: baseCommit } = await context.octokit.git.getCommit({
-        owner,
-        repo: repoName,
-        commit_sha: pr.head.sha,
-      });
-
-      const { data: newTree } = await context.octokit.git.createTree({
-        owner,
-        repo: repoName,
-        base_tree: baseCommit.tree.sha,
-        tree: [
-          {
-            path: testFileName,
-            mode: "100644",
-            type: "blob",
-            sha: blob.sha,
-          },
-        ],
-      });
-
-      const { data: newCommit } = await context.octokit.git.createCommit({
-        owner,
-        repo: repoName,
-        message: `test: add synthesized adversarial reproduction test for PR #${pullNumber} [skip ci]`,
-        tree: newTree.sha,
-        parents: [pr.head.sha],
-      });
-
-      addRemediationCommit(newCommit.sha);
-
-      await context.octokit.git.updateRef({
-        owner,
-        repo: repoName,
-        ref: `heads/${targetBranch}`,
-        sha: newCommit.sha,
+        repoName,
+        pullNumber,
+        sender,
+        summaryText: outputText,
+        headSha: pr.head.sha,
+        targetBranch: pr.head.ref,
       });
 
       await context.octokit.issues.createComment({
         owner,
         repo: repoName,
         issue_number: pullNumber,
-        body: `✅ **Reproduction Test Committed:** \`${testFileName}\` has been committed directly to branch \`${targetBranch}\` (Commit: \`${newCommit.sha.slice(0, 7)}\`) by @${sender}.`,
+        body: result.message,
+      });
+      return;
+    }
+
+    if (identifier === "rerun_sandbox") {
+      const prResponse = await context.octokit.pulls.get({
+        owner,
+        repo: repoName,
+        pull_number: pullNumber,
+      });
+      const pr = prResponse.data;
+
+      let probes: SandboxProbeRequest[] | undefined;
+      let verificationGoal =
+        "Re-run autonomous sandbox verification with a fresh container";
+      let testCommand: string | undefined;
+      let branch = pr.head.ref || "main";
+
+      try {
+        const job = getSandboxJobByCheckRun({
+          owner,
+          repo: repoName,
+          checkRunId: checkRun.id,
+        });
+        if (job) {
+          if (job.probesJson) {
+            try {
+              probes = JSON.parse(job.probesJson) as SandboxProbeRequest[];
+            } catch {
+              // ignore bad json
+            }
+          }
+          if (job.verificationGoal) verificationGoal = job.verificationGoal;
+          if (job.testCommand) testCommand = job.testCommand;
+          if (job.branch) branch = job.branch;
+        }
+      } catch (jobErr) {
+        app.log.warn({ jobErr }, "Could not load prior sandbox job for rerun");
+      }
+
+      // Best-effort recovery of objective/test command from prior check summary
+      // (probe matrix rows are not reconstructed here; probes come from sandbox_jobs).
+      if ((!probes || probes.length === 0) && checkRun.output?.summary) {
+        const summary = checkRun.output.summary as string;
+        const goalMatch = summary.match(/\*\*Objective:\*\*\s*(.+)/);
+        if (goalMatch) verificationGoal = goalMatch[1].trim();
+        const cmdMatch = summary.match(/\*\*Baseline Command:\*\*\s*`([^`]+)`/);
+        if (cmdMatch) testCommand = cmdMatch[1];
+      }
+
+      await context.octokit.issues.createComment({
+        owner,
+        repo: repoName,
+        issue_number: pullNumber,
+        body: `🔄 **hq-jr** re-dispatching Tier 3 sandbox verification for PR #${pullNumber} (requested by @${sender}).`,
+      });
+
+      const authToken = await resolveInstallationToken(context.octokit);
+      executeSandboxCheckRun({
+        octokit: context.octokit,
+        owner,
+        repo: repoName,
+        pullNumber,
+        headSha: pr.head.sha,
+        branch,
+        verificationGoal,
+        testCommand,
+        probes,
+        authToken,
+      }).catch((sandboxErr: unknown) => {
+        app.log.warn({ sandboxErr, pullNumber }, "Rerun sandbox verification failed");
       });
     }
   });
 };
-

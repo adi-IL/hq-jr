@@ -123,12 +123,12 @@ During development and testing on the host machine:
 
 ## Observability and Traceability
 
-Every incoming webhook includes a unique GitHub delivery ID (`X-GitHub-Delivery`).
-- `hq-jr` tags every log entry with this delivery ID.
-- Vertex AI generation requests record latency, token consumption, and response IDs.
-- If a review failure occurs, the maintainer can trace the GitHub webhook delivery directly to the Vertex AI trace ID.
+Every incoming webhook includes a unique GitHub delivery ID (`X-GitHub-Delivery`). Probot logs the delivery context; this app does not currently stamp a custom delivery-id field on every log line or map webhook deliveries to Vertex trace IDs.
+- Prefer Cloud Logging / Probot request logs plus Check Run failure summaries when debugging.
+- `checkAiHealth` records latency for a simple Vertex ping (cached ~60s).
 
 ## Rate Limiting and Resilience
 
 - **GitHub API Limits.** Probot includes `@octokit/plugin-throttling` by default. When hitting secondary rate limits, requests automatically back off and retry.
-- **Vertex AI Quota Limits.** When hitting 429 resource exhaustion on Vertex AI, the client applies exponential backoff with jitter up to 5 attempts before flagging the Check Run as incomplete.
+- **Vertex AI Quota Limits.** `withRetry` in `ai.ts` retries on 429 / RESOURCE_EXHAUSTED up to **3** times with exponential backoff (initial 2500ms, doubling each attempt).
+- **SQLite on Cloud Run.** Ephemeral container filesystems lose `HQ_JR_DB_PATH` data across revisions unless you mount a persistent volume (or accept in-memory / per-instance memory). Review findings, active run locks, and remediation commit markers need durable storage for multi-instance or scale-to-zero topologies.

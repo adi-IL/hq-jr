@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { TriageResultSchema, DeepReviewResultSchema } from "../schemas/review.js";
-import { checkAiHealth, runTriage } from "./ai.js";
+import { checkAiHealth, runTriage, pollSandboxInteraction, extractSandboxVerdict, ai } from "./ai.js";
 
 describe("Review Schemas", () => {
   it("validates a well-formed triage payload", () => {
@@ -83,4 +83,89 @@ index 0000000..1234567
     expect(triage.files.length).toBeGreaterThan(0);
     expect(triage.files[0].path).toContain("sanitize.ts");
   }, 60000);
+});
+
+describe("pollSandboxInteraction status mapping", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns incomplete when interactions.get throws", async () => {
+    vi.spyOn(ai.interactions, "get").mockRejectedValueOnce(new Error("network down"));
+    const result = await pollSandboxInteraction("ix-1", {
+      maxWaitMs: 50,
+      initialDelayMs: 1,
+      maxDelayMs: 1,
+      sleep: async () => {},
+    });
+    expect(result.status).toBe("incomplete");
+    expect(result.errorMessage).toContain("interactions.get failed");
+  });
+
+  it("preserves incomplete terminal status (not collapsed to failed)", async () => {
+    vi.spyOn(ai.interactions, "get").mockResolvedValueOnce({
+      status: "incomplete",
+      output_text: "",
+      errors: [{ message: "agent incomplete" }],
+    } as never);
+    const result = await pollSandboxInteraction("ix-2", {
+      maxWaitMs: 50,
+      initialDelayMs: 1,
+      maxDelayMs: 1,
+      sleep: async () => {},
+    });
+    expect(result.status).toBe("incomplete");
+  });
+
+  it("maps budget_exceeded to failed and cancelled to cancelled", async () => {
+    vi.spyOn(ai.interactions, "get").mockResolvedValueOnce({
+      status: "budget_exceeded",
+      output_text: "",
+    } as never);
+    const failed = await pollSandboxInteraction("ix-3", {
+      maxWaitMs: 50,
+      initialDelayMs: 1,
+      maxDelayMs: 1,
+      sleep: async () => {},
+    });
+    expect(failed.status).toBe("failed");
+
+    vi.spyOn(ai.interactions, "get").mockResolvedValueOnce({
+      status: "cancelled",
+      output_text: "",
+    } as never);
+    const cancelled = await pollSandboxInteraction("ix-4", {
+      maxWaitMs: 50,
+      initialDelayMs: 1,
+      maxDelayMs: 1,
+      sleep: async () => {},
+    });
+    expect(cancelled.status).toBe("cancelled");
+  });
+});
+
+describe("extractSandboxVerdict multi-fence", () => {
+  it("skips non-verdict fences then parses a later verdict fence", () => {
+    const text =
+      "```json\n{\"meta\":true}\n```\n```json\n{\"reproduced\":true,\"patchCured\":false}\n```";
+    const v = extractSandboxVerdict(text);
+    expect(v?.reproduced).toBe(true);
+    expect(v?.patchCured).toBe(false);
+  });
+});
+
+describe("extractSandboxVerdict balanced braces", () => {
+  it("keeps full synthesizedTestCode when un-fenced JSON has braces in the string", () => {
+    const code = "function f(){ return { ok: true }; }\nexpect(f().ok).toBe(true);";
+    const verdict = {
+      reproduced: true,
+      patchCured: false,
+      synthesizedTestCode: code,
+      summary: "reproduced with nested braces in code",
+    };
+    const text = `agent finished\n${JSON.stringify(verdict)}\nbye`;
+    const v = extractSandboxVerdict(text);
+    expect(v?.reproduced).toBe(true);
+    expect(v?.synthesizedTestCode).toBe(code);
+  });
 });

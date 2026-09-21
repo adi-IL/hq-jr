@@ -325,9 +325,14 @@ index 123..456 100644
       data: { permission: "admin" },
     });
 
-    octokitMock.pulls.get.mockResolvedValueOnce({
+    // Handler + commitReproTestFromSummary each call pulls.get (fork check needs head.repo).
+    octokitMock.pulls.get.mockResolvedValue({
       data: {
-        head: { sha: "head-sha-111", ref: "fix/player-audio" },
+        head: {
+          sha: "head-sha-111",
+          ref: "fix/player-audio",
+          repo: { full_name: "test-owner/test-repo" },
+        },
       },
     });
 
@@ -343,7 +348,8 @@ index 123..456 100644
           id: 555,
           pull_requests: [{ number: 15 }],
           output: {
-            summary: "## Adversarial Repro\n```rust\n#[test]\nfn test_audio_desync() { assert!(true); }\n```",
+            summary:
+              "## Adversarial Repro\n### Synthesized Reproduction Test (tests/repro_audio.rs)\n\n```rust\n#[test]\nfn test_audio_desync() { assert!(true); }\n```",
           },
         },
         repository: {
@@ -355,6 +361,11 @@ index 123..456 100644
     });
 
     expect(octokitMock.git.createBlob).toHaveBeenCalled();
+    expect(octokitMock.git.createTree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tree: [expect.objectContaining({ path: "tests/repro_audio.rs" })],
+      })
+    );
     expect(octokitMock.git.createCommit).toHaveBeenCalledWith(
       expect.objectContaining({
         message: expect.stringContaining("add synthesized adversarial reproduction test"),
@@ -368,6 +379,50 @@ index 123..456 100644
     expect(octokitMock.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.stringContaining("Reproduction Test Committed"),
+      })
+    );
+  });
+
+  it("refuses commit-repro on fork PR heads", async () => {
+    octokitMock.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: "admin" },
+    });
+    octokitMock.pulls.get.mockResolvedValue({
+      data: {
+        head: {
+          sha: "head-sha-fork",
+          ref: "fork-branch",
+          repo: { full_name: "other-user/test-repo" },
+        },
+      },
+    });
+
+    const handler = handlers.get("check_run.requested_action");
+    await handler!({
+      octokit: octokitMock,
+      payload: {
+        action: "requested_action",
+        requested_action: { identifier: "commit_repro_test" },
+        check_run: {
+          id: 556,
+          pull_requests: [{ number: 16 }],
+          output: {
+            summary:
+              "### Synthesized Reproduction Test\n\n```typescript\nexpect(true).toBe(true);\n```",
+          },
+        },
+        repository: {
+          name: "test-repo",
+          owner: { login: "test-owner" },
+        },
+        sender: { login: "lead-dev" },
+      },
+    });
+
+    expect(octokitMock.git.updateRef).not.toHaveBeenCalled();
+    expect(octokitMock.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining("fork PR"),
       })
     );
   });

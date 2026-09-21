@@ -8,6 +8,11 @@ import {
   isRunActive,
   setCachedSymbol,
   getCachedSymbol,
+  saveReviewFindings,
+  getReviewFindingsForPull,
+  upsertSandboxJob,
+  getSandboxJobByCheckRun,
+  updateSandboxJobStatus,
 } from "./db.js";
 import type Database from "better-sqlite3";
 
@@ -139,5 +144,133 @@ describe("Persistent SQLite Store (db.ts)", () => {
       );
       expect(cached).toBeNull();
     });
+  });
+});
+
+
+describe("Review Findings Memory", () => {
+  let db: import("better-sqlite3").Database;
+
+  beforeEach(() => {
+    db = getDatabase(":memory:");
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("saves and loads findings for a pull request across shas", () => {
+    saveReviewFindings(
+      [
+        {
+          owner: "o",
+          repo: "r",
+          pullNumber: 3,
+          headSha: "sha-a",
+          path: "src/a.ts",
+          line: 10,
+          side: "RIGHT",
+          severity: "CRITICAL",
+          title: "Bug A",
+          body: "body-a",
+        },
+        {
+          owner: "o",
+          repo: "r",
+          pullNumber: 3,
+          headSha: "sha-b",
+          path: "src/b.ts",
+          line: 20,
+          side: "RIGHT",
+          severity: "WARNING",
+          title: "Bug B",
+          body: "body-b",
+        },
+      ],
+      db
+    );
+
+    const prior = getReviewFindingsForPull(
+      { owner: "o", repo: "r", pullNumber: 3, excludeHeadSha: "sha-b" },
+      db
+    );
+    expect(prior).toHaveLength(1);
+    expect(prior[0].path).toBe("src/a.ts");
+    expect(prior[0].title).toBe("Bug A");
+    expect(prior[0].line).toBe(10);
+    expect(prior[0].side).toBe("RIGHT");
+    expect(prior[0].severity).toBe("CRITICAL");
+
+    const all = getReviewFindingsForPull({ owner: "o", repo: "r", pullNumber: 3 }, db);
+    expect(all).toHaveLength(2);
+  });
+
+  it("scrubs secrets at rest before INSERT", () => {
+    const rawToken = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+    const redactionMarker = "[REDACTED_SECRET]";
+    saveReviewFindings(
+      [
+        {
+          owner: "o",
+          repo: "r",
+          pullNumber: 4,
+          headSha: "sha-sec",
+          path: "src/secret.ts",
+          line: 1,
+          side: "RIGHT",
+          severity: "CRITICAL",
+          title: `token ${rawToken}`,
+          body: `Found ${rawToken} in logs`,
+        },
+      ],
+      db
+    );
+
+    const raw = db
+      .prepare("SELECT title, body FROM review_findings WHERE pull_number = 4")
+      .get() as { title: string; body: string };
+    expect(raw.title).toContain(redactionMarker);
+    expect(raw.title).not.toContain(rawToken);
+    expect(raw.body).toContain(redactionMarker);
+    expect(raw.body).not.toContain(rawToken);
+  });
+});
+
+describe("Sandbox Jobs", () => {
+  let db: import("better-sqlite3").Database;
+
+  beforeEach(() => {
+    db = getDatabase(":memory:");
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("upserts and retrieves sandbox jobs by check run id", () => {
+    upsertSandboxJob(
+      {
+        interactionId: "ix-1",
+        checkRunId: 42,
+        owner: "o",
+        repo: "r",
+        pullNumber: 9,
+        headSha: "abc",
+        branch: "main",
+        verificationGoal: "repro",
+        probesJson: "[]",
+        testCommand: "npm test",
+        status: "running",
+      },
+      db
+    );
+
+    const job = getSandboxJobByCheckRun({ owner: "o", repo: "r", checkRunId: 42 }, db);
+    expect(job?.interactionId).toBe("ix-1");
+    expect(job?.testCommand).toBe("npm test");
+
+    updateSandboxJobStatus("ix-1", "success", db);
+    const updated = getSandboxJobByCheckRun({ owner: "o", repo: "r", checkRunId: 42 }, db);
+    expect(updated?.status).toBe("success");
   });
 });

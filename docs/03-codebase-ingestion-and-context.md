@@ -4,14 +4,14 @@
 
 `hq-jr` is architected around two operational tiers:
 
-1. **Active Production Pipeline (Implemented):** High-speed, stateless incremental PR diff ingestion. Parses GitHub unified diffs directly via Octokit, applies heuristic noise rejection, redacts secrets, calculates line anchors, tracks prior audit history via `review-memory.ts`, and packages context for multi-tier Gemini evaluation.
+1. **Active Production Pipeline (Implemented):** High-speed incremental PR diff ingestion. Parses GitHub unified diffs directly via Octokit, applies heuristic noise rejection, redacts secrets, calculates line anchors, tracks prior audit history via SQLite `review_findings` plus GitHub hq-jr reviews (`review-memory.ts`), and packages context for multi-tier Gemini evaluation.
 2. **Phase 5 Advanced Roadmap (Planned):** Full-repository tarball streaming, local Tree-Sitter AST symbol indexing, dependency blast radius mapping, and persistent SQLite caching.
 
 ---
 
 ## Active Production Ingestion: Unified Diff & Context Packaging
 
-For all live GitHub PR reviews, `hq-jr` operates entirely in memory using GitHub installation tokens:
+For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API access and SQLite for durable review memory / run locks:
 
 ```
 +-------------------------------------------------------------+
@@ -44,8 +44,8 @@ For all live GitHub PR reviews, `hq-jr` operates entirely in memory using GitHub
                                v
 +-------------------------------------------------------------+
 | Multi-Turn Review Memory (src/services/review-memory.ts)    |
-| - Paginate prior bot reviews on the PR                      |
-| - Verify whether new commits resolve previously open issues |
+| - SQLite review_findings + GitHub hq-jr reviews merge       |
+| - active_runs locks; verify prior issues resolved on push   |
 +------------------------------+------------------------------+
                                |
                                v
