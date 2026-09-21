@@ -35,7 +35,7 @@ Both local development environments and production servers use Application Defau
 |  |                        |  | preview            |  | preview-      |  |
 |  | - Fast file triage     |  |                    |  | 05-2026       |  |
 |  | - AST diff mapping     |  | - Deep logic trace |  |               |  |
-|  | - Noise filtering      |  | - Security audit   |  | - Sandbox VM  |  |
+|  | - Noise filtering      |  | - Security audit  |  | - Sandbox VM  |  |
 |  | - Strict JSON schema   |  | - Concurrency bugs |  | - Runs tests  |  |
 |  | - Synchronous          |  | - Strict patch JSON|  | - Asynchronous|  |
 |  +------------------------+  +--------------------+  +---------------+  |
@@ -76,7 +76,7 @@ The system splits operational responsibilities according to capabilities: direct
 
 ### Tier 3: Antigravity Managed Agent (`antigravity-preview-05-2026`)
 
-- **Role.** Asynchronous test validation, build verification, and remediation synthesis.
+- **Role.** Asynchronous test validation and adversarial reproduction (not remediation synthesis; remediation uses Flash via `synthesizeFileFix`).
 - **Latency.** 30 to 300 seconds (autonomous multi-turn loop).
 - **Execution Mode.** Asynchronous background execution (`background: true`) in a remote Linux sandbox container.
 - **Output.** Markdown execution report and verified patch artifacts.
@@ -94,7 +94,7 @@ The system splits operational responsibilities according to capabilities: direct
   - Support 1-click maintainer test adoption via the `Commit Repro Test` action button (`check_run.requested_action`).
 
 > [!NOTE]
-> In production, Tier 1 and Tier 2 execute synchronously on incoming pull request webhooks to deliver reviews within seconds. When Tier 2 detects critical boundary defects or concurrency hazards, it populates `sandboxProbes` and triggers the asynchronous Tier 3 Check Run via `src/services/sandbox-runner.ts`. Tier 3 can also be tested on demand via CLI: `hq-jr sandbox-test --repo <url> --branch <name> --cmd <test_cmd>`.
+> In production, Tier 1 and Tier 2 execute synchronously on incoming pull request webhooks to deliver reviews within seconds. When Tier 2 detects critical boundary defects or concurrency hazards, it populates `sandboxProbes` and triggers the asynchronous Tier 3 Check Run via `src/services/sandbox-runner.ts`. After dispatch the check stays `in_progress` while `pollSandboxInteraction` polls `ai.interactions.get` (backoff, capped ~3 minutes). Conclusion mapping: `failure` if reproduced and not cured; `success` if not reproduced or patch cured; `neutral` on timeout/unavailable. Tier 3 can also be tested on demand via CLI: `hq-jr sandbox-test --repo <url> --branch <name> --cmd <test_cmd>`.
 
 ## Pipeline Flow
 
@@ -131,7 +131,7 @@ GitHub Webhook Event (pull_request.opened / synchronize)
 
 ## Structured Output Schema (Tier 1 & Tier 2)
 
-Direct models (Tier 1 and Tier 2) enforce strict JSON schema output via `response_format`:
+Direct models (Tier 1 and Tier 2) enforce strict JSON schema output via `generateContent` with `responseMimeType: "application/json"` and `responseSchema`:
 
 ```json
 {
@@ -160,36 +160,33 @@ Direct models (Tier 1 and Tier 2) enforce strict JSON schema output via `respons
 import { GoogleGenAI } from "@google/genai";
 
 const ai = new GoogleGenAI({
-  vertexAI: {
-    project: process.env.GOOGLE_CLOUD_PROJECT || "your-google-cloud-project-id",
-    location: process.env.GOOGLE_CLOUD_LOCATION || "global",
-  },
+  vertexai: true,
+  project: process.env.GOOGLE_CLOUD_PROJECT || "your-google-cloud-project-id",
+  location: process.env.GOOGLE_CLOUD_LOCATION || "global",
 });
 
-export async function runTriage(diffText: string, schema: Record<string, unknown>) {
-  const interaction = await ai.interactions.create({
+export async function runTriage(diffText: string) {
+  const res = await ai.models.generateContent({
     model: "gemini-3.8-flash",
-    input: `Triage this pull request diff for review prioritization:\n${diffText}`,
-    response_format: {
-      type: "text",
-      mime_type: "application/json",
-      schema,
+    contents: diffText,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: { /* triage schema */ },
     },
   });
-  return interaction.output_text;
+  return res.text;
 }
 
-export async function runDeepReview(contextPrompt: string, schema: Record<string, unknown>) {
-  const interaction = await ai.interactions.create({
-    model: "gemini-3.1-pro-preview",
-    input: contextPrompt,
-    response_format: {
-      type: "text",
-      mime_type: "application/json",
-      schema,
+export async function runDeepReview(contextPrompt: string) {
+  const res = await ai.models.generateContent({
+    model: "gemini-3.8-flash",
+    contents: contextPrompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: { /* deep review schema */ },
     },
   });
-  return interaction.output_text;
+  return res.text;
 }
 
 export async function dispatchSandboxVerification(params: {
