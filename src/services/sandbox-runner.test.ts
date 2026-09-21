@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   detectTestCommand,
   executeSandboxCheckRun,
@@ -6,6 +6,8 @@ import {
   mapVerdictToConclusion,
 } from "./sandbox-runner.js";
 import * as aiModule from "./ai.js";
+import { getDatabase } from "./db.js";
+import type Database from "better-sqlite3";
 
 describe("Tier 3 Sandbox Check Run Runner", () => {
   beforeEach(() => {
@@ -108,9 +110,34 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
         mapVerdictToConclusion({ status: "timed_out", verdict: null })
       ).toBe("neutral");
     });
+
+    it("returns failure when agent failed even if a verdict is present", () => {
+      expect(
+        mapVerdictToConclusion({
+          status: "failed",
+          verdict: { reproduced: false, baselinePassed: true, patchCured: true },
+        })
+      ).toBe("failure");
+    });
+
+    it("returns neutral on incomplete (infra / partial)", () => {
+      expect(
+        mapVerdictToConclusion({ status: "incomplete", verdict: null })
+      ).toBe("neutral");
+    });
   });
 
   describe("executeSandboxCheckRun", () => {
+    let memDb: Database.Database;
+
+    beforeEach(() => {
+      memDb = getDatabase(":memory:");
+    });
+
+    afterEach(() => {
+      memDb.close();
+    });
+
     it("keeps check in_progress after dispatch and concludes from poll verdict", async () => {
       vi.spyOn(aiModule, "dispatchSandboxVerification").mockResolvedValueOnce(
         "interaction-mock-12345"
@@ -152,6 +179,7 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
             testFilePath: "tests/repro.rs",
           },
         }),
+        dbInstance: memDb,
       });
 
       expect(result.status).toBe("completed");
@@ -201,6 +229,7 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
           conclusion: "success",
         })
       );
+      expect((finalUpdate as { actions?: unknown }).actions).toBeUndefined();
       expect(finalUpdate.output?.summary).toContain("interaction-mock-12345");
       expect(finalUpdate.output?.summary).toContain("#[test] fn repro()");
     });
@@ -227,6 +256,7 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
           status: "completed",
           verdict: { reproduced: true, patchCured: false, summary: "Still broken" },
         }),
+        dbInstance: memDb,
       });
 
       expect(result.conclusion).toBe("failure");
@@ -261,6 +291,7 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
           verdict: null,
           errorMessage: "timeout",
         }),
+        dbInstance: memDb,
       });
 
       expect(result.status).toBe("timed_out");
@@ -288,6 +319,7 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
         branch: "main",
         verificationGoal: "Stress test concurrency",
         modifiedFiles: ["package.json"],
+        dbInstance: memDb,
       });
 
       expect(result.status).toBe("failed");
@@ -311,6 +343,16 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
       const v = aiModule.extractSandboxVerdict(text);
       expect(v?.reproduced).toBe(true);
       expect(v?.patchCured).toBe(false);
+    });
+
+    it("iterates all fences and prefers a later verdict fence", () => {
+      const text =
+        "notes\n" +
+        "\`\`\`json\n{\"note\":\"not a verdict\"}\n\`\`\`\n" +
+        "\`\`\`json\n{\"reproduced\":false,\"baselinePassed\":true,\"summary\":\"ok\"}\n\`\`\`";
+      const v = aiModule.extractSandboxVerdict(text);
+      expect(v?.reproduced).toBe(false);
+      expect(v?.baselinePassed).toBe(true);
     });
   });
 });
