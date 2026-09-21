@@ -6,8 +6,8 @@ import { replyToDiscussion } from "./services/discussion.js";
 import { getPreviousReviewContext, getReviewCommentThread } from "./services/review-memory.js";
 import { executeRemediation } from "./services/remediation.js";
 import { scrubSecrets } from "./services/scrubber.js";
-import { addRemediationCommit, hasRemediationCommit, acquireRunLock, releaseRunLock, saveReviewFindings, getSandboxJobByCheckRun } from "./services/db.js";
-import { executeSandboxCheckRun } from "./services/sandbox-runner.js";
+import { addRemediationCommit, hasRemediationCommit, acquireRunLock, releaseRunLock, saveReviewFindings, getSandboxJobByCheckRun, resolveFindingsMissingFromCurrent, pruneResolvedFindings } from "./services/db.js";
+import { executeSandboxCheckRun, resumeStaleSandboxJobs } from "./services/sandbox-runner.js";
 import type { SandboxProbeRequest } from "./schemas/review.js";
 
 /** Remediation only on explicit @hq-jr fix|patch|remediate (optional and merge). */
@@ -29,6 +29,25 @@ export const COMMIT_REPRO_COMMAND_RE = /@hq-jr(?:\[bot\])?\s+commit-repro\b/i;
 
 
 export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any } = {}) => {
+  // Resume Tier 3 polls left in_progress after Cloud Run scale-to-zero / crash.
+  // Needs a durable HQ_JR_DB_PATH shared across instances.
+  const resumeOnce = () => {
+    resumeStaleSandboxJobs({
+      getOctokit: async (installationId) => {
+        try {
+          return (await app.auth(installationId)) as any;
+        } catch {
+          return null;
+        }
+      },
+      log: app.log,
+    }).catch((err: unknown) => {
+      app.log.warn({ err }, "Sandbox job recovery sweep failed");
+    });
+  };
+  setTimeout(resumeOnce, 5_000);
+  setInterval(resumeOnce, 60_000).unref?.();
+
   async function resolveInstallationToken(octokit: any): Promise<string | undefined> {
     try {
       if (typeof octokit.auth !== "function") return undefined;
@@ -194,6 +213,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
     owner: string;
     repoName: string;
     pullNumber: number;
+    installationId?: number;
     pr: {
       head: { sha: string; ref?: string };
       title: string;
@@ -204,7 +224,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
       merged_at?: string | null;
     };
   }) {
-    const { octokit, owner, repoName, pullNumber, pr } = params;
+    const { octokit, owner, repoName, pullNumber, pr, installationId } = params;
 
     // Do not review PRs that are already closed or merged
     if (pr.state === "closed" || pr.merged || pr.merged_at) {
@@ -472,6 +492,18 @@ ${contextPackage.promptPayload}
         }));
         if (findingRows.length > 0) {
           saveReviewFindings(findingRows);
+          try {
+            resolveFindingsMissingFromCurrent({
+              owner,
+              repo: repoName,
+              pullNumber,
+              currentHeadSha: pr.head.sha,
+              currentFindings: findingRows,
+            });
+            pruneResolvedFindings();
+          } catch (memErr: unknown) {
+            app.log.warn({ memErr, pullNumber }, "Finding resolution/prune failed");
+          }
         }
       } catch (persistErr) {
         app.log.warn({ persistErr, pullNumber }, "Failed to persist review findings to SQLite");
@@ -515,6 +547,7 @@ ${contextPackage.promptPayload}
           modifiedFiles: parsedDiff.files.map((f) => f.newPath || f.oldPath),
           probes: review.sandboxProbes,
           authToken,
+          installationId,
         }).catch((sandboxErr: unknown) => {
           app.log.warn({ sandboxErr, pullNumber }, "Async sandbox verification check run encountered error");
         });
@@ -586,6 +619,7 @@ ${contextPackage.promptPayload}
         owner: repo.owner.login,
         repoName: repo.name,
         pullNumber: pr.number,
+        installationId: context.payload.installation?.id,
         pr,
       });
     }
@@ -887,6 +921,7 @@ ${contextPackage.promptPayload}
           owner,
           repoName,
           pullNumber,
+          installationId: context.payload.installation?.id,
           pr: prResponse.data,
         });
         return;
@@ -1080,6 +1115,7 @@ ${contextPackage.promptPayload}
       owner,
       repoName,
       pullNumber: prRef.number,
+      installationId: context.payload.installation?.id,
       pr: prResponse.data,
     });
   });
@@ -1215,6 +1251,7 @@ ${contextPackage.promptPayload}
         testCommand,
         probes,
         authToken,
+        installationId: context.payload.installation?.id,
       }).catch((sandboxErr: unknown) => {
         app.log.warn({ sandboxErr, pullNumber }, "Rerun sandbox verification failed");
       });
