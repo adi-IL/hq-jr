@@ -1,7 +1,19 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { getPreviousReviewContext, getReviewCommentThread } from "./review-memory.js";
+import { getDatabase, saveReviewFindings } from "./db.js";
+import type Database from "better-sqlite3";
 
 describe("review-memory service", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = getDatabase(":memory:");
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
   it("extracts the latest hq-jr review and parses open issues", async () => {
     const mockOctokit = {
       pulls: {
@@ -16,7 +28,7 @@ describe("review-memory service", () => {
             },
             {
               id: 102,
-              user: { login: "hq-jr[bot]" },
+              user: { login: "hq-jr[bot]", type: "Bot" },
               state: "CHANGES_REQUESTED",
               body: "Found 2 bugs",
               commit_id: "sha-2",
@@ -49,6 +61,7 @@ describe("review-memory service", () => {
       owner: "owner",
       repo: "repo",
       pullNumber: 9,
+      dbInstance: db,
     });
 
     expect(result).not.toBeNull();
@@ -60,6 +73,34 @@ describe("review-memory service", () => {
     expect(result?.openIssues[0].line).toBe(42);
     expect(result?.openIssues[0].title).toBe("[BUG] Unhandled rejection");
     expect(result?.openIssues[1].title).toBe("[SECURITY] Missing token check");
+  });
+
+  it("ignores github-actions bot reviews", async () => {
+    const mockOctokit = {
+      pulls: {
+        listReviews: vi.fn().mockResolvedValue({
+          data: [
+            {
+              id: 101,
+              user: { login: "github-actions[bot]", type: "Bot" },
+              state: "COMMENTED",
+              body: "CI note",
+              commit_id: "sha-1",
+            },
+          ],
+        }),
+      },
+    };
+
+    const result = await getPreviousReviewContext({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      dbInstance: db,
+    });
+
+    expect(result).toBeNull();
   });
 
   it("returns null if no bot reviews exist", async () => {
@@ -84,9 +125,74 @@ describe("review-memory service", () => {
       owner: "owner",
       repo: "repo",
       pullNumber: 9,
+      dbInstance: db,
     });
 
     expect(result).toBeNull();
+  });
+
+  it("prefers SQLite prior findings and merges with GitHub, scrubbing secrets", async () => {
+    saveReviewFindings(
+      [
+        {
+          owner: "owner",
+          repo: "repo",
+          pullNumber: 9,
+          headSha: "sha-old",
+          path: "src/secret.ts",
+          line: 1,
+          side: "RIGHT",
+          severity: "CRITICAL",
+          title: "Leaked token",
+          body: "Found ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD in logs",
+        },
+      ],
+      db
+    );
+
+    const mockOctokit = {
+      pulls: {
+        listReviews: vi.fn().mockResolvedValue({
+          data: [
+            {
+              id: 102,
+              user: { login: "hq-jr[bot]", type: "Bot" },
+              state: "CHANGES_REQUESTED",
+              body: "Found bugs",
+              commit_id: "sha-new",
+            },
+          ],
+        }),
+        listCommentsForReview: vi.fn().mockResolvedValue({
+          data: [
+            {
+              id: 501,
+              path: "src/other.ts",
+              line: 5,
+              side: "RIGHT",
+              body: "### [BUG] Other issue\nDetails",
+            },
+          ],
+        }),
+      },
+    };
+
+    const result = await getPreviousReviewContext({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      currentHeadSha: "sha-new",
+      dbInstance: db,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.source).toBe("merged");
+    expect(result?.openIssues.length).toBeGreaterThanOrEqual(2);
+    const leaked = result!.openIssues.find((i) => i.path === "src/secret.ts");
+    expect(leaked).toBeDefined();
+    expect(leaked!.body).toContain("[REDACTED_SECRET]");
+    expect(leaked!.body).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
   });
 
   it("reconstructs multi-turn comment threads in chronological order", async () => {
