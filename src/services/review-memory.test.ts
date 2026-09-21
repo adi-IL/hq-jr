@@ -132,6 +132,8 @@ describe("review-memory service", () => {
   });
 
   it("prefers SQLite prior findings and merges with GitHub, scrubbing secrets", async () => {
+    const rawToken = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+    const redactionMarker = "[REDACTED_SECRET]";
     saveReviewFindings(
       [
         {
@@ -144,7 +146,7 @@ describe("review-memory service", () => {
           side: "RIGHT",
           severity: "CRITICAL",
           title: "Leaked token",
-          body: "Found ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD in logs",
+          body: `Found ${rawToken} in logs`,
         },
       ],
       db
@@ -192,15 +194,15 @@ describe("review-memory service", () => {
     expect(result?.openIssues.length).toBeGreaterThanOrEqual(2);
     const leaked = result!.openIssues.find((i) => i.path === "src/secret.ts");
     expect(leaked).toBeDefined();
-    expect(leaked!.body).toContain("[REDACTED_SECRET]");
-    expect(leaked!.body).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
+    expect(leaked!.body).toContain(redactionMarker);
+    expect(leaked!.body).not.toContain(rawToken);
 
     // Scrub-at-save: raw SQLite row must not retain the token either.
     const raw = db
       .prepare("SELECT body FROM review_findings WHERE path = ?")
       .get("src/secret.ts") as { body: string };
-    expect(raw.body).toContain("[REDACTED_SECRET]");
-    expect(raw.body).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
+    expect(raw.body).toContain(redactionMarker);
+    expect(raw.body).not.toContain(rawToken);
   });
 
   it("reconstructs multi-turn comment threads in chronological order", async () => {

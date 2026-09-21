@@ -206,6 +206,8 @@ describe("Review Findings Memory", () => {
   });
 
   it("scrubs secrets at rest before INSERT", () => {
+    const rawToken = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789ABCD";
+    const redactionMarker = "[REDACTED_SECRET]";
     saveReviewFindings(
       [
         {
@@ -217,8 +219,8 @@ describe("Review Findings Memory", () => {
           line: 1,
           side: "RIGHT",
           severity: "CRITICAL",
-          title: "token ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD",
-          body: "Found ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD in logs",
+          title: `token ${rawToken}`,
+          body: `Found ${rawToken} in logs`,
         },
       ],
       db
@@ -227,10 +229,10 @@ describe("Review Findings Memory", () => {
     const raw = db
       .prepare("SELECT title, body FROM review_findings WHERE pull_number = 4")
       .get() as { title: string; body: string };
-    expect(raw.title).toContain("[REDACTED_SECRET]");
-    expect(raw.title).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
-    expect(raw.body).toContain("[REDACTED_SECRET]");
-    expect(raw.body).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
+    expect(raw.title).toContain(redactionMarker);
+    expect(raw.title).not.toContain(rawToken);
+    expect(raw.body).toContain(redactionMarker);
+    expect(raw.body).not.toContain(rawToken);
   });
 });
 

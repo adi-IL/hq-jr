@@ -83,8 +83,16 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
     }
 
     let testFileName: string;
-    if (extractedPath && extractedPath.length > 0 && !extractedPath.includes("..")) {
-      testFileName = extractedPath.replace(/^\/+/, "");
+    const normalizedExtracted = extractedPath?.replace(/^\/+/, "") ?? "";
+    // Only honor agent-supplied paths under tests/ (never overwrite src/ or workflows).
+    const safeExtractedPath =
+      normalizedExtracted.length > 0 &&
+      !normalizedExtracted.includes("..") &&
+      (normalizedExtracted === "tests" || normalizedExtracted.startsWith("tests/"))
+        ? normalizedExtracted
+        : null;
+    if (safeExtractedPath) {
+      testFileName = safeExtractedPath;
     } else {
       const isRust = summaryText.includes("cargo") || summaryText.includes(".rs") || /\brust\b/i.test(summaryText);
       const isPython = summaryText.includes("pytest") || summaryText.includes(".py");

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { TriageResultSchema, DeepReviewResultSchema } from "../schemas/review.js";
 import { checkAiHealth, runTriage, pollSandboxInteraction, extractSandboxVerdict, ai } from "./ai.js";
 
@@ -86,6 +86,10 @@ index 0000000..1234567
 });
 
 describe("pollSandboxInteraction status mapping", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("returns incomplete when interactions.get throws", async () => {
     vi.spyOn(ai.interactions, "get").mockRejectedValueOnce(new Error("network down"));
     const result = await pollSandboxInteraction("ix-1", {
