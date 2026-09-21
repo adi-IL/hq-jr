@@ -188,6 +188,7 @@ describe("review-memory service", () => {
 
     expect(result).not.toBeNull();
     expect(result?.source).toBe("merged");
+    expect(result?.lastCommitSha).toBe("sha-new");
     expect(result?.openIssues.length).toBeGreaterThanOrEqual(2);
     const leaked = result!.openIssues.find((i) => i.path === "src/secret.ts");
     expect(leaked).toBeDefined();

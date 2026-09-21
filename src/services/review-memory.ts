@@ -167,7 +167,8 @@ export async function getPreviousReviewContext(params: {
   if (sqliteIssues.length > 0 && githubContext) {
     return {
       reviewId: githubContext.reviewId,
-      lastCommitSha: sqliteLastSha || githubContext.lastCommitSha,
+      // Prefer fresher GitHub review SHA; SQLite findings may be from older heads.
+      lastCommitSha: githubContext.lastCommitSha || sqliteLastSha,
       verdict: githubContext.verdict,
       summary: githubContext.summary,
       // Prefer fresher GitHub review comments; SQLite fills gaps from earlier SHAs.
