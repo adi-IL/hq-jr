@@ -94,7 +94,8 @@ The bot pairs with the host's existing `gh` CLI for administrative workflows, lo
 ## Concurrency, Idempotency, and Deadlock Prevention
 
 GitHub webhooks deliver at least once and can arrive out of order:
-- Each review run generates an idempotent key derived from `repository_id` and `commit_sha`.
-- In-flight runs are guarded inside a strict `try ... finally` block ensuring `activeRuns.delete(runKey)` always executes, preventing permanent commit locking even on GitHub API 403, 429, or network timeouts.
-- Known remediation commits synthesized by `hq-jr` are recorded in an in-memory `BoundedShaCache(500)` with FIFO eviction to prevent self-trigger feedback loops while capping memory growth.
+- Each review run uses a SQLite `active_runs` mutex keyed by `owner/repo#pullNumber` (`acquireRunLock` / `releaseRunLock` in `db.ts`), with TTL recovery for stale locks.
+- In-flight runs are guarded inside a strict `try ... finally` so the lock is always released, even on GitHub API 403, 429, or network timeouts.
+- Known remediation commits synthesized by `hq-jr` are recorded in the SQLite `remediation_commits` table (pruned to a recent window) to prevent self-trigger feedback loops across process restarts.
+- Prior review findings persist in SQLite `review_findings` for continuity across pushes; GitHub bot reviews remain a supplement.
 - If a newer commit arrives on the same PR branch, subsequent webhooks review the newest SHA.
