@@ -44,8 +44,8 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                v
 +-------------------------------------------------------------+
 | Multi-Turn Review Memory (src/services/review-memory.ts)    |
-| - Paginate prior bot reviews on the PR                      |
-| - Verify whether new commits resolve previously open issues |
+| - SQLite review_findings + GitHub hq-jr reviews merge       |
+| - active_runs locks; verify prior issues resolved on push   |
 +------------------------------+------------------------------+
                                |
                                v
