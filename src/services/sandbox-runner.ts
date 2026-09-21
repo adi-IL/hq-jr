@@ -204,12 +204,12 @@ export function mapVerdictToConclusion(
 const SANDBOX_ACTIONS = [
   {
     label: "Commit Repro Test",
-    description: "Commit synthesized reproduction test directly to PR branch",
+    description: "Commit repro test onto the PR branch",
     identifier: "commit_repro_test",
   },
   {
     label: "Re-run Sandbox",
-    description: "Re-run autonomous sandbox verification with fresh container",
+    description: "Re-run sandbox with a fresh container",
     identifier: "rerun_sandbox",
   },
 ];
