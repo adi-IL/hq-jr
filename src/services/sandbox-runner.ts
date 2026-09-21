@@ -1,5 +1,13 @@
-import { dispatchSandboxVerification } from "./ai.js";
+import {
+  dispatchSandboxVerification,
+  pollSandboxInteraction,
+  extractSandboxVerdict,
+  type PollSandboxOptions,
+  type PollSandboxResult,
+  type SandboxVerdict,
+} from "./ai.js";
 import { SandboxProbeRequest } from "../schemas/review.js";
+import { upsertSandboxJob, updateSandboxJobStatus } from "./db.js";
 
 export interface SandboxCheckRunParams {
   octokit: {
@@ -19,9 +27,10 @@ export interface SandboxCheckRunParams {
         repo: string;
         check_run_id: number;
         status: "in_progress" | "completed";
-        conclusion: "success" | "failure" | "neutral" | "skipped";
+        conclusion?: "success" | "failure" | "neutral" | "skipped";
         completed_at?: string;
         output: { title: string; summary: string };
+        actions?: Array<{ label: string; description: string; identifier: string }>;
       }) => Promise<unknown>;
     };
   };
@@ -35,13 +44,21 @@ export interface SandboxCheckRunParams {
   testCommand?: string;
   authToken?: string;
   probes?: SandboxProbeRequest[];
+  /** Injected for unit tests (short poll). */
+  pollOptions?: PollSandboxOptions;
+  /** Optional override of pollSandboxInteraction for tests. */
+  pollFn?: (interactionId: string, options?: PollSandboxOptions) => Promise<PollSandboxResult>;
+  /** Optional override of dispatchSandboxVerification for tests / manual scripts. */
+  dispatchFn?: (params: Parameters<typeof dispatchSandboxVerification>[0]) => Promise<string>;
 }
 
 export interface SandboxCheckRunResult {
   checkRunId?: number;
   interactionId?: string;
-  status: "dispatched" | "completed" | "failed";
+  status: "dispatched" | "completed" | "failed" | "timed_out";
+  conclusion?: "success" | "failure" | "neutral";
   summary: string;
+  verdict?: SandboxVerdict | null;
 }
 
 export function detectTestCommand(filePaths: string[]): string {
@@ -70,8 +87,21 @@ export function formatSandboxCheckRunSummary(params: {
   verificationGoal: string;
   interactionId: string;
   probes?: SandboxProbeRequest[];
+  phase?: "running" | "verdict";
+  verdict?: SandboxVerdict | null;
+  pollStatus?: string;
 }): string {
-  const { pullNumber, branch, testCommand, verificationGoal, interactionId, probes = [] } = params;
+  const {
+    pullNumber,
+    branch,
+    testCommand,
+    verificationGoal,
+    interactionId,
+    probes = [],
+    phase = "running",
+    verdict,
+    pollStatus,
+  } = params;
 
   let matrixTable = "";
   if (probes.length > 0) {
@@ -79,24 +109,106 @@ export function formatSandboxCheckRunSummary(params: {
       (p, idx) =>
         `| #${idx + 1} | \`${p.targetFile}${p.targetLine ? `:${p.targetLine}` : ""}\` | \`${p.archetype}\` | \`${p.expectedFailureKind}\` | ${p.failureHypothesis} |`
     );
-    matrixTable = `\n### 📊 Adversarial Test Execution Matrix\n\n` +
+    matrixTable =
+      `\n### 📊 Adversarial Test Execution Matrix\n\n` +
       `| # | Target Component | Archetype | Expected Mode | Hypothesis |\n` +
       `|:---:|---|:---:|:---:|---|\n` +
       rows.join("\n") +
       `\n`;
   }
 
-  return `## 🧪 Tier 3 Antigravity Sandbox Verification\n\n` +
-    `- **Status:** Dispatched to remote Linux container\n` +
+  const statusLine =
+    phase === "running"
+      ? `- **Status:** Running in remote Linux container (polling interaction)\n`
+      : `- **Status:** ${pollStatus || "completed"}\n`;
+
+  let verdictSection = "";
+  if (phase === "verdict" && verdict) {
+    verdictSection =
+      `\n### Verdict\n` +
+      `- **baselinePassed:** \`${String(verdict.baselinePassed)}\`\n` +
+      `- **reproduced:** \`${String(verdict.reproduced)}\`\n` +
+      `- **patchCured:** \`${String(verdict.patchCured)}\`\n` +
+      (verdict.summary ? `\n${verdict.summary}\n` : "");
+    if (verdict.synthesizedTestCode) {
+      const lang = guessFenceLang(verdict.testFilePath, testCommand);
+      const pathNote = verdict.testFilePath ? ` (${verdict.testFilePath})` : "";
+      verdictSection +=
+        `\n### Synthesized Reproduction Test${pathNote}\n\n` +
+        `\`\`\`${lang}\n${verdict.synthesizedTestCode}\n\`\`\`\n`;
+    }
+  }
+
+  return (
+    `## 🧪 Tier 3 Antigravity Sandbox Verification\n\n` +
+    statusLine +
     `- **Agent Harness:** \`antigravity-preview-05-2026\`\n` +
     `- **Interaction ID:** \`${interactionId}\`\n` +
     `- **Target Branch:** \`${branch}\` (PR #${pullNumber})\n` +
     `- **Baseline Command:** \`${testCommand}\`\n` +
     `- **Objective:** ${verificationGoal}\n` +
     matrixTable +
+    verdictSection +
     `\n### 🛠️ One-Click Test Adoption\n` +
-    `Maintainers can adopt the synthesized reproduction test directly into the PR by clicking **"Commit Repro Test"** in the Checks tab action header or typing \`@hq-jr commit-repro\` in PR comments.`;
+    `Maintainers can adopt the synthesized reproduction test directly into the PR by clicking **"Commit Repro Test"** in the Checks tab action header or typing \`@hq-jr commit-repro\` in PR comments.`
+  );
 }
+
+function guessFenceLang(testFilePath?: string, testCommand?: string): string {
+  if (testFilePath?.endsWith(".rs") || testCommand?.includes("cargo")) return "rust";
+  if (testFilePath?.endsWith(".py") || testCommand?.includes("pytest")) return "python";
+  if (testFilePath?.endsWith(".go") || testCommand?.includes("go test")) return "go";
+  return "typescript";
+}
+
+/**
+ * Map Antigravity poll result to a GitHub check conclusion.
+ *
+ * Design: success when the agent finished and either the defect was not
+ * reproduced (false positive / already fixed) or a suggested patch cured it.
+ * Failure when the agent hard-failed or the defect reproduced and remained uncured.
+ * Neutral on timeout / cancelled / unavailable.
+ */
+export function mapVerdictToConclusion(
+  poll: PollSandboxResult
+): "success" | "failure" | "neutral" {
+  if (poll.status === "timed_out" || poll.status === "cancelled" || poll.status === "incomplete") {
+    return "neutral";
+  }
+  if (poll.status === "failed" && !poll.verdict) {
+    return "failure";
+  }
+
+  const v = poll.verdict;
+  if (!v) {
+    // Completed without parseable verdict: treat as neutral (unavailable signal).
+    return poll.status === "completed" ? "neutral" : "failure";
+  }
+
+  if (v.reproduced === true && v.patchCured !== true) {
+    return "failure";
+  }
+
+  // not reproduced, or patch cured, or baseline-only ok without reproduction claim
+  if (v.reproduced === false || v.patchCured === true || v.baselinePassed === true) {
+    return "success";
+  }
+
+  return "neutral";
+}
+
+const SANDBOX_ACTIONS = [
+  {
+    label: "Commit Repro Test",
+    description: "Commit synthesized reproduction test directly to PR branch",
+    identifier: "commit_repro_test",
+  },
+  {
+    label: "Re-run Sandbox",
+    description: "Re-run autonomous sandbox verification with fresh container",
+    identifier: "rerun_sandbox",
+  },
+];
 
 export async function executeSandboxCheckRun(
   params: SandboxCheckRunParams
@@ -124,18 +236,7 @@ export async function executeSandboxCheckRun(
       head_sha: headSha,
       status: "in_progress",
       started_at: new Date().toISOString(),
-      actions: [
-        {
-          label: "Commit Repro Test",
-          description: "Commit synthesized reproduction test directly to PR branch",
-          identifier: "commit_repro_test",
-        },
-        {
-          label: "Re-run Sandbox",
-          description: "Re-run autonomous sandbox verification with fresh container",
-          identifier: "rerun_sandbox",
-        },
-      ],
+      actions: SANDBOX_ACTIONS,
       output: {
         title: "Dispatching Adversarial Sandbox Verification",
         summary: `Dispatching Tier 3 Antigravity autonomous reproduction agent for PR #${pullNumber}.\n\n- **Objective:** ${verificationGoal}\n- **Test Command:** \`${testCommand}\`\n- **Branch:** \`${branch}\`\n- **Probes:** ${params.probes?.length || 0} adversarial targets`,
@@ -156,7 +257,8 @@ export async function executeSandboxCheckRun(
       ? Buffer.from(`x-access-token:${authToken}`).toString("base64")
       : undefined;
 
-    const interactionId = await dispatchSandboxVerification({
+    const dispatch = params.dispatchFn ?? dispatchSandboxVerification;
+    const interactionId = await dispatch({
       repoUrl,
       branch,
       testCommand,
@@ -165,13 +267,71 @@ export async function executeSandboxCheckRun(
       probes: params.probes,
     });
 
-    const completionSummary = formatSandboxCheckRunSummary({
+    const runningSummary = formatSandboxCheckRunSummary({
       pullNumber,
       branch,
       testCommand,
       verificationGoal,
       interactionId,
       probes: params.probes,
+      phase: "running",
+    });
+
+    // Keep check in_progress after dispatch. Do not conclude success-on-dispatch.
+    await octokit.checks.update({
+      owner,
+      repo,
+      check_run_id: checkRunId,
+      status: "in_progress",
+      output: {
+        title: "Sandbox Verification Running",
+        summary: runningSummary,
+      },
+    });
+
+    try {
+      upsertSandboxJob({
+        interactionId,
+        checkRunId,
+        owner,
+        repo,
+        pullNumber,
+        headSha,
+        branch,
+        verificationGoal,
+        probesJson: params.probes ? JSON.stringify(params.probes) : null,
+        testCommand,
+        status: "running",
+      });
+    } catch {
+      // Persistence is best-effort; polling still proceeds.
+    }
+
+    const pollFn = params.pollFn ?? pollSandboxInteraction;
+    const pollResult = await pollFn(interactionId, params.pollOptions);
+
+    const verdict =
+      pollResult.verdict ??
+      extractSandboxVerdict(pollResult.outputText) ??
+      null;
+    const effectivePoll: PollSandboxResult = { ...pollResult, verdict };
+    const conclusion = mapVerdictToConclusion(effectivePoll);
+
+    const verdictSummary = formatSandboxCheckRunSummary({
+      pullNumber,
+      branch,
+      testCommand,
+      verificationGoal,
+      interactionId,
+      probes: params.probes,
+      phase: "verdict",
+      verdict,
+      pollStatus:
+        pollResult.status === "timed_out"
+          ? "Timed out waiting for agent"
+          : pollResult.errorMessage
+            ? `Agent status: ${pollResult.interactionStatus || pollResult.status} (${pollResult.errorMessage})`
+            : `Agent status: ${pollResult.interactionStatus || pollResult.status}`,
     });
 
     await octokit.checks.update({
@@ -179,19 +339,43 @@ export async function executeSandboxCheckRun(
       repo,
       check_run_id: checkRunId,
       status: "completed",
-      conclusion: "success",
+      conclusion,
       completed_at: new Date().toISOString(),
+      actions: SANDBOX_ACTIONS,
       output: {
-        title: "Sandbox Verification Dispatched",
-        summary: completionSummary,
+        title:
+          conclusion === "success"
+            ? "Sandbox Verification Passed"
+            : conclusion === "failure"
+              ? "Sandbox Verification Failed"
+              : "Sandbox Verification Inconclusive",
+        summary: verdictSummary,
       },
     });
+
+    try {
+      updateSandboxJobStatus(
+        interactionId,
+        pollResult.status === "completed" ? conclusion : pollResult.status
+      );
+    } catch {
+      // ignore
+    }
+
+    const resultStatus =
+      pollResult.status === "timed_out"
+        ? "timed_out"
+        : pollResult.status === "failed" || pollResult.status === "cancelled"
+          ? "failed"
+          : "completed";
 
     return {
       checkRunId,
       interactionId,
-      status: "dispatched",
-      summary: completionSummary,
+      status: resultStatus,
+      conclusion,
+      summary: verdictSummary,
+      verdict,
     };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
@@ -211,12 +395,15 @@ export async function executeSandboxCheckRun(
             summary: failureSummary,
           },
         });
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
 
     return {
       checkRunId,
       status: "failed",
+      conclusion: "neutral",
       summary: failureSummary,
     };
   }
