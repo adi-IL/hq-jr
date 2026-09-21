@@ -193,6 +193,13 @@ describe("review-memory service", () => {
     expect(leaked).toBeDefined();
     expect(leaked!.body).toContain("[REDACTED_SECRET]");
     expect(leaked!.body).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
+
+    // Scrub-at-save: raw SQLite row must not retain the token either.
+    const raw = db
+      .prepare("SELECT body FROM review_findings WHERE path = ?")
+      .get("src/secret.ts") as { body: string };
+    expect(raw.body).toContain("[REDACTED_SECRET]");
+    expect(raw.body).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
   });
 
   it("reconstructs multi-turn comment threads in chronological order", async () => {

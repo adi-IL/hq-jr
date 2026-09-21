@@ -197,9 +197,40 @@ describe("Review Findings Memory", () => {
     expect(prior).toHaveLength(1);
     expect(prior[0].path).toBe("src/a.ts");
     expect(prior[0].title).toBe("Bug A");
+    expect(prior[0].line).toBe(10);
+    expect(prior[0].side).toBe("RIGHT");
+    expect(prior[0].severity).toBe("CRITICAL");
 
     const all = getReviewFindingsForPull({ owner: "o", repo: "r", pullNumber: 3 }, db);
     expect(all).toHaveLength(2);
+  });
+
+  it("scrubs secrets at rest before INSERT", () => {
+    saveReviewFindings(
+      [
+        {
+          owner: "o",
+          repo: "r",
+          pullNumber: 4,
+          headSha: "sha-sec",
+          path: "src/secret.ts",
+          line: 1,
+          side: "RIGHT",
+          severity: "CRITICAL",
+          title: "token ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD",
+          body: "Found ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD in logs",
+        },
+      ],
+      db
+    );
+
+    const raw = db
+      .prepare("SELECT title, body FROM review_findings WHERE pull_number = 4")
+      .get() as { title: string; body: string };
+    expect(raw.title).toContain("[REDACTED_SECRET]");
+    expect(raw.title).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
+    expect(raw.body).toContain("[REDACTED_SECRET]");
+    expect(raw.body).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD");
   });
 });
 
