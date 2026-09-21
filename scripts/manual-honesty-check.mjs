@@ -3,6 +3,7 @@
  * Verifies SQLite findings save/load and sandbox poll→conclusion mapping.
  */
 import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const dbMod = await import("../dist/services/db.js");
 const sandboxMod = await import("../dist/services/sandbox-runner.js");
@@ -124,6 +125,7 @@ const result = await sandboxMod.executeSandboxCheckRun({
       testFilePath: "tests/repro.test.ts",
     },
   }),
+  dbInstance: db,
 });
 
 log(`result status=${result.status} conclusion=${result.conclusion}`);
@@ -142,4 +144,5 @@ log("poll path OK: not success-on-dispatch; conclusion from poll");
 db.close();
 log("\n=== DONE ok ===");
 
-writeFileSync("/workspace/hq-jr/manual-test-output.txt", out.join("\n") + "\n");
+const outPath = fileURLToPath(new URL("../manual-test-output.txt", import.meta.url));
+writeFileSync(outPath, out.join("\n") + "\n");

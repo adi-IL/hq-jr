@@ -93,5 +93,5 @@ For automated code remediation commands (`@hq-jr fix`, `@hq-jr patch`, `@hq-jr f
 - The bot only replies if `hq-jr` was already a participant in that specific thread. Human-to-human peer reviews are completely ignored.
 
 ### 5. Memory Management and Denial-of-Service Defense
-- In-flight check runs are tracked via a `Set<string>` guarded strictly inside `try ... finally` blocks to prevent deadlock upon API failures.
+- In-flight reviews are gated via SQLite `active_runs` (`acquireRunLock` / `releaseRunLock`) inside `try ... finally` so concurrent webhooks for the same PR/SHA do not double-run.
 - Historical remediation commit hashes are stored in SQLite `remediation_commits` (pruned retention) so they survive process restarts and stay bounded.
