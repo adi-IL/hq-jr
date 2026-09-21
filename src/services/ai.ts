@@ -376,6 +376,49 @@ export interface PollSandboxResult {
 const TERMINAL_OK = new Set(["completed"]);
 const TERMINAL_FAIL = new Set(["failed", "cancelled", "incomplete", "budget_exceeded"]);
 
+
+/**
+ * Extract complete top-level `{...}` objects, respecting strings so braces
+ * inside synthesizedTestCode do not truncate the match.
+ */
+export function extractBalancedJsonObjects(text: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let j = i; j < text.length; j++) {
+      const c = text[j];
+      if (inString) {
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (c === "\\") {
+          escape = true;
+          continue;
+        }
+        if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') {
+        inString = true;
+        continue;
+      }
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) {
+          out.push(text.slice(i, j + 1));
+          break;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Best-effort extract of reproduction-verdict.json fields from agent output text.
  */
@@ -389,17 +432,18 @@ export function extractSandboxVerdict(outputText: string | undefined | null): Sa
     if (fenceMatch[1]?.trim()) candidates.push(fenceMatch[1].trim());
   }
 
-  // Non-greedy brace candidates around reproduction-verdict signals.
-  for (const braceMatch of outputText.matchAll(/\{[^{}]*"reproduced"[^{}]*\}/g)) {
-    candidates.push(braceMatch[0]);
+  // Balanced `{...}` objects (string-aware) so braces inside synthesizedTestCode
+  // do not truncate un-fenced verdict JSON.
+  for (const obj of extractBalancedJsonObjects(outputText)) {
+    if (
+      obj.includes('"reproduced"') ||
+      obj.includes('"patchCured"') ||
+      obj.includes('"baselinePassed"') ||
+      obj.includes('"synthesizedTestCode"')
+    ) {
+      candidates.push(obj);
+    }
   }
-  const nestedBrace = outputText.match(/\{[\s\S]*?"reproduced"[\s\S]*?\}/);
-  if (nestedBrace) candidates.push(nestedBrace[0]);
-
-  const verdictPathMatch = outputText.match(
-    /reproduction-verdict\.json[\s\S]{0,200}?(\{[\s\S]*?\})/
-  );
-  if (verdictPathMatch?.[1]) candidates.push(verdictPathMatch[1]);
 
   candidates.push(outputText);
 

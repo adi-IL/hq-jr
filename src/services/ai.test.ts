@@ -153,3 +153,19 @@ describe("extractSandboxVerdict multi-fence", () => {
     expect(v?.patchCured).toBe(false);
   });
 });
+
+describe("extractSandboxVerdict balanced braces", () => {
+  it("keeps full synthesizedTestCode when un-fenced JSON has braces in the string", () => {
+    const code = "function f(){ return { ok: true }; }\nexpect(f().ok).toBe(true);";
+    const verdict = {
+      reproduced: true,
+      patchCured: false,
+      synthesizedTestCode: code,
+      summary: "reproduced with nested braces in code",
+    };
+    const text = `agent finished\n${JSON.stringify(verdict)}\nbye`;
+    const v = extractSandboxVerdict(text);
+    expect(v?.reproduced).toBe(true);
+    expect(v?.synthesizedTestCode).toBe(code);
+  });
+});
