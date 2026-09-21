@@ -46,8 +46,15 @@ function findingToIssue(f: ReviewFindingRow, syntheticId: number): PriorReviewIs
   };
 }
 
+function normalizeIssueTitle(title: string | undefined): string {
+  if (!title) return "";
+  // Strip leading [CATEGORY] so GitHub heading titles and SQLite titles collide.
+  return title.replace(/^\[[^\]]+\]\s*/, "").trim();
+}
+
 /**
- * Deduplicate issues by path+line+title key, preferring earlier (SQLite) entries.
+ * Deduplicate issues by path|line|normalizedTitle||bodySlice.
+ * Primary list wins on collision (pass fresher GitHub first when merging).
  */
 function mergeIssues(
   primary: PriorReviewIssue[],
@@ -56,7 +63,8 @@ function mergeIssues(
   const seen = new Set<string>();
   const out: PriorReviewIssue[] = [];
   for (const issue of [...primary, ...secondary]) {
-    const key = `${issue.path}|${issue.line ?? ""}|${issue.title ?? issue.body.slice(0, 80)}`;
+    const normalizedTitle = normalizeIssueTitle(issue.title);
+    const key = `${issue.path}|${issue.line ?? ""}|${normalizedTitle || issue.body.slice(0, 80)}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(issue);
@@ -66,8 +74,8 @@ function mergeIssues(
 
 /**
  * Fetches prior review context for a PR.
- * Prefers SQLite findings from earlier head SHAs for continuity across pushes,
- * then supplements with the latest hq-jr GitHub review comments.
+ * Loads SQLite findings from earlier head SHAs for continuity across pushes,
+ * then merges with the latest hq-jr GitHub review comments (GitHub preferred on collision).
  */
 export async function getPreviousReviewContext(params: {
   octokit: any;
@@ -162,7 +170,8 @@ export async function getPreviousReviewContext(params: {
       lastCommitSha: sqliteLastSha || githubContext.lastCommitSha,
       verdict: githubContext.verdict,
       summary: githubContext.summary,
-      openIssues: mergeIssues(sqliteIssues, githubContext.openIssues),
+      // Prefer fresher GitHub review comments; SQLite fills gaps from earlier SHAs.
+      openIssues: mergeIssues(githubContext.openIssues, sqliteIssues),
       source: "merged",
     };
   }
@@ -173,7 +182,7 @@ export async function getPreviousReviewContext(params: {
       lastCommitSha: sqliteLastSha || currentHeadSha || "unknown",
       verdict: "COMMENT",
       summary: "Prior findings loaded from SQLite review memory.",
-      openIssues: sqliteIssues,
+      openIssues: mergeIssues(sqliteIssues, []),
       source: "sqlite",
     };
   }
