@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Review-fix follow-ups: fail-closed sandbox conclusions on agent failure, no actions on completed checks, incomplete poll status for infra get failures, fork-safe commit-repro, scrub secrets at SQLite save, GitHub-preferred review-memory merge with title normalization.
+
 ### Added
 
 - Tier 3 `pollSandboxInteraction` polls Antigravity interactions and sets Check Run conclusions from real verdicts (with backoff; tests inject short polls).
