@@ -3,6 +3,7 @@ import {
   detectTestCommand,
   executeSandboxCheckRun,
   formatSandboxCheckRunSummary,
+  mapVerdictToConclusion,
 } from "./sandbox-runner.js";
 import * as aiModule from "./ai.js";
 
@@ -53,11 +54,64 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
       expect(summary).toContain("SUBPROCESS_PROBE");
       expect(summary).toContain("Raw mode leaks if terminal setup throws");
       expect(summary).toContain("Commit Repro Test");
+      expect(summary).toContain("Running in remote Linux container");
+    });
+
+    it("embeds synthesized test code in verdict phase summary", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 7,
+        branch: "main",
+        testCommand: "npm test",
+        verificationGoal: "repro",
+        interactionId: "ix-1",
+        phase: "verdict",
+        verdict: {
+          reproduced: true,
+          patchCured: true,
+          summary: "Cured after patch",
+          synthesizedTestCode: "expect(true).toBe(true);",
+          testFilePath: "tests/repro.test.ts",
+        },
+      });
+      expect(summary).toContain("```typescript");
+      expect(summary).toContain("expect(true).toBe(true);");
+    });
+  });
+
+  describe("mapVerdictToConclusion", () => {
+    it("fails when reproduced and not cured", () => {
+      expect(
+        mapVerdictToConclusion({
+          status: "completed",
+          verdict: { reproduced: true, patchCured: false },
+        })
+      ).toBe("failure");
+    });
+
+    it("succeeds when not reproduced or patch cured", () => {
+      expect(
+        mapVerdictToConclusion({
+          status: "completed",
+          verdict: { reproduced: false, baselinePassed: true },
+        })
+      ).toBe("success");
+      expect(
+        mapVerdictToConclusion({
+          status: "completed",
+          verdict: { reproduced: true, patchCured: true },
+        })
+      ).toBe("success");
+    });
+
+    it("returns neutral on timeout", () => {
+      expect(
+        mapVerdictToConclusion({ status: "timed_out", verdict: null })
+      ).toBe("neutral");
     });
   });
 
   describe("executeSandboxCheckRun", () => {
-    it("creates an in-progress check run, dispatches verification, and completes check run", async () => {
+    it("keeps check in_progress after dispatch and concludes from poll verdict", async () => {
       vi.spyOn(aiModule, "dispatchSandboxVerification").mockResolvedValueOnce(
         "interaction-mock-12345"
       );
@@ -65,7 +119,7 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
       const octokitMock = {
         checks: {
           create: vi.fn().mockResolvedValueOnce({ data: { id: 888 } }),
-          update: vi.fn().mockResolvedValueOnce({}),
+          update: vi.fn().mockResolvedValue({}),
         },
       };
 
@@ -78,11 +132,32 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
         branch: "feature-branch",
         verificationGoal: "Verify that concurrent token refresh cannot double-spend",
         modifiedFiles: ["Cargo.toml", "src/main.rs"],
+        pollFn: async () => ({
+          status: "completed",
+          interactionStatus: "completed",
+          outputText: JSON.stringify({
+            baselinePassed: true,
+            reproduced: true,
+            patchCured: true,
+            summary: "Patch cured the race",
+            synthesizedTestCode: "#[test] fn repro() {}",
+            testFilePath: "tests/repro.rs",
+          }),
+          verdict: {
+            baselinePassed: true,
+            reproduced: true,
+            patchCured: true,
+            summary: "Patch cured the race",
+            synthesizedTestCode: "#[test] fn repro() {}",
+            testFilePath: "tests/repro.rs",
+          },
+        }),
       });
 
-      expect(result.status).toBe("dispatched");
+      expect(result.status).toBe("completed");
       expect(result.checkRunId).toBe(888);
       expect(result.interactionId).toBe("interaction-mock-12345");
+      expect(result.conclusion).toBe("success");
 
       expect(octokitMock.checks.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -91,6 +166,7 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
           status: "in_progress",
           actions: expect.arrayContaining([
             expect.objectContaining({ identifier: "commit_repro_test" }),
+            expect.objectContaining({ identifier: "rerun_sandbox" }),
           ]),
         })
       );
@@ -102,16 +178,93 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
         })
       );
 
-      expect(octokitMock.checks.update).toHaveBeenCalledWith(
+      // First update after dispatch must stay in_progress (NOT success-on-dispatch).
+      const updates = octokitMock.checks.update.mock.calls.map((c: unknown[]) => c[0]) as Array<{
+        status: string;
+        conclusion?: string;
+        output?: { summary?: string };
+      }>;
+      expect(updates.length).toBeGreaterThanOrEqual(2);
+      expect(updates[0]).toEqual(
+        expect.objectContaining({
+          check_run_id: 888,
+          status: "in_progress",
+        })
+      );
+      expect(updates[0].conclusion).toBeUndefined();
+
+      const finalUpdate = updates[updates.length - 1];
+      expect(finalUpdate).toEqual(
         expect.objectContaining({
           check_run_id: 888,
           status: "completed",
           conclusion: "success",
-          output: expect.objectContaining({
-            summary: expect.stringContaining("interaction-mock-12345"),
-          }),
         })
       );
+      expect(finalUpdate.output?.summary).toContain("interaction-mock-12345");
+      expect(finalUpdate.output?.summary).toContain("#[test] fn repro()");
+    });
+
+    it("concludes failure when poll reports reproduced without cure", async () => {
+      vi.spyOn(aiModule, "dispatchSandboxVerification").mockResolvedValueOnce("ix-fail");
+
+      const octokitMock = {
+        checks: {
+          create: vi.fn().mockResolvedValueOnce({ data: { id: 1001 } }),
+          update: vi.fn().mockResolvedValue({}),
+        },
+      };
+
+      const result = await executeSandboxCheckRun({
+        octokit: octokitMock,
+        owner: "o",
+        repo: "r",
+        pullNumber: 1,
+        headSha: "sha",
+        branch: "main",
+        verificationGoal: "repro",
+        pollFn: async () => ({
+          status: "completed",
+          verdict: { reproduced: true, patchCured: false, summary: "Still broken" },
+        }),
+      });
+
+      expect(result.conclusion).toBe("failure");
+      const final = octokitMock.checks.update.mock.calls.at(-1)![0] as {
+        conclusion: string;
+        status: string;
+      };
+      expect(final.status).toBe("completed");
+      expect(final.conclusion).toBe("failure");
+    });
+
+    it("concludes neutral when poll times out", async () => {
+      vi.spyOn(aiModule, "dispatchSandboxVerification").mockResolvedValueOnce("ix-to");
+
+      const octokitMock = {
+        checks: {
+          create: vi.fn().mockResolvedValueOnce({ data: { id: 1002 } }),
+          update: vi.fn().mockResolvedValue({}),
+        },
+      };
+
+      const result = await executeSandboxCheckRun({
+        octokit: octokitMock,
+        owner: "o",
+        repo: "r",
+        pullNumber: 2,
+        headSha: "sha",
+        branch: "main",
+        verificationGoal: "repro",
+        pollFn: async () => ({
+          status: "timed_out",
+          verdict: null,
+          errorMessage: "timeout",
+        }),
+      });
+
+      expect(result.status).toBe("timed_out");
+      expect(result.conclusion).toBe("neutral");
     });
 
     it("degrades gracefully to neutral check run conclusion if dispatch encounters error", async () => {
@@ -149,6 +302,15 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
           }),
         })
       );
+    });
+  });
+
+  describe("extractSandboxVerdict via ai module", () => {
+    it("parses fenced JSON verdict payloads", () => {
+      const text = `Report done\n\`\`\`json\n{"reproduced":true,"patchCured":false,"summary":"x"}\n\`\`\``;
+      const v = aiModule.extractSandboxVerdict(text);
+      expect(v?.reproduced).toBe(true);
+      expect(v?.patchCured).toBe(false);
     });
   });
 });
