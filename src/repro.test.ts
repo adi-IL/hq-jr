@@ -3,6 +3,7 @@ import appFn from "./index.js";
 import { safeParseJson } from "./services/json-repair.js";
 import { executeRemediation } from "./services/remediation.js";
 import { ai } from "./services/ai.js";
+import * as discussionModule from "./services/discussion.js";
 
 describe("Root Cause Bug Reproductions", () => {
   it("REPRO 1: RBAC fails closed when getCollaboratorPermissionLevel throws an error", async () => {
@@ -162,5 +163,81 @@ describe("Root Cause Bug Reproductions", () => {
     const hasExplicitMergeCommand = /\b(?:and\s+merge|auto-?merge)\b/i.test(commentBody);
     const autoMergeFixed = hasExplicitMergeCommand && !hasNegativeMerge;
     expect(autoMergeFixed).toBe(false);
+  });
+});
+
+describe("Command hardening", () => {
+  const REMEDIATE_COMMAND_RE =
+    /@hq-jr(?:\[bot\])?\s+(fix|patch|remediate)(\s+and\s+merge)?\b/i;
+
+  it("does not treat arbitrary 'fix' in a sentence as remediation", () => {
+    const body = "@hq-jr can you explain how to fix the naming in this comment?";
+    expect(REMEDIATE_COMMAND_RE.test(body)).toBe(false);
+  });
+
+  it("matches explicit @hq-jr fix / patch / remediate commands", () => {
+    expect(REMEDIATE_COMMAND_RE.test("@hq-jr fix")).toBe(true);
+    expect(REMEDIATE_COMMAND_RE.test("@hq-jr[bot] patch")).toBe(true);
+    expect(REMEDIATE_COMMAND_RE.test("@hq-jr remediate and merge")).toBe(true);
+    const m = "@hq-jr fix and merge".match(REMEDIATE_COMMAND_RE);
+    expect(m?.[2]).toMatch(/and\s+merge/i);
+  });
+
+  it("REPRO 5: issue_comment with loose 'fix' wording does not start remediation", async () => {
+    const handlers = new Map<string, (context: unknown) => Promise<void>>();
+    const mockApp = {
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      on: vi.fn((event: string | string[], handler: (context: unknown) => Promise<void>) => {
+        if (Array.isArray(event)) {
+          event.forEach((e) => handlers.set(e, handler));
+        } else {
+          handlers.set(event, handler);
+        }
+      }),
+    };
+
+    const octokitMock = {
+      repos: {
+        getCollaboratorPermissionLevel: vi.fn().mockResolvedValue({
+          data: { permission: "admin" },
+        }),
+      },
+      issues: {
+        createComment: vi.fn().mockResolvedValue({}),
+      },
+      pulls: {
+        get: vi.fn().mockResolvedValue({
+          data: "diff --git a/x b/x\n",
+        }),
+      },
+    };
+
+    vi.spyOn(discussionModule, "replyToDiscussion").mockResolvedValue("discussion reply");
+
+    appFn(mockApp as unknown as Parameters<typeof appFn>[0]);
+
+    const issueCommentHandler = handlers.get("issue_comment.created");
+    await issueCommentHandler!({
+      octokit: octokitMock,
+      payload: {
+        issue: { number: 42, pull_request: {} },
+        comment: {
+          id: 101,
+          body: "@hq-jr please explain how we should fix naming later",
+          user: { login: "maintainer", type: "User" },
+        },
+        repository: {
+          name: "repo",
+          owner: { login: "owner" },
+        },
+      },
+    });
+
+    const remediationStart = octokitMock.issues.createComment.mock.calls.find((call: unknown[]) => {
+      const arg = call[0] as { body?: string } | undefined;
+      return arg?.body?.includes("received remediation request");
+    });
+    expect(remediationStart).toBeUndefined();
+    expect(discussionModule.replyToDiscussion).toHaveBeenCalled();
   });
 });
