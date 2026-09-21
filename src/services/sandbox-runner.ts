@@ -50,6 +50,8 @@ export interface SandboxCheckRunParams {
   pollFn?: (interactionId: string, options?: PollSandboxOptions) => Promise<PollSandboxResult>;
   /** Optional override of dispatchSandboxVerification for tests / manual scripts. */
   dispatchFn?: (params: Parameters<typeof dispatchSandboxVerification>[0]) => Promise<string>;
+  /** Injected Database for unit tests so jobs are not written to the default on-disk DB. */
+  dbInstance?: import("better-sqlite3").Database;
 }
 
 export interface SandboxCheckRunResult {
@@ -172,17 +174,19 @@ function guessFenceLang(testFilePath?: string, testCommand?: string): string {
 export function mapVerdictToConclusion(
   poll: PollSandboxResult
 ): "success" | "failure" | "neutral" {
+  // Incomplete / timeout / cancelled are inconclusive signals (neutral), even if a partial verdict exists.
   if (poll.status === "timed_out" || poll.status === "cancelled" || poll.status === "incomplete") {
     return "neutral";
   }
-  if (poll.status === "failed" && !poll.verdict) {
+  // Hard agent failure always fails the check, even when a verdict payload is present.
+  if (poll.status === "failed") {
     return "failure";
   }
 
   const v = poll.verdict;
   if (!v) {
     // Completed without parseable verdict: treat as neutral (unavailable signal).
-    return poll.status === "completed" ? "neutral" : "failure";
+    return "neutral";
   }
 
   if (v.reproduced === true && v.patchCured !== true) {
@@ -290,19 +294,22 @@ export async function executeSandboxCheckRun(
     });
 
     try {
-      upsertSandboxJob({
-        interactionId,
-        checkRunId,
-        owner,
-        repo,
-        pullNumber,
-        headSha,
-        branch,
-        verificationGoal,
-        probesJson: params.probes ? JSON.stringify(params.probes) : null,
-        testCommand,
-        status: "running",
-      });
+      upsertSandboxJob(
+        {
+          interactionId,
+          checkRunId,
+          owner,
+          repo,
+          pullNumber,
+          headSha,
+          branch,
+          verificationGoal,
+          probesJson: params.probes ? JSON.stringify(params.probes) : null,
+          testCommand,
+          status: "running",
+        },
+        params.dbInstance
+      );
     } catch {
       // Persistence is best-effort; polling still proceeds.
     }
@@ -334,6 +341,7 @@ export async function executeSandboxCheckRun(
             : `Agent status: ${pollResult.interactionStatus || pollResult.status}`,
     });
 
+    // Do not send actions on completed check runs (GitHub returns 422).
     await octokit.checks.update({
       owner,
       repo,
@@ -341,7 +349,6 @@ export async function executeSandboxCheckRun(
       status: "completed",
       conclusion,
       completed_at: new Date().toISOString(),
-      actions: SANDBOX_ACTIONS,
       output: {
         title:
           conclusion === "success"
@@ -356,7 +363,8 @@ export async function executeSandboxCheckRun(
     try {
       updateSandboxJobStatus(
         interactionId,
-        pollResult.status === "completed" ? conclusion : pollResult.status
+        pollResult.status === "completed" ? conclusion : pollResult.status,
+        params.dbInstance
       );
     } catch {
       // ignore
