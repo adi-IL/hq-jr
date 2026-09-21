@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import { config } from "../config.js";
+import { scrubSecrets } from "./scrubber.js";
 
 let defaultDbInstance: Database.Database | null = null;
 
@@ -264,6 +265,9 @@ export function saveReviewFindings(
   const tx = db.transaction((rows: ReviewFindingRow[]) => {
     const now = Date.now();
     for (const f of rows) {
+      const scrubbedTitle =
+        f.title != null ? scrubSecrets(f.title).scrubbed : null;
+      const scrubbedBody = scrubSecrets(f.body).scrubbed;
       insert.run(
         f.owner,
         f.repo,
@@ -273,8 +277,8 @@ export function saveReviewFindings(
         f.line ?? null,
         f.side ?? null,
         f.severity ?? null,
-        f.title ?? null,
-        f.body,
+        scrubbedTitle,
+        scrubbedBody,
         f.createdAt ?? now
       );
     }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import appFn from "./index.js";
+import appFn, { REMEDIATE_COMMAND_RE, COMMIT_REPRO_COMMAND_RE } from "./index.js";
 import { safeParseJson } from "./services/json-repair.js";
 import { executeRemediation } from "./services/remediation.js";
 import { ai } from "./services/ai.js";
@@ -167,9 +167,6 @@ describe("Root Cause Bug Reproductions", () => {
 });
 
 describe("Command hardening", () => {
-  const REMEDIATE_COMMAND_RE =
-    /@hq-jr(?:\[bot\])?\s+(fix|patch|remediate)(\s+and\s+merge)?\b/i;
-
   it("does not treat arbitrary 'fix' in a sentence as remediation", () => {
     const body = "@hq-jr can you explain how to fix the naming in this comment?";
     expect(REMEDIATE_COMMAND_RE.test(body)).toBe(false);
@@ -181,6 +178,12 @@ describe("Command hardening", () => {
     expect(REMEDIATE_COMMAND_RE.test("@hq-jr remediate and merge")).toBe(true);
     const m = "@hq-jr fix and merge".match(REMEDIATE_COMMAND_RE);
     expect(m?.[2]).toMatch(/and\s+merge/i);
+  });
+
+  it("matches @hq-jr commit-repro command", () => {
+    expect(COMMIT_REPRO_COMMAND_RE.test("@hq-jr commit-repro")).toBe(true);
+    expect(COMMIT_REPRO_COMMAND_RE.test("@hq-jr[bot] commit-repro please")).toBe(true);
+    expect(COMMIT_REPRO_COMMAND_RE.test("@hq-jr commit repro")).toBe(false);
   });
 
   it("REPRO 5: issue_comment with loose 'fix' wording does not start remediation", async () => {
