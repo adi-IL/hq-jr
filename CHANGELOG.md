@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Durable Tier 3 poll recovery: sandbox job heartbeats and `resumeStaleSandboxJobs` on boot/interval (requires shared `HQ_JR_DB_PATH` across instances).
+- Review finding resolution when a later review drops a prior path+line+title, plus prune of old resolved rows.
+
 ### Fixed
+
 
 - Review-fix follow-ups: fail-closed sandbox conclusions on agent failure, no actions on completed checks, incomplete poll status for infra get failures, fork-safe commit-repro, scrub secrets at SQLite save, GitHub-preferred review-memory merge with title normalization.
 

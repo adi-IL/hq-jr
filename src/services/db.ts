@@ -50,7 +50,8 @@ export function initSchema(db: Database.Database): void {
       severity TEXT,
       title TEXT,
       body TEXT NOT NULL,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open'
     );
     CREATE INDEX IF NOT EXISTS idx_review_findings_pr
       ON review_findings (owner, repo, pull_number, created_at);
@@ -70,10 +71,34 @@ export function initSchema(db: Database.Database): void {
       test_command TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'dispatched'
+      status TEXT NOT NULL DEFAULT 'dispatched',
+      installation_id INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_sandbox_jobs_check
       ON sandbox_jobs (owner, repo, check_run_id);
+  `);
+
+  migrateSchema(db);
+}
+
+function tableHasColumn(db: Database.Database, table: string, column: string): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return cols.some((c) => c.name === column);
+}
+
+/** Additive migrations for existing SQLite files. */
+export function migrateSchema(db: Database.Database): void {
+  if (!tableHasColumn(db, "review_findings", "status")) {
+    db.exec("ALTER TABLE review_findings ADD COLUMN status TEXT NOT NULL DEFAULT 'open'");
+  }
+  if (!tableHasColumn(db, "sandbox_jobs", "installation_id")) {
+    db.exec("ALTER TABLE sandbox_jobs ADD COLUMN installation_id INTEGER");
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sandbox_jobs_status
+      ON sandbox_jobs (status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_review_findings_status
+      ON review_findings (owner, repo, pull_number, status);
   `);
 }
 
@@ -248,6 +273,7 @@ export interface ReviewFindingRow {
   title?: string | null;
   body: string;
   createdAt?: number;
+  status?: string | null;
 }
 
 export function saveReviewFindings(
@@ -258,8 +284,8 @@ export function saveReviewFindings(
   const db = dbInstance ?? getDatabase();
   const insert = db.prepare(
     `INSERT INTO review_findings
-      (owner, repo, pull_number, head_sha, path, line, side, severity, title, body, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      (owner, repo, pull_number, head_sha, path, line, side, severity, title, body, created_at, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const tx = db.transaction((rows: ReviewFindingRow[]) => {
@@ -279,7 +305,8 @@ export function saveReviewFindings(
         f.severity ?? null,
         scrubbedTitle,
         scrubbedBody,
-        f.createdAt ?? now
+        f.createdAt ?? now,
+        f.status ?? "open"
       );
     }
   });
@@ -320,6 +347,7 @@ export function getReviewFindingsForPull(
       `SELECT * FROM review_findings
        WHERE owner = :owner AND repo = :repo AND pull_number = :pullNumber
          AND head_sha != :excludeHeadSha
+         AND (status IS NULL OR status = 'open')
        ORDER BY created_at ASC`
     );
     rows = stmt.all({
@@ -335,6 +363,7 @@ export function getReviewFindingsForPull(
     >(
       `SELECT * FROM review_findings
        WHERE owner = :owner AND repo = :repo AND pull_number = :pullNumber
+         AND (status IS NULL OR status = 'open')
        ORDER BY created_at ASC`
     );
     rows = stmt.all({
@@ -357,6 +386,7 @@ export function getReviewFindingsForPull(
     title: r.title,
     body: r.body,
     createdAt: r.created_at,
+    status: (r as Row & { status?: string }).status ?? "open",
   }));
 }
 
@@ -372,6 +402,9 @@ export interface SandboxJobRow {
   probesJson?: string | null;
   testCommand?: string | null;
   status?: string;
+  installationId?: number | null;
+  updatedAt?: number;
+  createdAt?: number;
 }
 
 export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Database): void {
@@ -380,8 +413,8 @@ export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Datab
   const stmt = db.prepare(
     `INSERT INTO sandbox_jobs
       (interaction_id, check_run_id, owner, repo, pull_number, head_sha, branch,
-       verification_goal, probes_json, test_command, created_at, updated_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       verification_goal, probes_json, test_command, created_at, updated_at, status, installation_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(interaction_id) DO UPDATE SET
        check_run_id = excluded.check_run_id,
        branch = excluded.branch,
@@ -389,7 +422,8 @@ export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Datab
        probes_json = excluded.probes_json,
        test_command = excluded.test_command,
        updated_at = excluded.updated_at,
-       status = excluded.status`
+       status = excluded.status,
+       installation_id = COALESCE(excluded.installation_id, sandbox_jobs.installation_id)`
   );
   stmt.run(
     job.interactionId,
@@ -404,7 +438,8 @@ export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Datab
     job.testCommand ?? null,
     now,
     now,
-    job.status ?? "dispatched"
+    job.status ?? "dispatched",
+    job.installationId ?? null
   );
 }
 
@@ -457,5 +492,125 @@ export function getSandboxJobByCheckRun(
     probesJson: row.probes_json,
     testCommand: row.test_command,
     status: row.status,
+    installationId: (row as Row & { installation_id?: number | null }).installation_id ?? null,
   };
+}
+
+
+function findingKey(path: string, line: number | null | undefined, title: string | null | undefined): string {
+  const normalizedTitle = (title || "").replace(/^\[[^\]]+\]\s*/, "").trim();
+  return `${path}|${line ?? ""}|${normalizedTitle}`;
+}
+
+/**
+ * Mark prior open findings for a PR as resolved when the current review no longer
+ * reports the same path+line+title key.
+ */
+export function resolveFindingsMissingFromCurrent(
+  params: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    currentHeadSha: string;
+    currentFindings: Array<{ path: string; line?: number | null; title?: string | null }>;
+  },
+  dbInstance?: Database.Database
+): number {
+  const db = dbInstance ?? getDatabase();
+  const currentKeys = new Set(
+    params.currentFindings.map((f) => findingKey(f.path, f.line, f.title))
+  );
+  const prior = db
+    .prepare(
+      `SELECT id, path, line, title FROM review_findings
+       WHERE owner = ? AND repo = ? AND pull_number = ?
+         AND head_sha != ?
+         AND (status IS NULL OR status = 'open')`
+    )
+    .all(params.owner, params.repo, params.pullNumber, params.currentHeadSha) as Array<{
+    id: number;
+    path: string;
+    line: number | null;
+    title: string | null;
+  }>;
+
+  const toResolve = prior.filter((r) => !currentKeys.has(findingKey(r.path, r.line, r.title)));
+  if (toResolve.length === 0) return 0;
+  const upd = db.prepare("UPDATE review_findings SET status = 'resolved' WHERE id = ?");
+  const tx = db.transaction((ids: number[]) => {
+    for (const id of ids) upd.run(id);
+  });
+  tx(toResolve.map((r) => r.id));
+  return toResolve.length;
+}
+
+/** Delete resolved findings older than retentionMs (default 30 days). */
+export function pruneResolvedFindings(
+  retentionMs = 30 * 24 * 60 * 60 * 1000,
+  dbInstance?: Database.Database
+): number {
+  const db = dbInstance ?? getDatabase();
+  const cutoff = Date.now() - retentionMs;
+  const result = db
+    .prepare(
+      `DELETE FROM review_findings
+       WHERE status = 'resolved' AND created_at <= ?`
+    )
+    .run(cutoff);
+  return result.changes;
+}
+
+/** Claim stale running sandbox jobs for recovery (updated_at older than staleMs). */
+export function claimStaleSandboxJobs(
+  staleMs = 45_000,
+  dbInstance?: Database.Database
+): SandboxJobRow[] {
+  const db = dbInstance ?? getDatabase();
+  const cutoff = Date.now() - staleMs;
+  const rows = db
+    .prepare(
+      `SELECT * FROM sandbox_jobs
+       WHERE status = 'running' AND updated_at < ?
+       ORDER BY updated_at ASC
+       LIMIT 20`
+    )
+    .all(cutoff) as Array<Record<string, unknown>>;
+
+  const claimed: SandboxJobRow[] = [];
+  const claim = db.prepare(
+    `UPDATE sandbox_jobs SET status = 'recovering', updated_at = ?
+     WHERE interaction_id = ? AND status = 'running' AND updated_at < ?`
+  );
+  const now = Date.now();
+  for (const row of rows) {
+    const id = String(row.interaction_id);
+    const updatedAt = Number(row.updated_at);
+    const result = claim.run(now, id, cutoff);
+    if (result.changes !== 1) continue;
+    claimed.push({
+      interactionId: id,
+      checkRunId: Number(row.check_run_id),
+      owner: String(row.owner),
+      repo: String(row.repo),
+      pullNumber: Number(row.pull_number),
+      headSha: String(row.head_sha),
+      branch: (row.branch as string | null) ?? null,
+      verificationGoal: (row.verification_goal as string | null) ?? null,
+      probesJson: (row.probes_json as string | null) ?? null,
+      testCommand: (row.test_command as string | null) ?? null,
+      status: "recovering",
+      installationId: (row.installation_id as number | null) ?? null,
+      updatedAt: now,
+      createdAt: Number(row.created_at),
+    });
+  }
+  return claimed;
+}
+
+export function touchSandboxJob(interactionId: string, dbInstance?: Database.Database): void {
+  const db = dbInstance ?? getDatabase();
+  db.prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = ?").run(
+    Date.now(),
+    interactionId
+  );
 }

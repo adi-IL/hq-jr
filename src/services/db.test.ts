@@ -13,6 +13,10 @@ import {
   upsertSandboxJob,
   getSandboxJobByCheckRun,
   updateSandboxJobStatus,
+  resolveFindingsMissingFromCurrent,
+  pruneResolvedFindings,
+  claimStaleSandboxJobs,
+  touchSandboxJob,
 } from "./db.js";
 import type Database from "better-sqlite3";
 
@@ -272,5 +276,138 @@ describe("Sandbox Jobs", () => {
     updateSandboxJobStatus("ix-1", "success", db);
     const updated = getSandboxJobByCheckRun({ owner: "o", repo: "r", checkRunId: 42 }, db);
     expect(updated?.status).toBe("success");
+  });
+});
+
+describe("Finding resolution and pruning", () => {
+  let db: import("better-sqlite3").Database;
+
+  beforeEach(() => {
+    db = getDatabase(":memory:");
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("resolves prior open findings missing from the current review", () => {
+    saveReviewFindings(
+      [
+        {
+          owner: "o",
+          repo: "r",
+          pullNumber: 9,
+          headSha: "sha-old",
+          path: "src/a.ts",
+          line: 1,
+          title: "Bug A",
+          body: "old",
+        },
+        {
+          owner: "o",
+          repo: "r",
+          pullNumber: 9,
+          headSha: "sha-old",
+          path: "src/b.ts",
+          line: 2,
+          title: "Bug B",
+          body: "keep-as-open-until-missing",
+        },
+      ],
+      db
+    );
+
+    saveReviewFindings(
+      [
+        {
+          owner: "o",
+          repo: "r",
+          pullNumber: 9,
+          headSha: "sha-new",
+          path: "src/a.ts",
+          line: 1,
+          title: "Bug A",
+          body: "still present",
+        },
+      ],
+      db
+    );
+
+    const resolved = resolveFindingsMissingFromCurrent(
+      {
+        owner: "o",
+        repo: "r",
+        pullNumber: 9,
+        currentHeadSha: "sha-new",
+        currentFindings: [{ path: "src/a.ts", line: 1, title: "Bug A" }],
+      },
+      db
+    );
+    expect(resolved).toBe(1);
+
+    const open = getReviewFindingsForPull(
+      { owner: "o", repo: "r", pullNumber: 9, excludeHeadSha: "sha-new" },
+      db
+    );
+    expect(open).toHaveLength(1);
+    expect(open[0].path).toBe("src/a.ts");
+
+    // Force resolved row older than retention window.
+    db.prepare("UPDATE review_findings SET created_at = 1 WHERE status = 'resolved'").run();
+    const pruned = pruneResolvedFindings(1000, db);
+    expect(pruned).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("Sandbox job recovery claims", () => {
+  let db: import("better-sqlite3").Database;
+
+  beforeEach(() => {
+    db = getDatabase(":memory:");
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("claims only stale running jobs and heartbeats refresh updated_at", () => {
+    upsertSandboxJob(
+      {
+        interactionId: "ix-stale",
+        checkRunId: 1,
+        owner: "o",
+        repo: "r",
+        pullNumber: 1,
+        headSha: "abc",
+        status: "running",
+        installationId: 42,
+      },
+      db
+    );
+    // Force stale updated_at
+    db.prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = ?").run(
+      Date.now() - 120_000,
+      "ix-stale"
+    );
+
+    upsertSandboxJob(
+      {
+        interactionId: "ix-fresh",
+        checkRunId: 2,
+        owner: "o",
+        repo: "r",
+        pullNumber: 1,
+        headSha: "def",
+        status: "running",
+        installationId: 42,
+      },
+      db
+    );
+    touchSandboxJob("ix-fresh", db);
+
+    const claimed = claimStaleSandboxJobs(45_000, db);
+    expect(claimed.map((j) => j.interactionId)).toEqual(["ix-stale"]);
+    expect(claimed[0].status).toBe("recovering");
+    expect(claimed[0].installationId).toBe(42);
   });
 });

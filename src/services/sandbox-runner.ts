@@ -7,7 +7,13 @@ import {
   type SandboxVerdict,
 } from "./ai.js";
 import { SandboxProbeRequest } from "../schemas/review.js";
-import { upsertSandboxJob, updateSandboxJobStatus } from "./db.js";
+import {
+  upsertSandboxJob,
+  updateSandboxJobStatus,
+  claimStaleSandboxJobs,
+  touchSandboxJob,
+  type SandboxJobRow,
+} from "./db.js";
 
 export interface SandboxCheckRunParams {
   octokit: {
@@ -52,6 +58,8 @@ export interface SandboxCheckRunParams {
   dispatchFn?: (params: Parameters<typeof dispatchSandboxVerification>[0]) => Promise<string>;
   /** Injected Database for unit tests so jobs are not written to the default on-disk DB. */
   dbInstance?: import("better-sqlite3").Database;
+  /** GitHub App installation id for crash recovery / resume. */
+  installationId?: number;
 }
 
 export interface SandboxCheckRunResult {
@@ -307,6 +315,7 @@ export async function executeSandboxCheckRun(
           probesJson: params.probes ? JSON.stringify(params.probes) : null,
           testCommand,
           status: "running",
+          installationId: params.installationId ?? null,
         },
         params.dbInstance
       );
@@ -315,7 +324,20 @@ export async function executeSandboxCheckRun(
     }
 
     const pollFn = params.pollFn ?? pollSandboxInteraction;
-    const pollResult = await pollFn(interactionId, params.pollOptions);
+    const basePoll = params.pollOptions ?? {};
+    const baseSleep =
+      basePoll.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+    const pollResult = await pollFn(interactionId, {
+      ...basePoll,
+      sleep: async (ms: number) => {
+        try {
+          touchSandboxJob(interactionId, params.dbInstance);
+        } catch {
+          // best-effort heartbeat for durable recovery
+        }
+        await baseSleep(ms);
+      },
+    });
 
     const verdict =
       pollResult.verdict ??
@@ -415,4 +437,170 @@ export async function executeSandboxCheckRun(
       summary: failureSummary,
     };
   }
+}
+
+/**
+ * Finish polling an already-dispatched sandbox job and conclude its check run.
+ * Used by crash recovery when the original webhook request died mid-poll.
+ */
+export async function completeSandboxJobPoll(params: {
+  octokit: SandboxCheckRunParams["octokit"];
+  job: SandboxJobRow;
+  pollOptions?: PollSandboxOptions;
+  pollFn?: SandboxCheckRunParams["pollFn"];
+  dbInstance?: import("better-sqlite3").Database;
+}): Promise<SandboxCheckRunResult> {
+  const { octokit, job } = params;
+  const interactionId = job.interactionId;
+  const checkRunId = job.checkRunId;
+  const pollFn = params.pollFn ?? pollSandboxInteraction;
+  const basePoll = params.pollOptions ?? {};
+  const baseSleep =
+    basePoll.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+
+  try {
+    const pollResult = await pollFn(interactionId, {
+      ...basePoll,
+      sleep: async (ms: number) => {
+        try {
+          touchSandboxJob(interactionId, params.dbInstance);
+        } catch {
+          // ignore
+        }
+        await baseSleep(ms);
+      },
+    });
+
+    const verdict =
+      pollResult.verdict ?? extractSandboxVerdict(pollResult.outputText) ?? null;
+    const effectivePoll: PollSandboxResult = { ...pollResult, verdict };
+    const conclusion = mapVerdictToConclusion(effectivePoll);
+
+    const verdictSummary = formatSandboxCheckRunSummary({
+      pullNumber: job.pullNumber,
+      branch: job.branch || "unknown",
+      testCommand: job.testCommand || "npm test",
+      verificationGoal: job.verificationGoal || "Recovered sandbox poll",
+      interactionId,
+      probes: job.probesJson ? (JSON.parse(job.probesJson) as SandboxProbeRequest[]) : undefined,
+      phase: "verdict",
+      verdict,
+      pollStatus:
+        pollResult.status === "timed_out"
+          ? "Timed out waiting for agent"
+          : pollResult.errorMessage
+            ? `Agent status: ${pollResult.interactionStatus || pollResult.status} (${pollResult.errorMessage})`
+            : `Agent status: ${pollResult.interactionStatus || pollResult.status}`,
+    });
+
+    await octokit.checks.update({
+      owner: job.owner,
+      repo: job.repo,
+      check_run_id: checkRunId,
+      status: "completed",
+      conclusion,
+      completed_at: new Date().toISOString(),
+      output: {
+        title:
+          conclusion === "success"
+            ? "Sandbox Verification Passed"
+            : conclusion === "failure"
+              ? "Sandbox Verification Failed"
+              : "Sandbox Verification Inconclusive",
+        summary: verdictSummary,
+      },
+    });
+
+    try {
+      updateSandboxJobStatus(
+        interactionId,
+        pollResult.status === "completed" ? conclusion : pollResult.status,
+        params.dbInstance
+      );
+    } catch {
+      // ignore
+    }
+
+    return {
+      checkRunId,
+      interactionId,
+      status:
+        pollResult.status === "timed_out"
+          ? "timed_out"
+          : pollResult.status === "failed" || pollResult.status === "cancelled"
+            ? "failed"
+            : "completed",
+      conclusion,
+      summary: verdictSummary,
+      verdict,
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    try {
+      updateSandboxJobStatus(interactionId, "failed", params.dbInstance);
+    } catch {
+      // ignore
+    }
+    return {
+      checkRunId,
+      interactionId,
+      status: "failed",
+      summary: `Recovered sandbox poll failed: ${msg}`,
+    };
+  }
+}
+
+/**
+ * Claim stale running jobs from SQLite and finish their polls.
+ * Requires a shared durable HQ_JR_DB_PATH across Cloud Run instances.
+ */
+export async function resumeStaleSandboxJobs(params: {
+  getOctokit: (installationId: number) => Promise<SandboxCheckRunParams["octokit"] | null>;
+  pollOptions?: PollSandboxOptions;
+  pollFn?: SandboxCheckRunParams["pollFn"];
+  dbInstance?: import("better-sqlite3").Database;
+  staleMs?: number;
+  log?: { info: (obj: unknown, msg?: string) => void; warn: (obj: unknown, msg?: string) => void };
+}): Promise<number> {
+  const claimed = claimStaleSandboxJobs(params.staleMs ?? 45_000, params.dbInstance);
+  let finished = 0;
+  for (const job of claimed) {
+    if (job.installationId == null) {
+      params.log?.warn({ interactionId: job.interactionId }, "Skip stale sandbox job without installation_id");
+      try {
+        updateSandboxJobStatus(job.interactionId, "failed", params.dbInstance);
+      } catch {
+        // ignore
+      }
+      continue;
+    }
+    try {
+      const octokit = await params.getOctokit(job.installationId);
+      if (!octokit) {
+        params.log?.warn({ installationId: job.installationId }, "No octokit for sandbox recovery");
+        updateSandboxJobStatus(job.interactionId, "running", params.dbInstance);
+        continue;
+      }
+      params.log?.info(
+        { interactionId: job.interactionId, checkRunId: job.checkRunId },
+        "Resuming stale sandbox poll from SQLite"
+      );
+      await completeSandboxJobPoll({
+        octokit,
+        job,
+        pollOptions: params.pollOptions,
+        pollFn: params.pollFn,
+        dbInstance: params.dbInstance,
+      });
+      finished += 1;
+    } catch (err: unknown) {
+      params.log?.warn({ err, interactionId: job.interactionId }, "Sandbox job recovery failed");
+      try {
+        updateSandboxJobStatus(job.interactionId, "failed", params.dbInstance);
+      } catch {
+        // ignore
+      }
+    }
+  }
+  return finished;
 }
