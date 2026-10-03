@@ -353,9 +353,37 @@ describe("Finding resolution and pruning", () => {
     expect(open[0].path).toBe("src/a.ts");
 
     // Force resolved row older than retention window.
-    db.prepare("UPDATE review_findings SET created_at = 1 WHERE status = 'resolved'").run();
+    db.prepare("UPDATE review_findings SET created_at = 1, resolved_at = 1 WHERE status = 'resolved'").run();
     const pruned = pruneResolvedFindings(1000, db);
     expect(pruned).toBeGreaterThanOrEqual(1);
+  });
+
+  it("keeps a resolved finding for the full retention window after it is resolved", () => {
+    saveReviewFindings(
+      [
+        {
+          owner: "o",
+          repo: "r",
+          pullNumber: 10,
+          headSha: "sha-old",
+          path: "src/c.ts",
+          line: 3,
+          title: "Bug C",
+          body: "old",
+        },
+      ],
+      db
+    );
+    db.prepare("UPDATE review_findings SET created_at = ? WHERE pull_number = 10").run(
+      Date.now() - 31 * 24 * 60 * 60 * 1000
+    );
+
+    const resolved = resolveFindingsMissingFromCurrent(
+      { owner: "o", repo: "r", pullNumber: 10, currentHeadSha: "sha-new", currentFindings: [] },
+      db
+    );
+    expect(resolved).toBe(1);
+    expect(pruneResolvedFindings(undefined, db)).toBe(0);
   });
 });
 

@@ -51,7 +51,8 @@ export function initSchema(db: Database.Database): void {
       title TEXT,
       body TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'open'
+      status TEXT NOT NULL DEFAULT 'open',
+      resolved_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_review_findings_pr
       ON review_findings (owner, repo, pull_number, created_at);
@@ -90,6 +91,9 @@ function tableHasColumn(db: Database.Database, table: string, column: string): b
 export function migrateSchema(db: Database.Database): void {
   if (!tableHasColumn(db, "review_findings", "status")) {
     db.exec("ALTER TABLE review_findings ADD COLUMN status TEXT NOT NULL DEFAULT 'open'");
+  }
+  if (!tableHasColumn(db, "review_findings", "resolved_at")) {
+    db.exec("ALTER TABLE review_findings ADD COLUMN resolved_at INTEGER");
   }
   if (!tableHasColumn(db, "sandbox_jobs", "installation_id")) {
     db.exec("ALTER TABLE sandbox_jobs ADD COLUMN installation_id INTEGER");
@@ -536,15 +540,16 @@ export function resolveFindingsMissingFromCurrent(
 
   const toResolve = prior.filter((r) => !currentKeys.has(findingKey(r.path, r.line, r.title)));
   if (toResolve.length === 0) return 0;
-  const upd = db.prepare("UPDATE review_findings SET status = 'resolved' WHERE id = ?");
+  const upd = db.prepare("UPDATE review_findings SET status = 'resolved', resolved_at = ? WHERE id = ?");
+  const resolvedAt = Date.now();
   const tx = db.transaction((ids: number[]) => {
-    for (const id of ids) upd.run(id);
+    for (const id of ids) upd.run(resolvedAt, id);
   });
   tx(toResolve.map((r) => r.id));
   return toResolve.length;
 }
 
-/** Delete resolved findings older than retentionMs (default 30 days). */
+/** Delete findings resolved more than retentionMs ago (default 30 days). */
 export function pruneResolvedFindings(
   retentionMs = 30 * 24 * 60 * 60 * 1000,
   dbInstance?: Database.Database
@@ -554,7 +559,7 @@ export function pruneResolvedFindings(
   const result = db
     .prepare(
       `DELETE FROM review_findings
-       WHERE status = 'resolved' AND created_at <= ?`
+       WHERE status = 'resolved' AND COALESCE(resolved_at, created_at) <= ?`
     )
     .run(cutoff);
   return result.changes;

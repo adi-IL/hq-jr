@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Durable Tier 3 poll recovery: sandbox job heartbeats and `resumeStaleSandboxJobs` on boot/interval (requires shared `HQ_JR_DB_PATH` across instances).
-- Review finding resolution when a later review drops a prior path+line+title, plus prune of old resolved rows.
-
 ### Fixed
 
 
@@ -24,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQLite `sandbox_jobs` for interaction/check linkage and rerun context.
 - `@hq-jr commit-repro` comment command sharing logic with the Commit Repro Test check action.
 - `rerun_sandbox` requested_action handler (write/admin RBAC).
+- Durable Tier 3 poll recovery: sandbox job heartbeats and `resumeStaleSandboxJobs` on boot/interval (requires shared `HQ_JR_DB_PATH` across instances).
+- Review finding resolution when a later review drops a prior path+line+title, plus prune of resolved rows once they have been resolved for the retention window.
 
 ### Changed
 
