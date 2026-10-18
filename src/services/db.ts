@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { dirname } from "node:path";
 import { mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { scrubSecrets } from "./scrubber.js";
 
@@ -103,6 +104,7 @@ export function migrateSchema(db: Database.Database): void {
   addColumnIfMissing(db, "review_findings", "status", "TEXT NOT NULL DEFAULT 'open'");
   addColumnIfMissing(db, "review_findings", "resolved_at", "INTEGER");
   addColumnIfMissing(db, "sandbox_jobs", "installation_id", "INTEGER");
+  addColumnIfMissing(db, "sandbox_jobs", "lease_token", "TEXT");
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_sandbox_jobs_status
       ON sandbox_jobs (status, updated_at);
@@ -412,6 +414,8 @@ export interface SandboxJobRow {
   testCommand?: string | null;
   status?: string;
   installationId?: number | null;
+  /** Set by claimStaleSandboxJobs; guards heartbeats and final writes. */
+  leaseToken?: string | null;
   updatedAt?: number;
   createdAt?: number;
 }
@@ -452,15 +456,32 @@ export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Datab
   );
 }
 
+/**
+ * Set a job's status. With a leaseToken the write only lands while that lease
+ * is still held, and it releases the lease. Returns whether a row changed.
+ */
 export function updateSandboxJobStatus(
   interactionId: string,
   status: string,
-  dbInstance?: Database.Database
-): void {
+  dbInstance?: Database.Database,
+  leaseToken?: string | null
+): boolean {
   const db = dbInstance ?? getDatabase();
-  db.prepare(
-    "UPDATE sandbox_jobs SET status = ?, updated_at = ? WHERE interaction_id = ?"
-  ).run(status, Date.now(), interactionId);
+  if (leaseToken) {
+    return (
+      db
+        .prepare(
+          `UPDATE sandbox_jobs SET status = ?, updated_at = ?, lease_token = NULL
+           WHERE interaction_id = ? AND lease_token = ?`
+        )
+        .run(status, Date.now(), interactionId, leaseToken).changes === 1
+    );
+  }
+  return (
+    db
+      .prepare("UPDATE sandbox_jobs SET status = ?, updated_at = ? WHERE interaction_id = ?")
+      .run(status, Date.now(), interactionId).changes === 1
+  );
 }
 
 /** Backfill installation_id on a legacy row written before the column existed. */
@@ -601,14 +622,15 @@ export function claimStaleSandboxJobs(
 
   const claimed: SandboxJobRow[] = [];
   const claim = db.prepare(
-    `UPDATE sandbox_jobs SET status = 'recovering', updated_at = ?
+    `UPDATE sandbox_jobs SET status = 'recovering', updated_at = ?, lease_token = ?
      WHERE interaction_id = ? AND status IN ('running', 'recovering') AND updated_at < ?`
   );
   const now = Date.now();
   for (const row of rows) {
     const id = String(row.interaction_id);
     const updatedAt = Number(row.updated_at);
-    const result = claim.run(now, id, cutoff);
+    const leaseToken = randomUUID();
+    const result = claim.run(now, leaseToken, id, cutoff);
     if (result.changes !== 1) continue;
     claimed.push({
       interactionId: id,
@@ -622,6 +644,7 @@ export function claimStaleSandboxJobs(
       probesJson: (row.probes_json as string | null) ?? null,
       testCommand: (row.test_command as string | null) ?? null,
       status: "recovering",
+      leaseToken,
       installationId: (row.installation_id as number | null) ?? null,
       updatedAt: now,
       createdAt: Number(row.created_at),
@@ -630,10 +653,23 @@ export function claimStaleSandboxJobs(
   return claimed;
 }
 
-export function touchSandboxJob(interactionId: string, dbInstance?: Database.Database): void {
+/** Heartbeat. With a leaseToken, returns false once another worker holds the lease. */
+export function touchSandboxJob(
+  interactionId: string,
+  dbInstance?: Database.Database,
+  leaseToken?: string | null
+): boolean {
   const db = dbInstance ?? getDatabase();
-  db.prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = ?").run(
-    Date.now(),
-    interactionId
+  if (leaseToken) {
+    return (
+      db
+        .prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = ? AND lease_token = ?")
+        .run(Date.now(), interactionId, leaseToken).changes === 1
+    );
+  }
+  return (
+    db
+      .prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = ?")
+      .run(Date.now(), interactionId).changes === 1
   );
 }

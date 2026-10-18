@@ -456,6 +456,14 @@ export async function completeSandboxJobPoll(params: {
   const checkRunId = job.checkRunId;
   const pollFn = params.pollFn ?? pollSandboxInteraction;
   const basePoll = params.pollOptions ?? {};
+  const lease = job.leaseToken ?? null;
+  let leaseLost = false;
+  const lostResult = (): SandboxCheckRunResult => ({
+    checkRunId,
+    interactionId,
+    status: "failed",
+    summary: "Recovery lease taken by another worker; leaving the job to it",
+  });
   const baseSleep =
     basePoll.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
 
@@ -464,13 +472,17 @@ export async function completeSandboxJobPoll(params: {
       ...basePoll,
       sleep: async (ms: number) => {
         try {
-          touchSandboxJob(interactionId, params.dbInstance);
+          if (lease && !touchSandboxJob(interactionId, params.dbInstance, lease)) leaseLost = true;
         } catch {
           // ignore
         }
         await baseSleep(ms);
       },
     });
+
+    if (leaseLost || (lease && !touchSandboxJob(interactionId, params.dbInstance, lease))) {
+      return lostResult();
+    }
 
     const verdict =
       pollResult.verdict ?? extractSandboxVerdict(pollResult.outputText) ?? null;
@@ -516,7 +528,8 @@ export async function completeSandboxJobPoll(params: {
       updateSandboxJobStatus(
         interactionId,
         pollResult.status === "completed" ? conclusion : pollResult.status,
-        params.dbInstance
+        params.dbInstance,
+        lease
       );
     } catch {
       // ignore
@@ -537,6 +550,9 @@ export async function completeSandboxJobPoll(params: {
     };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (leaseLost || (lease && !touchSandboxJob(interactionId, params.dbInstance, lease))) {
+      return lostResult();
+    }
     let checkClosed = false;
     try {
       await octokit.checks.update({
@@ -556,7 +572,7 @@ export async function completeSandboxJobPoll(params: {
       // Leave the job retryable so a later sweep can close the check.
     }
     try {
-      updateSandboxJobStatus(interactionId, checkClosed ? "failed" : "running", params.dbInstance);
+      updateSandboxJobStatus(interactionId, checkClosed ? "failed" : "running", params.dbInstance, lease);
     } catch {
       // ignore
     }
@@ -600,7 +616,7 @@ export async function resumeStaleSandboxJobs(params: {
           "Stale sandbox job has no resolvable installation; marking orphaned"
         );
         try {
-          updateSandboxJobStatus(job.interactionId, "orphaned", params.dbInstance);
+          updateSandboxJobStatus(job.interactionId, "orphaned", params.dbInstance, job.leaseToken);
         } catch {
           // ignore
         }
@@ -617,7 +633,7 @@ export async function resumeStaleSandboxJobs(params: {
       const octokit = await params.getOctokit(job.installationId);
       if (!octokit) {
         params.log?.warn({ installationId: job.installationId }, "No octokit for sandbox recovery");
-        updateSandboxJobStatus(job.interactionId, "running", params.dbInstance);
+        updateSandboxJobStatus(job.interactionId, "running", params.dbInstance, job.leaseToken);
         continue;
       }
       params.log?.info(
@@ -635,7 +651,7 @@ export async function resumeStaleSandboxJobs(params: {
     } catch (err: unknown) {
       params.log?.warn({ err, interactionId: job.interactionId }, "Sandbox job recovery failed");
       try {
-        updateSandboxJobStatus(job.interactionId, "failed", params.dbInstance);
+        updateSandboxJobStatus(job.interactionId, "failed", params.dbInstance, job.leaseToken);
       } catch {
         // ignore
       }

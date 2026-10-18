@@ -61,3 +61,59 @@ describe("resumeStaleSandboxJobs with legacy rows", () => {
     expect(row(db, "ix-orphan").status).toBe("orphaned");
   });
 });
+
+function staleJob(db: import("better-sqlite3").Database, id: string) {
+  upsertSandboxJob(
+    { interactionId: id, checkRunId: 8, owner: "o", repo: "r", pullNumber: 1, headSha: "abc", status: "running", installationId: 5 },
+    db
+  );
+  db.prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = ?").run(Date.now() - 120_000, id);
+}
+
+describe("resumeStaleSandboxJobs failure paths", () => {
+  it("closes the check as neutral and marks the job failed when the poll throws", async () => {
+    const db = getDatabase(":memory:");
+    staleJob(db, "ix-throw");
+    const update = vi.fn().mockResolvedValue({});
+    const pollFn = vi.fn().mockRejectedValue(new Error("boom"));
+
+    await resumeStaleSandboxJobs({ getOctokit: vi.fn().mockResolvedValue({ checks: { update } }), pollFn, dbInstance: db } as any);
+
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ check_run_id: 8, status: "completed", conclusion: "neutral" }));
+    expect(row(db, "ix-throw").status).toBe("failed");
+  });
+
+  it("leaves the job running when closing the check also fails", async () => {
+    const db = getDatabase(":memory:");
+    staleJob(db, "ix-close-fail");
+    const update = vi.fn().mockRejectedValue(new Error("502"));
+    const pollFn = vi.fn().mockRejectedValue(new Error("boom"));
+
+    await resumeStaleSandboxJobs({ getOctokit: vi.fn().mockResolvedValue({ checks: { update } }), pollFn, dbInstance: db } as any);
+
+    expect(update).toHaveBeenCalled();
+    expect(row(db, "ix-close-fail").status).toBe("running");
+  });
+
+  it("does not overwrite the job or close the check after another worker reclaims the lease", async () => {
+    const db = getDatabase(":memory:");
+    staleJob(db, "ix-stolen");
+    const update = vi.fn().mockResolvedValue({});
+    const pollFn = vi.fn().mockImplementation(async () => {
+      // A second worker reclaims the stalled lease mid-poll.
+      db.prepare("UPDATE sandbox_jobs SET lease_token = 'other', status = 'recovering' WHERE interaction_id = 'ix-stolen'").run();
+      return { status: "completed", outputText: "" };
+    });
+
+    const finished = await resumeStaleSandboxJobs({
+      getOctokit: vi.fn().mockResolvedValue({ checks: { update } }),
+      pollFn,
+      dbInstance: db,
+    } as any);
+
+    expect(finished).toBe(1);
+    expect(update).not.toHaveBeenCalled();
+    const r = db.prepare("SELECT status, lease_token FROM sandbox_jobs WHERE interaction_id = 'ix-stolen'").get() as any;
+    expect(r).toEqual({ status: "recovering", lease_token: "other" });
+  });
+});
