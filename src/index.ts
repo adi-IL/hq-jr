@@ -40,6 +40,15 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           return null;
         }
       },
+      resolveInstallationId: async (owner, repo) => {
+        try {
+          const appOctokit = (await app.auth()) as any;
+          const res = await appOctokit.apps.getRepoInstallation({ owner, repo });
+          return typeof res?.data?.id === "number" ? res.data.id : null;
+        } catch {
+          return null;
+        }
+      },
       log: app.log,
     }).catch((err: unknown) => {
       app.log.warn({ err }, "Sandbox job recovery sweep failed");

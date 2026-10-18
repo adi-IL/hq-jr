@@ -463,6 +463,19 @@ export function updateSandboxJobStatus(
   ).run(status, Date.now(), interactionId);
 }
 
+/** Backfill installation_id on a legacy row written before the column existed. */
+export function setSandboxJobInstallationId(
+  interactionId: string,
+  installationId: number,
+  dbInstance?: Database.Database
+): void {
+  const db = dbInstance ?? getDatabase();
+  db.prepare("UPDATE sandbox_jobs SET installation_id = ? WHERE interaction_id = ?").run(
+    installationId,
+    interactionId
+  );
+}
+
 export function getSandboxJobByCheckRun(
   params: { owner: string; repo: string; checkRunId: number },
   dbInstance?: Database.Database

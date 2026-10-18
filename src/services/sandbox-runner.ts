@@ -10,6 +10,7 @@ import { SandboxProbeRequest } from "../schemas/review.js";
 import {
   upsertSandboxJob,
   updateSandboxJobStatus,
+  setSandboxJobInstallationId,
   claimStaleSandboxJobs,
   touchSandboxJob,
   type SandboxJobRow,
@@ -574,6 +575,8 @@ export async function completeSandboxJobPoll(params: {
  */
 export async function resumeStaleSandboxJobs(params: {
   getOctokit: (installationId: number) => Promise<SandboxCheckRunParams["octokit"] | null>;
+  /** Look up the app installation for a repo. Used for legacy rows with no installation_id. */
+  resolveInstallationId?: (owner: string, repo: string) => Promise<number | null>;
   pollOptions?: PollSandboxOptions;
   pollFn?: SandboxCheckRunParams["pollFn"];
   dbInstance?: import("better-sqlite3").Database;
@@ -584,13 +587,31 @@ export async function resumeStaleSandboxJobs(params: {
   let finished = 0;
   for (const job of claimed) {
     if (job.installationId == null) {
-      params.log?.warn({ interactionId: job.interactionId }, "Skip stale sandbox job without installation_id");
+      let resolved: number | null = null;
       try {
-        updateSandboxJobStatus(job.interactionId, "failed", params.dbInstance);
+        resolved = (await params.resolveInstallationId?.(job.owner, job.repo)) ?? null;
       } catch {
-        // ignore
+        resolved = null;
       }
-      continue;
+      if (resolved == null) {
+        // Terminal: without an installation there is no token to close the check.
+        params.log?.warn(
+          { interactionId: job.interactionId, owner: job.owner, repo: job.repo, checkRunId: job.checkRunId },
+          "Stale sandbox job has no resolvable installation; marking orphaned"
+        );
+        try {
+          updateSandboxJobStatus(job.interactionId, "orphaned", params.dbInstance);
+        } catch {
+          // ignore
+        }
+        continue;
+      }
+      try {
+        setSandboxJobInstallationId(job.interactionId, resolved, params.dbInstance);
+      } catch {
+        // ignore; the in-memory value still lets this sweep finish the job
+      }
+      job.installationId = resolved;
     }
     try {
       const octokit = await params.getOctokit(job.installationId);
