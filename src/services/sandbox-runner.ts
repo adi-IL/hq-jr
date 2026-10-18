@@ -536,8 +536,26 @@ export async function completeSandboxJobPoll(params: {
     };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
+    let checkClosed = false;
     try {
-      updateSandboxJobStatus(interactionId, "failed", params.dbInstance);
+      await octokit.checks.update({
+        owner: job.owner,
+        repo: job.repo,
+        check_run_id: checkRunId,
+        status: "completed",
+        conclusion: "neutral",
+        completed_at: new Date().toISOString(),
+        output: {
+          title: "Sandbox Verification Inconclusive",
+          summary: `Recovered sandbox poll failed: ${msg}`,
+        },
+      });
+      checkClosed = true;
+    } catch {
+      // Leave the job retryable so a later sweep can close the check.
+    }
+    try {
+      updateSandboxJobStatus(interactionId, checkClosed ? "failed" : "running", params.dbInstance);
     } catch {
       // ignore
     }

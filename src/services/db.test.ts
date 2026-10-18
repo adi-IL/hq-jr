@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   getDatabase,
+  migrateSchema,
   addRemediationCommit,
   hasRemediationCommit,
   acquireRunLock,
@@ -431,11 +432,28 @@ describe("Sandbox job recovery claims", () => {
       },
       db
     );
+    db.prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = ?").run(
+      Date.now() - 120_000,
+      "ix-fresh"
+    );
     touchSandboxJob("ix-fresh", db);
 
     const claimed = claimStaleSandboxJobs(45_000, db);
     expect(claimed.map((j) => j.interactionId)).toEqual(["ix-stale"]);
     expect(claimed[0].status).toBe("recovering");
     expect(claimed[0].installationId).toBe(42);
+
+    // A claimed job whose recoverer died stays reclaimable once it goes stale.
+    db.prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = ?").run(
+      Date.now() - 120_000,
+      "ix-stale"
+    );
+    const reclaimed = claimStaleSandboxJobs(45_000, db);
+    expect(reclaimed.map((j) => j.interactionId)).toEqual(["ix-stale"]);
+  });
+
+  it("migrateSchema is safe to run twice", () => {
+    migrateSchema(db);
+    expect(() => migrateSchema(db)).not.toThrow();
   });
 });

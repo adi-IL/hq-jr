@@ -88,16 +88,21 @@ function tableHasColumn(db: Database.Database, table: string, column: string): b
 }
 
 /** Additive migrations for existing SQLite files. */
+function addColumnIfMissing(db: Database.Database, table: string, column: string, ddl: string): void {
+  if (tableHasColumn(db, table, column)) return;
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  } catch (err: unknown) {
+    // Another instance may have added the column after our check.
+    if (err instanceof Error && /duplicate column/i.test(err.message)) return;
+    throw err;
+  }
+}
+
 export function migrateSchema(db: Database.Database): void {
-  if (!tableHasColumn(db, "review_findings", "status")) {
-    db.exec("ALTER TABLE review_findings ADD COLUMN status TEXT NOT NULL DEFAULT 'open'");
-  }
-  if (!tableHasColumn(db, "review_findings", "resolved_at")) {
-    db.exec("ALTER TABLE review_findings ADD COLUMN resolved_at INTEGER");
-  }
-  if (!tableHasColumn(db, "sandbox_jobs", "installation_id")) {
-    db.exec("ALTER TABLE sandbox_jobs ADD COLUMN installation_id INTEGER");
-  }
+  addColumnIfMissing(db, "review_findings", "status", "TEXT NOT NULL DEFAULT 'open'");
+  addColumnIfMissing(db, "review_findings", "resolved_at", "INTEGER");
+  addColumnIfMissing(db, "sandbox_jobs", "installation_id", "INTEGER");
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_sandbox_jobs_status
       ON sandbox_jobs (status, updated_at);
@@ -575,7 +580,7 @@ export function claimStaleSandboxJobs(
   const rows = db
     .prepare(
       `SELECT * FROM sandbox_jobs
-       WHERE status = 'running' AND updated_at < ?
+       WHERE status IN ('running', 'recovering') AND updated_at < ?
        ORDER BY updated_at ASC
        LIMIT 20`
     )
@@ -584,7 +589,7 @@ export function claimStaleSandboxJobs(
   const claimed: SandboxJobRow[] = [];
   const claim = db.prepare(
     `UPDATE sandbox_jobs SET status = 'recovering', updated_at = ?
-     WHERE interaction_id = ? AND status = 'running' AND updated_at < ?`
+     WHERE interaction_id = ? AND status IN ('running', 'recovering') AND updated_at < ?`
   );
   const now = Date.now();
   for (const row of rows) {

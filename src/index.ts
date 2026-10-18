@@ -492,18 +492,19 @@ ${contextPackage.promptPayload}
         }));
         if (findingRows.length > 0) {
           saveReviewFindings(findingRows);
-          try {
-            resolveFindingsMissingFromCurrent({
-              owner,
-              repo: repoName,
-              pullNumber,
-              currentHeadSha: pr.head.sha,
-              currentFindings: findingRows,
-            });
-            pruneResolvedFindings();
-          } catch (memErr: unknown) {
-            app.log.warn({ memErr, pullNumber }, "Finding resolution/prune failed");
-          }
+        }
+        // Run even with zero findings so fixed issues get resolved.
+        try {
+          resolveFindingsMissingFromCurrent({
+            owner,
+            repo: repoName,
+            pullNumber,
+            currentHeadSha: pr.head.sha,
+            currentFindings: findingRows,
+          });
+          pruneResolvedFindings();
+        } catch (memErr: unknown) {
+          app.log.warn({ memErr, pullNumber }, "Finding resolution/prune failed");
         }
       } catch (persistErr) {
         app.log.warn({ persistErr, pullNumber }, "Failed to persist review findings to SQLite");
