@@ -6,6 +6,7 @@ import { replyToDiscussion } from "./services/discussion.js";
 import { getPreviousReviewContext, getReviewCommentThread } from "./services/review-memory.js";
 import { executeRemediation } from "./services/remediation.js";
 import { scrubSecrets } from "./services/scrubber.js";
+import { dropUnverifiedMissingActionRefs } from "./services/action-ref-verifier.js";
 import { addRemediationCommit, hasRemediationCommit, acquireRunLock, releaseRunLock, saveReviewFindings, getSandboxJobByCheckRun } from "./services/db.js";
 import { executeSandboxCheckRun } from "./services/sandbox-runner.js";
 import type { SandboxProbeRequest } from "./schemas/review.js";
@@ -364,6 +365,7 @@ ${contextPackage.promptPayload}
 `;
 
       const review = await runDeepReview(reviewPrompt, { previousReview });
+      review.comments = await dropUnverifiedMissingActionRefs(octokit, review.comments);
 
       // 6. Post inline review comments via Octokit REST (with line anchor validation)
       const normalizePath = (p: string) => p.replace(/^[./]+/, "").replace(/\\/g, "/");

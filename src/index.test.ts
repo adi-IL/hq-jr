@@ -320,6 +320,62 @@ index 123..456 100644
     );
   });
 
+  it("does not post findings that claim an existing action tag is missing", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Workflow action bumps",
+      overallRisk: "MEDIUM",
+      files: [{ path: ".github/workflows/ci.yml", risk: "MEDIUM", reason: "CI change", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "Action versions look wrong",
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        {
+          path: ".github/workflows/ci.yml",
+          line: 35,
+          side: "RIGHT",
+          severity: "CRITICAL",
+          category: "BUG",
+          title: "Non-existent action version actions/checkout@v7",
+          body: "The action actions/checkout@v7 does not exist; actions/checkout is currently on major version v4. The job will fail during action download.",
+          suggestedPatch: "      - uses: actions/checkout@v4",
+        },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    (octokitMock.git as any).getRef = vi.fn().mockResolvedValue({ data: { ref: "refs/tags/v7" } });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 123..456 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -32,7 +32,7 @@ jobs:
+     runs-on: ubuntu-latest
+     steps:
+-      - uses: actions/checkout@v4
++      - uses: actions/checkout@v7
+       - uses: dorny/paths-filter@v4
+         id: filter
+         with:`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 1, state: "open", head: { sha: "fd1a8d9", ref: "bump-actions-majors" }, title: "Bump actions" },
+        repository: { name: "MidSphere", owner: { login: "adi-IL" } },
+        sender: { login: "adi-IL", type: "User" },
+      },
+    });
+
+    expect((octokitMock.git as any).getRef).toHaveBeenCalledWith({ owner: "actions", repo: "checkout", ref: "tags/v7" });
+    const posted = JSON.stringify(octokitMock.pulls.createReview.mock.calls);
+    expect(posted).not.toContain("Non-existent action version");
+  });
+
   it("commits synthesized reproduction test when maintainer clicks Commit Repro Test action", async () => {
     octokitMock.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
       data: { permission: "admin" },
