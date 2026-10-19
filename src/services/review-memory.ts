@@ -3,6 +3,7 @@ import {
   getReviewFindingsForPull,
   type ReviewFindingRow,
 } from "./db.js";
+import { isHqJrLogin } from "../hq-jr-login.js";
 
 export interface PriorReviewIssue {
   id: number;
@@ -103,9 +104,13 @@ async function getUnresolvedHqJrThreadIssues(
     do {
       const data: any = await octokit.graphql(UNRESOLVED_THREADS_QUERY, { owner, repo, number: pullNumber, cursor });
       const threads = data?.repository?.pullRequest?.reviewThreads;
-      for (const thread of threads?.nodes ?? []) {
-        const root = thread?.comments?.nodes?.[0];
-        if (thread.isResolved || !root || !(root.author?.login ?? "").includes("hq-jr")) continue;
+      if (!threads || !Array.isArray(threads.nodes) || !threads.pageInfo) {
+        return null;
+      }
+      for (const thread of threads.nodes) {
+        if (!thread || thread.isResolved) continue;
+        const root = thread.comments?.nodes?.[0];
+        if (!root || !isHqJrLogin(root.author?.login)) continue;
         const titleMatch = (root.body || "").match(/###\s*\[([^\]]+)\]\s*(.+)/);
         issues.push({
           id: root.databaseId,
@@ -116,7 +121,7 @@ async function getUnresolvedHqJrThreadIssues(
           body: scrubIssueBody(root.body || ""),
         });
       }
-      cursor = threads?.pageInfo?.hasNextPage ? threads.pageInfo.endCursor : null;
+      cursor = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
     } while (cursor);
   } catch {
     return null;
@@ -173,7 +178,7 @@ export async function getPreviousReviewContext(params: {
       const botReviews = reviews.filter((r: any) => {
         const login = r.user?.login || "";
         const isBotType = r.user?.type === "Bot" || login.endsWith("[bot]");
-        return isBotType && login.includes("hq-jr");
+        return isBotType && isHqJrLogin(login);
       });
 
       if (botReviews.length > 0) {

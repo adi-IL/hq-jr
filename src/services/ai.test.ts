@@ -174,7 +174,12 @@ describe("AI request timeouts", () => {
   it("allows deep reviews to run past undici's 300s default header timeout", async () => {
     const { AI_REQUEST_TIMEOUT_MS, aiDispatcherOptions, aiHttpOptions, aiFetch } = await import("./ai.js");
     const undiciDefaultMs = 300_000;
-    expect(AI_REQUEST_TIMEOUT_MS).toBeGreaterThan(undiciDefaultMs);
+    // Only assert the default is above undici's 300s. Overrides may be shorter.
+    if (!process.env.HQ_JR_AI_TIMEOUT_MS) {
+      expect(AI_REQUEST_TIMEOUT_MS).toBeGreaterThan(undiciDefaultMs);
+    } else {
+      expect(AI_REQUEST_TIMEOUT_MS).toBe(Number(process.env.HQ_JR_AI_TIMEOUT_MS));
+    }
     expect(aiDispatcherOptions.headersTimeout).toBe(AI_REQUEST_TIMEOUT_MS);
     expect(aiDispatcherOptions.bodyTimeout).toBe(AI_REQUEST_TIMEOUT_MS);
     expect(aiHttpOptions.fetch).toBe(aiFetch);
@@ -188,14 +193,32 @@ describe("AI request timeouts", () => {
 
   it("routes AI requests through the AI dispatcher", async () => {
     const { createServer } = await import("node:http");
+    const { setGlobalDispatcher, getGlobalDispatcher } = await import("undici");
     const { aiFetch } = await import("./ai.js");
+
     const server = createServer((_req, res) => res.end("ok"));
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as { port: number };
+
+    const previous = getGlobalDispatcher();
+    // If aiFetch accidentally used the global dispatcher, this request would fail.
+    const broken = {
+      dispatch() {
+        throw new Error("global dispatcher must not handle AI requests");
+      },
+      close() {
+        return Promise.resolve();
+      },
+      destroy() {
+        return Promise.resolve();
+      },
+    };
+    setGlobalDispatcher(broken as never);
     try {
       const res = await aiFetch(`http://127.0.0.1:${port}/`);
       expect(await res.text()).toBe("ok");
     } finally {
+      setGlobalDispatcher(previous);
       server.close();
     }
   });

@@ -71,6 +71,18 @@ describe("hq-jr Event Handlers & Security Guards", () => {
     },
   });
 
+  it("does not reply to unmentioned human root review comments", async () => {
+    const replySpy = vi.spyOn(discussionModule, "replyToDiscussion").mockResolvedValue("ack");
+
+    await handlers.get("pull_request_review_comment.created")!(
+      reviewCommentEvent({ id: 40, body: "Just leaving a note.", user: { login: "adi-IL", type: "User" } })
+    );
+
+    expect(replySpy).not.toHaveBeenCalled();
+    expect(octokitMock.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
+    expect(octokitMock.pulls.listReviewComments).not.toHaveBeenCalled();
+  });
+
   it("does not reply in threads started by another bot", async () => {
     octokitMock.pulls.listReviewComments.mockResolvedValueOnce({
       data: [
