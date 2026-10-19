@@ -355,9 +355,14 @@ export async function executeSandboxCheckRun(
       },
     });
 
-    if (reclaimed || (persisted && !touchSandboxJob(interactionId, params.dbInstance))) {
-      return reclaimedResult();
+    if (!reclaimed && persisted) {
+      try {
+        reclaimed = !touchSandboxJob(interactionId, params.dbInstance);
+      } catch {
+        // A DB error is not proof of a reclaim; keep the verdict and close the check.
+      }
     }
+    if (reclaimed) return reclaimedResult();
 
     const verdict =
       pollResult.verdict ??

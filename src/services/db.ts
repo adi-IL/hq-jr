@@ -420,6 +420,11 @@ export interface SandboxJobRow {
   createdAt?: number;
 }
 
+/**
+ * Record a dispatched sandbox job. Status defaults to "running" because the
+ * unleased heartbeat and final write in updateSandboxJobStatus/touchSandboxJob
+ * only land on running rows, and recovery only claims running rows.
+ */
 export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Database): void {
   const db = dbInstance ?? getDatabase();
   const now = Date.now();
@@ -451,7 +456,7 @@ export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Datab
     job.testCommand ?? null,
     now,
     now,
-    job.status ?? "dispatched",
+    job.status ?? "running",
     job.installationId ?? null
   );
 }
@@ -459,7 +464,8 @@ export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Datab
 /**
  * Set a job's status. With a leaseToken the write only lands while that lease
  * is still held, and it releases the lease. Without one it only lands while no
- * recovery worker holds the job, so a slow original worker cannot overwrite it.
+ * recovery worker holds the job and the row is still 'running', so a slow
+ * original worker cannot overwrite a claimed or finished job.
  * Returns whether a row changed.
  */
 export function updateSandboxJobStatus(

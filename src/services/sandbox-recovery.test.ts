@@ -210,6 +210,44 @@ describe("executeSandboxCheckRun after recovery claims the job", () => {
     await done;
 
     expect(completedCalls(update)).toHaveLength(1);
-    expect(status(db)).not.toBe("running");
+    expect(completedCalls(update)[0][0].conclusion).toBe("neutral");
+    expect(status(db)).toBe("neutral");
+  });
+});
+
+describe("executeSandboxCheckRun ownership check errors", () => {
+  it("keeps the verdict when the post-poll ownership check throws", async () => {
+    const db = getDatabase(":memory:");
+    const update = vi.fn().mockResolvedValue({});
+    const octokit = { checks: { create: vi.fn().mockResolvedValue({ data: { id: 32 } }), update } };
+    const pollFn = vi.fn().mockImplementation(async () => {
+      // Break the table so the post-poll heartbeat throws.
+      db.exec("DROP TABLE sandbox_jobs");
+      return { status: "completed", verdict: { reproduced: true, patchCured: true, summary: "cured" } };
+    });
+
+    const result = await executeSandboxCheckRun({
+      octokit,
+      owner: "o",
+      repo: "r",
+      pullNumber: 1,
+      headSha: "sha",
+      branch: "main",
+      verificationGoal: "repro",
+      dispatchFn: vi.fn().mockResolvedValue("ix-dberr"),
+      pollFn,
+      dbInstance: db,
+    } as any);
+
+    expect(result.conclusion).toBe("success");
+    const final = update.mock.calls.map(([a]: any[]) => a).filter((a: any) => a.status === "completed");
+    expect(final).toHaveLength(1);
+    expect(final[0].conclusion).toBe("success");
+  });
+
+  it("defaults an upserted job to running so heartbeats land", () => {
+    const db = getDatabase(":memory:");
+    upsertSandboxJob({ interactionId: "ix-default", checkRunId: 1, owner: "o", repo: "r", pullNumber: 1, headSha: "s" }, db);
+    expect((db.prepare("SELECT status FROM sandbox_jobs WHERE interaction_id = 'ix-default'").get() as any).status).toBe("running");
   });
 });
