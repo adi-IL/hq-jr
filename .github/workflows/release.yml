@@ -61,9 +61,23 @@ jobs:
         run: |
           PKG_NAME=$(node -p "require('./package.json').name")
           PKG_VERSION=$(node -p "require('./package.json').version")
-          NPM_VERSION=$(npm view "$PKG_NAME" version 2>/dev/null || echo "$PKG_VERSION")
-          BASE_VERSION=$(printf '%s\n%s\n' "$PKG_VERSION" "$NPM_VERSION" | sort -V | tail -1)
-          NEXT_VERSION=$(node -e 'const v = process.argv[1].split(".").map(Number); v[2] += 1; console.log(v.join("."));' "$BASE_VERSION")
+          if ! NPM_VERSION=$(npm view "$PKG_NAME" version 2>"$RUNNER_TEMP/npm-view.err"); then
+            if ! grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
+              cat "$RUNNER_TEMP/npm-view.err" >&2
+              exit 1
+            fi
+            NPM_VERSION="$PKG_VERSION"
+          fi
+          NEXT_VERSION=$(node -e '
+            const parse = (v) => {
+              const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
+              if (!m) throw new Error("unsupported version " + JSON.stringify(v) + ", expected X.Y.Z");
+              return m.slice(1).map(Number);
+            };
+            const [pkg, npm] = process.argv.slice(1).map(parse);
+            const [major, minor, patch] = (pkg[0] - npm[0] || pkg[1] - npm[1] || pkg[2] - npm[2]) >= 0 ? pkg : npm;
+            console.log([major, minor, patch + 1].join("."));
+          ' "$PKG_VERSION" "$NPM_VERSION")
           echo "package.json ${PKG_VERSION}, npm latest ${NPM_VERSION} -> releasing ${NEXT_VERSION}"
           NEW_VERSION=$(npm version "$NEXT_VERSION" -m "chore: release %s [skip release]")
           NEW_VERSION="${NEW_VERSION#v}"
@@ -82,14 +96,29 @@ jobs:
           NODE_ENV: production
 
       # Push after publish so a failed npm publish does not leave the repo/tag ahead of the registry.
-      # Rebase onto the latest branch first: a merge landing during the release run would otherwise
-      # reject the version commit, stranding the published version without its commit or tag.
+      # The tag stays on the published commit. If merges landed during the run, only the branch
+      # gets the version commit rebased on top, and Docker still builds from the tag.
       - name: Push version commit and tag
+        env:
+          BRANCH: ${{ github.ref_name }}
+          TAG: v${{ steps.version.outputs.version }}
         run: |
-          git pull --rebase origin ${{ github.ref_name }}
-          git tag -f "v${{ steps.version.outputs.version }}"
-          git push origin HEAD:${{ github.ref_name }}
-          git push origin "v${{ steps.version.outputs.version }}"
+          git push origin "refs/tags/$TAG"
+          for attempt in 1 2 3 4 5; do
+            git push origin "HEAD:$BRANCH" && break
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Could not push the $TAG version commit to $BRANCH after 5 attempts."
+              exit 1
+            fi
+            sleep $((attempt * 5))
+            git fetch origin "$BRANCH"
+            if ! git rebase FETCH_HEAD; then
+              git rebase --abort
+              echo "::error::The $TAG version commit conflicts with $BRANCH. $TAG is published and tagged. Bump package.json on $BRANCH by hand."
+              exit 1
+            fi
+          done
+          git checkout -q "$TAG"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
