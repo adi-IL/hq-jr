@@ -165,3 +165,70 @@ describe("action ref verification edge cases", () => {
     expect(out.comments.map((c) => c.title)).toEqual(["Real bug"]);
   });
 });
+
+describe("verifyReviewActionRefs prior issues and notes", () => {
+  it("drops prior issues whose claimed ref exists and keeps the rest", async () => {
+    const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
+    const out = await verifyReviewActionRefs(octokit, {
+      verdict: "REQUEST_CHANGES" as const,
+      summary: "s",
+      comments: [],
+      unresolvedPriorIssues: ["actions/checkout@v7 does not exist.", "Off-by-one in loop bound is still open."],
+    });
+    expect(out.unresolvedPriorIssues).toEqual(["Off-by-one in loop bound is still open."]);
+    expect(out.verdict).toBe("REQUEST_CHANGES");
+  });
+
+  it("stops requesting changes when the only prior issue was a false claim", async () => {
+    const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
+    const out = await verifyReviewActionRefs(octokit, {
+      verdict: "REQUEST_CHANGES" as const,
+      summary: "s",
+      comments: [],
+      unresolvedPriorIssues: ["actions/checkout@v7 does not exist."],
+    });
+    expect(out.unresolvedPriorIssues).toEqual([]);
+    expect(out.verdict).toBe("COMMENT");
+  });
+
+  it("says the claim was unverified when the lookup failed", async () => {
+    const octokit = {
+      git: { getRef: vi.fn(async () => { throw Object.assign(new Error("boom"), { status: 500 }); }) },
+      repos: { getCommit: vi.fn() },
+    };
+    const out = await verifyReviewActionRefs(octokit, {
+      verdict: "COMMENT" as const,
+      summary: "s",
+      comments: [comment({ body: "actions/checkout@v7 does not exist." })],
+    });
+    expect(out.summary).toContain("could not be verified");
+    expect(out.summary).not.toContain("exists upstream");
+  });
+
+  it("says the ref exists when it was found", async () => {
+    const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
+    const out = await verifyReviewActionRefs(octokit, {
+      verdict: "COMMENT" as const,
+      summary: "s",
+      comments: [comment({ body: "actions/checkout@v7 does not exist." })],
+    });
+    expect(out.summary).toContain("exists upstream");
+    expect(out.summary).not.toContain("could not be verified");
+  });
+
+  it("keeps line breaks and markdown in the summary while removing the false sentence", async () => {
+    const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
+    const out = await verifyReviewActionRefs(octokit, {
+      verdict: "COMMENT" as const,
+      summary: "## Overview\n\n- First point. actions/checkout@v7 does not exist.\n- Second point.",
+      comments: [comment({ body: "actions/checkout@v7 does not exist." })],
+    });
+    expect(out.summary.startsWith("## Overview\n\n- First point.\n- Second point.")).toBe(true);
+  });
+
+  it("returns the review unchanged when nothing is dropped", async () => {
+    const octokit = fakeOctokit({});
+    const review = { verdict: "REQUEST_CHANGES" as const, summary: "a\n\nb", comments: [comment({})] };
+    expect(await verifyReviewActionRefs(octokit, review)).toBe(review);
+  });
+});

@@ -65,57 +65,102 @@ function claimedRefs(text: string): Ref[] {
   return out;
 }
 
+export type DropReason = "found" | "unverified";
+export interface DroppedClaim {
+  refs: Ref[];
+  /** "found": a claimed ref exists upstream. "unverified": a lookup failed, so the claim could not be confirmed. */
+  reason: DropReason;
+}
+
+type Cache = Map<string, Promise<RefState>>;
+
+/** Decide one text. Returns null to keep it, or why it should be dropped. */
+async function judge(octokit: RefLookupOctokit, cache: Cache, text: string): Promise<DroppedClaim | null> {
+  const refs = claimedRefs(text);
+  if (refs.length === 0) return null;
+  const states: RefState[] = [];
+  for (const r of refs) {
+    const key = refKey(r);
+    if (!cache.has(key)) cache.set(key, resolveRef(octokit, r));
+    states.push(await cache.get(key)!);
+  }
+  if (states.every((st) => st === "missing")) return null;
+  return { refs, reason: states.includes("exists") ? "found" : "unverified" };
+}
+
 export async function dropUnverifiedMissingActionRefs(
   octokit: RefLookupOctokit,
   comments: ReviewComment[],
-  dropped: Ref[] = []
+  dropped: DroppedClaim[] = [],
+  cache: Cache = new Map()
 ): Promise<ReviewComment[]> {
-  const cache = new Map<string, Promise<RefState>>();
   const kept: ReviewComment[] = [];
-
   for (const comment of comments) {
-    const refs = claimedRefs(`${comment.title}\n${comment.body}`);
-    if (refs.length === 0) {
-      kept.push(comment);
-      continue;
-    }
-
-    let allConfirmedMissing = true;
-    for (const r of refs) {
-      const key = refKey(r);
-      if (!cache.has(key)) cache.set(key, resolveRef(octokit, r));
-      if ((await cache.get(key)) !== "missing") allConfirmedMissing = false;
-    }
-    if (allConfirmedMissing) kept.push(comment);
-    else dropped.push(...refs);
+    const verdict = await judge(octokit, cache, `${comment.title}\n${comment.body}`);
+    if (verdict) dropped.push(verdict);
+    else kept.push(comment);
   }
-
   return kept;
 }
 
-/**
- * Apply the filter to a full review: drop false missing-ref findings, remove
- * summary sentences that repeat them, and stop requesting changes when no
- * blocking finding is left.
- */
-export async function verifyReviewActionRefs<T extends Pick<DeepReviewResult, "comments" | "summary" | "verdict">>(
-  octokit: RefLookupOctokit,
-  review: T
-): Promise<T> {
-  const dropped: Ref[] = [];
-  const comments = await dropUnverifiedMissingActionRefs(octokit, review.comments, dropped);
-  if (dropped.length === 0) return review;
+/** Remove sentences that repeat a dropped claim, keeping the original separators and line breaks. */
+function scrubSentences(text: string, droppedKeys: Set<string>): string {
+  const parts = text.split(/((?<=[.;!?])[ \t]+|\n+)/);
+  let out = "";
+  for (let i = 0; i < parts.length; i += 2) {
+    const sentence = parts[i];
+    const sep = parts[i + 1] ?? "";
+    const refs = claimedRefs(sentence);
+    if (refs.length > 0 && refs.every((r) => droppedKeys.has(refKey(r)))) {
+      if (sep.includes("\n")) out = out.replace(/[ \t]+$/, "") + sep;
+      continue;
+    }
+    out += sentence + sep;
+  }
+  return out.trim();
+}
 
-  const droppedKeys = new Set(dropped.map(refKey));
-  const summary = review.summary
-    .split(SENTENCE_SPLIT_RE)
-    .filter((s) => !claimedRefs(s).some((r) => droppedKeys.has(refKey(r))))
-    .join(" ")
-    .trim();
-  const removed = review.comments.length - comments.length;
-  const note = `${removed} finding(s) claiming a missing action ref were dropped after the ref was found upstream.`;
-  const blocking = comments.some((c) => c.severity !== "SUGGESTION");
+function dropNote(dropped: DroppedClaim[]): string {
+  const found = dropped.filter((d) => d.reason === "found").length;
+  const unverified = dropped.length - found;
+  const parts: string[] = [];
+  if (found) parts.push(`${found} finding(s) claiming a missing action ref were dropped because the ref exists upstream.`);
+  if (unverified) {
+    parts.push(`${unverified} finding(s) claiming a missing action ref were dropped because the claim could not be verified (ref lookup failed).`);
+  }
+  return parts.join(" ");
+}
+
+type VerifiableReview = Pick<DeepReviewResult, "comments" | "summary" | "verdict"> & {
+  unresolvedPriorIssues?: string[];
+};
+
+/**
+ * Apply the filter to a full review: drop false missing-ref findings and prior
+ * issues, remove summary sentences that repeat them, and stop requesting
+ * changes when nothing blocking is left.
+ */
+export async function verifyReviewActionRefs<T extends VerifiableReview>(octokit: RefLookupOctokit, review: T): Promise<T> {
+  const cache: Cache = new Map();
+  const dropped: DroppedClaim[] = [];
+  const comments = await dropUnverifiedMissingActionRefs(octokit, review.comments, dropped, cache);
+
+  const priorDropped: DroppedClaim[] = [];
+  const unresolved: string[] = [];
+  for (const issue of review.unresolvedPriorIssues ?? []) {
+    const verdict = await judge(octokit, cache, issue);
+    if (verdict) priorDropped.push(verdict);
+    else unresolved.push(issue);
+  }
+  if (dropped.length === 0 && priorDropped.length === 0) return review;
+
+  const droppedKeys = new Set([...dropped, ...priorDropped].flatMap((d) => d.refs.map(refKey)));
+  const summary = scrubSentences(review.summary, droppedKeys);
+  const note = dropNote([...dropped, ...priorDropped]);
+  const blocking = comments.some((c) => c.severity !== "SUGGESTION") || unresolved.length > 0;
   const verdict = review.verdict === "REQUEST_CHANGES" && !blocking ? "COMMENT" : review.verdict;
 
-  return { ...review, comments, summary: summary ? `${summary}\n\n${note}` : note, verdict };
+  const out: T = { ...review, comments, summary: summary ? `${summary}\n\n${note}` : note, verdict };
+  if (review.unresolvedPriorIssues) out.unresolvedPriorIssues = unresolved;
+  return out;
 }
