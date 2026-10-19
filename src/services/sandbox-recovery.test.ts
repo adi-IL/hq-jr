@@ -95,6 +95,37 @@ describe("resumeStaleSandboxJobs failure paths", () => {
     expect(row(db, "ix-close-fail").status).toBe("running");
   });
 
+  it("closes the check when the lease touch itself fails on the DB", async () => {
+    const db = getDatabase(":memory:");
+    staleJob(db, "ix-db-touch");
+    // Fail every UPDATE that does not change the status, which is the shape of
+    // touchSandboxJob's lease renewal. Status transitions still work.
+    db.prepare(
+      `CREATE TRIGGER db_down_touch BEFORE UPDATE ON sandbox_jobs
+       WHEN NEW.status = OLD.status
+       BEGIN SELECT RAISE(ABORT, 'database is locked'); END`
+    ).run();
+    const update = vi.fn().mockResolvedValue({});
+    const pollFn = vi.fn().mockRejectedValue(new Error("boom"));
+
+    await resumeStaleSandboxJobs({ getOctokit: vi.fn().mockResolvedValue({ checks: { update } }), pollFn, dbInstance: db } as any);
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ check_run_id: 8, status: "completed", conclusion: "neutral" })
+    );
+    expect(row(db, "ix-db-touch").status).toBe("failed");
+
+    // The failed row is terminal, so no later sweep can close the check again.
+    db.prepare("DROP TRIGGER db_down_touch").run();
+    db.prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = 'ix-db-touch'").run(Date.now() - 120_000);
+    update.mockClear();
+
+    const finished = await resumeStaleSandboxJobs({ getOctokit: vi.fn().mockResolvedValue({ checks: { update } }), pollFn, dbInstance: db } as any);
+
+    expect(finished).toBe(0);
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("does not overwrite the job or close the check after another worker reclaims the lease", async () => {
     const db = getDatabase(":memory:");
     staleJob(db, "ix-stolen");

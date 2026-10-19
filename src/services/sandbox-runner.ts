@@ -587,7 +587,17 @@ export async function completeSandboxJobPoll(params: {
     };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (leaseLost || (lease && !touchSandboxJob(interactionId, params.dbInstance, lease))) {
+    let leaseTaken = leaseLost;
+    if (!leaseTaken && lease) {
+      try {
+        leaseTaken = !touchSandboxJob(interactionId, params.dbInstance, lease);
+      } catch {
+        // The DB is unavailable, so the lease cannot be renewed or checked.
+        // Still close the check below: otherwise the caller can mark the row
+        // failed (terminal) with its check run left in_progress forever.
+      }
+    }
+    if (leaseTaken) {
       return lostResult();
     }
     let checkClosed = false;
