@@ -2,12 +2,12 @@
 
 ## Overview
 
-`hq-jr` is an automated code review bot built as a GitHub App. It analyzes entire codebases and incremental pull requests for public and private repositories. The bot uses the Probot framework on Node.js and TypeScript.
+`hq-jr` is an automated code review bot built as a GitHub App. It reviews pull request diffs for public and private repositories. Whole-codebase review is a roadmap item, not part of the current event pipeline (see [Codebase Ingestion](03-codebase-ingestion-and-context.md)). The bot uses the Probot framework on Node.js and TypeScript.
 
 The system uses Google Cloud Vertex AI via Application Default Credentials (ADC) for all model interactions. It distributes review tasks across three model tiers:
 - Gemini 3.8 Flash with High Thinking for triage (narrow schema: overall risk `LOW`/`MEDIUM`/`HIGH`, `shouldReview`).
 - Gemini 3.8 Flash with High Thinking for deep semantic review (finding severity `CRITICAL`/`WARNING`/`SUGGESTION`), memory-backed audits, and inline comments.
-- antigravity-preview-05-2026 for asynchronous sandbox verification, build and test execution, and remediation synthesis.
+- antigravity-preview-05-2026 for asynchronous sandbox verification and test execution. Remediation synthesis is not Tier 3; it uses Tier 1 Flash through `synthesizeFileFix`.
 
 ## Probot Core Mechanics
 
@@ -16,7 +16,7 @@ Probot abstracts webhook verification, GitHub App authentication, and Octokit cl
 ```
 +------------------------------------------------------------------------+
 |                               GitHub                                   |
-|   (Pull Requests, Push, Check Runs, Issues, Repository Dispatch)       |
+|   (Pull Requests, Review Comments, Issue Comments, Check Runs)         |
 +-----------------------------------+------------------------------------+
                                     | Webhook (HTTPS POST)
                                     v
@@ -40,7 +40,7 @@ Probot abstracts webhook verification, GitHub App authentication, and Octokit cl
 |                                    v                                   |
 |  +------------------------------------------------------------------+  |
 |  | Review Pipeline Controller                                       |  |
-|  | - Scope Classifier (Full Codebase vs Incremental PR)             |  |
+|  | - Incremental PR Diff Pipeline                                   |  |
 |  | - Review Memory & Prior Audit Context (`review-memory.ts`)        |  |
 |  | - Remediation Engine & Git Tree Commits (`remediation.ts`)        |  |
 |  | - Context Window Packager (`context-packager.ts`)                |  |
@@ -66,15 +66,17 @@ Probot abstracts webhook verification, GitHub App authentication, and Octokit cl
 
 ### Webhook Event Loop
 
-The bot registers handlers for four GitHub event classes:
+The bot registers five handler entry points across four webhook event types:
 
 1. `pull_request.opened`, `pull_request.synchronize`, and `pull_request.reopened`. Triggers incremental diff reviews, retrieves prior audit findings via `review-memory.ts` to verify resolutions, and runs deep semantic analysis. Zero-hunk PRs (pure permissions or binary diffs) complete neutrally without LLM cost.
-2. `pull_request_review_comment.created`. Answers developer inquiries on inline diff comments with multi-turn thread continuity. Human-to-human peer reviews are safely ignored via thread participation checks.
-3. `issue_comment.created`. Listens for commands on pull requests, guarded by RBAC checks (`admin`/`write` permissions required):
-   - `@hq-jr review` or `@hq-jr audit`: Runs on-demand deep reviews.
-   - `@hq-jr fix` or `@hq-jr patch`: Synthesizes code fixes, creates a remediation branch, and commits patches.
-   - `@hq-jr fix and merge`: Synthesizes code fixes and auto-merges into the target branch when permitted.
+2. `pull_request_review_comment.created`. Answers developer inquiries on inline diff comments with multi-turn thread continuity. If `@hq-jr` is not mentioned, the bot only replies when hq-jr authored the thread root.
+3. `issue_comment.created`. Listens for commands on pull requests. Explicit remediation and merge commands require collaborator `admin` or `write`; review commands do not add an extra permission check:
+   - `@hq-jr review` / `audit` / `scan` / `diff`: Runs an on-demand deep review for any commenter on the PR.
+   - `@hq-jr fix` / `patch` / `remediate` (optionally `and merge`): Synthesizes code fixes, creates a remediation branch, and commits patches. Requires `admin` or `write`.
+   - `@hq-jr commit-repro`: Commits the synthesized reproduction test from the sandbox check. Requires `admin` or `write`.
+   - A merge-only command also requires `admin` or `write`.
 4. `check_run.rerequested`. Re-runs the review pipeline when requested from the GitHub UI checks tab.
+5. `check_run.requested_action`. Handles the `Commit Repro Test` and `Re-run Sandbox` buttons. Requires `admin` or `write`.
 
 ### Octokit REST and GraphQL Integration
 
@@ -88,8 +90,7 @@ The bot pairs with the host's existing `gh` CLI for administrative workflows, lo
 
 1. **Manifest Registration.** Automated app creation using `gh api` and Probot app manifests.
 2. **Local Token Verification.** Testing repository permissions via `gh auth status` and `gh api /installation/repositories`.
-3. **Webhook Simulation.** Triggering synthetic test events via `gh api -X POST /repos/{owner}/{repo}/dispatches`.
-4. **Direct PR Review Triggering.** Running `hq-jr review --pr <number>` locally using the user's active GitHub credentials without waiting for webhooks.
+3. **Direct PR Review Triggering.** Running `hq-jr review --pr <number>` locally using the user's active GitHub credentials without waiting for webhooks.
 
 ## Concurrency, Idempotency, and Deadlock Prevention
 
@@ -97,5 +98,5 @@ GitHub webhooks deliver at least once and can arrive out of order:
 - Each review run uses a SQLite `active_runs` mutex keyed by `owner/repo#pullNumber` (`acquireRunLock` / `releaseRunLock` in `db.ts`), with TTL recovery for stale locks.
 - In-flight runs are guarded inside a strict `try ... finally` so the lock is always released, even on GitHub API 403, 429, or network timeouts.
 - Known remediation commits synthesized by `hq-jr` are recorded in the SQLite `remediation_commits` table (pruned to a recent window) to prevent self-trigger feedback loops across process restarts.
-- Prior review findings persist in SQLite `review_findings` for continuity across pushes; GitHub bot reviews remain a supplement.
+- Prior review findings prefer unresolved GitHub review threads opened by hq-jr. SQLite `review_findings` is merged in as a fallback when thread state is unavailable or incomplete.
 - If a newer commit arrives on the same PR branch, subsequent webhooks review the newest SHA.

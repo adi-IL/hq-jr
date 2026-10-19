@@ -1,0 +1,10 @@
+[Unit]
+Description=Update hq-jr container from GHCR
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=adi-IL
+Group=adi-IL
+ExecStart=/opt/hq-jr/deploy/update.sh
