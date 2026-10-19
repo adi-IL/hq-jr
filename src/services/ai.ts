@@ -7,23 +7,28 @@ import {
   DeepReviewResultSchema,
 } from "../schemas/review.js";
 import { safeParseJson } from "./json-repair.js";
-import { Agent, setGlobalDispatcher } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 
 export const AI_REQUEST_TIMEOUT_MS = config.HQ_JR_AI_TIMEOUT_MS;
 
 // Node's fetch gives up after 300s without response headers, which high-thinking
-// deep reviews of large diffs exceed ("fetch failed").
+// deep reviews of large diffs exceed ("fetch failed"). Scoped to AI requests only.
 export const aiDispatcherOptions = {
   headersTimeout: AI_REQUEST_TIMEOUT_MS,
   bodyTimeout: AI_REQUEST_TIMEOUT_MS,
 };
-setGlobalDispatcher(new Agent(aiDispatcherOptions));
+export const aiDispatcher = new Agent(aiDispatcherOptions);
+
+export const aiFetch = ((input: Parameters<typeof undiciFetch>[0], init?: Parameters<typeof undiciFetch>[1]) =>
+  undiciFetch(input, { ...init, dispatcher: aiDispatcher })) as unknown as typeof fetch;
+
+export const aiHttpOptions = { timeout: AI_REQUEST_TIMEOUT_MS, fetch: aiFetch };
 
 export const ai = new GoogleGenAI({
   vertexai: true,
   project: config.GOOGLE_CLOUD_PROJECT,
   location: config.GOOGLE_CLOUD_LOCATION,
-  httpOptions: { timeout: AI_REQUEST_TIMEOUT_MS },
+  httpOptions: aiHttpOptions,
 });
 
 const INFRA_ERROR_CODES = new Set([

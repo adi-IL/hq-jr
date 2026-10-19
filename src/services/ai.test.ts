@@ -172,10 +172,31 @@ describe("extractSandboxVerdict balanced braces", () => {
 
 describe("AI request timeouts", () => {
   it("allows deep reviews to run past undici's 300s default header timeout", async () => {
-    const { AI_REQUEST_TIMEOUT_MS, aiDispatcherOptions } = await import("./ai.js");
+    const { AI_REQUEST_TIMEOUT_MS, aiDispatcherOptions, aiHttpOptions, aiFetch } = await import("./ai.js");
     const undiciDefaultMs = 300_000;
     expect(AI_REQUEST_TIMEOUT_MS).toBeGreaterThan(undiciDefaultMs);
     expect(aiDispatcherOptions.headersTimeout).toBe(AI_REQUEST_TIMEOUT_MS);
     expect(aiDispatcherOptions.bodyTimeout).toBe(AI_REQUEST_TIMEOUT_MS);
+    expect(aiHttpOptions.fetch).toBe(aiFetch);
+  });
+
+  it("leaves the process-wide fetch dispatcher on its defaults", async () => {
+    const { getGlobalDispatcher } = await import("undici");
+    const { aiDispatcher } = await import("./ai.js");
+    expect(getGlobalDispatcher()).not.toBe(aiDispatcher);
+  });
+
+  it("routes AI requests through the AI dispatcher", async () => {
+    const { createServer } = await import("node:http");
+    const { aiFetch } = await import("./ai.js");
+    const server = createServer((_req, res) => res.end("ok"));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      const res = await aiFetch(`http://127.0.0.1:${port}/`);
+      expect(await res.text()).toBe("ok");
+    } finally {
+      server.close();
+    }
   });
 });
