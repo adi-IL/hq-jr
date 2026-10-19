@@ -51,7 +51,7 @@ export function isAiInfraError(err: unknown): boolean {
     const status = Number(e.status ?? e.code);
     if (status === 429 || (status >= 500 && status < 600)) return true;
     const msg = String(e.message ?? "");
-    if (/fetch failed|RESOURCE_EXHAUSTED|UNAVAILABLE|DEADLINE_EXCEEDED|socket hang up/i.test(msg)) return true;
+    if (/fetch failed|socket hang up/i.test(msg) || /\b(RESOURCE_EXHAUSTED|UNAVAILABLE|DEADLINE_EXCEEDED)\b/.test(msg)) return true;
   }
   return false;
 }

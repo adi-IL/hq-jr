@@ -200,3 +200,16 @@ describe("AI request timeouts", () => {
     }
   });
 });
+
+describe("isAiInfraError", () => {
+  it("treats gRPC UNAVAILABLE and DEADLINE_EXCEEDED as infra errors", async () => {
+    const { isAiInfraError } = await import("./ai.js");
+    expect(isAiInfraError(new Error("14 UNAVAILABLE: upstream connect error"))).toBe(true);
+    expect(isAiInfraError(new Error("4 DEADLINE_EXCEEDED: Deadline exceeded"))).toBe(true);
+  });
+
+  it("does not treat an ordinary error mentioning 'unavailable' as an infra error", async () => {
+    const { isAiInfraError } = await import("./ai.js");
+    expect(isAiInfraError(new Error("Model output unavailable: response had no candidates"))).toBe(false);
+  });
+});
