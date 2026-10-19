@@ -59,7 +59,13 @@ jobs:
       - name: Bump patch version
         id: version
         run: |
-          NEW_VERSION=$(npm version patch -m "chore: release %s [skip release]")
+          PKG_NAME=$(node -p "require('./package.json').name")
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          NPM_VERSION=$(npm view "$PKG_NAME" version 2>/dev/null || echo "$PKG_VERSION")
+          BASE_VERSION=$(printf '%s\n%s\n' "$PKG_VERSION" "$NPM_VERSION" | sort -V | tail -1)
+          NEXT_VERSION=$(node -e 'const v = process.argv[1].split(".").map(Number); v[2] += 1; console.log(v.join("."));' "$BASE_VERSION")
+          echo "package.json ${PKG_VERSION}, npm latest ${NPM_VERSION} -> releasing ${NEXT_VERSION}"
+          NEW_VERSION=$(npm version "$NEXT_VERSION" -m "chore: release %s [skip release]")
           NEW_VERSION="${NEW_VERSION#v}"
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Bumped to ${NEW_VERSION}"
@@ -76,8 +82,12 @@ jobs:
           NODE_ENV: production
 
       # Push after publish so a failed npm publish does not leave the repo/tag ahead of the registry.
+      # Rebase onto the latest branch first: a merge landing during the release run would otherwise
+      # reject the version commit, stranding the published version without its commit or tag.
       - name: Push version commit and tag
         run: |
+          git pull --rebase origin ${{ github.ref_name }}
+          git tag -f "v${{ steps.version.outputs.version }}"
           git push origin HEAD:${{ github.ref_name }}
           git push origin "v${{ steps.version.outputs.version }}"
 
