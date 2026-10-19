@@ -1,14 +1,16 @@
 import { Probot } from "probot";
-import { checkAiHealth, runTriage, runDeepReview } from "./services/ai.js";
+import { checkAiHealth, runTriage, runDeepReview, isAiInfraError } from "./services/ai.js";
 import { parseUnifiedDiff, isLineInDiff, DiffFile } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
 import { replyToDiscussion } from "./services/discussion.js";
 import { getPreviousReviewContext, getReviewCommentThread } from "./services/review-memory.js";
 import { executeRemediation } from "./services/remediation.js";
 import { scrubSecrets } from "./services/scrubber.js";
+import { verifyReviewActionRefs } from "./services/action-ref-verifier.js";
 import { addRemediationCommit, hasRemediationCommit, acquireRunLock, releaseRunLock, saveReviewFindings, getSandboxJobByCheckRun, resolveFindingsMissingFromCurrent, pruneResolvedFindings } from "./services/db.js";
 import { executeSandboxCheckRun, resumeStaleSandboxJobs, singleFlight } from "./services/sandbox-runner.js";
 import type { SandboxProbeRequest } from "./schemas/review.js";
+import { isHqJrLogin } from "./hq-jr-login.js";
 
 /** Remediation only on explicit @hq-jr fix|patch|remediate (optional and merge). */
 
@@ -393,7 +395,8 @@ ${filesToReview.map((f) => `- ${f.path} (Risk: ${f.risk}, Reason: ${f.reason})`)
 ${contextPackage.promptPayload}
 `;
 
-      const review = await runDeepReview(reviewPrompt, { previousReview });
+      const rawReview = await runDeepReview(reviewPrompt, { previousReview });
+      const review = await verifyReviewActionRefs(octokit, rawReview);
 
       // 6. Post inline review comments via Octokit REST (with line anchor validation)
       const normalizePath = (p: string) => p.replace(/^[./]+/, "").replace(/\\/g, "/");
@@ -573,9 +576,9 @@ ${contextPackage.promptPayload}
             repo: repoName,
             check_run_id: checkRun.data.id,
             status: "completed",
-            conclusion: "failure",
+            conclusion: isAiInfraError(err) ? "neutral" : "failure",
             output: {
-              title: "Review Failed",
+              title: isAiInfraError(err) ? "Review Skipped: hq-jr Infrastructure Error" : "Review Failed",
               summary: `Automated review encountered an error: ${errorMsg}`,
             },
           });
@@ -597,7 +600,7 @@ ${contextPackage.promptPayload}
       // 1. Never review PR actions triggered by the bot itself or other automated systems
       if (
         sender?.type === "Bot" ||
-        sender?.login?.includes("hq-jr") ||
+        isHqJrLogin(sender?.login) ||
         sender?.login?.endsWith("[bot]")
       ) {
         app.log.info(
@@ -650,6 +653,8 @@ ${contextPackage.promptPayload}
     const mentionsBot = body.includes("@hq-jr") || body.includes("@hq-jr[bot]");
     const isReply = Boolean(comment.in_reply_to_id);
 
+    // Without a mention, only continue for replies in threads hq-jr started.
+    // Never answer unmentioned human root comments.
     if (!mentionsBot && !isReply) {
       return;
     }
@@ -664,10 +669,10 @@ ${contextPackage.promptPayload}
         inReplyToId: comment.in_reply_to_id,
       });
 
-      // Avoid thread hijacking: if not explicitly mentioned, only respond if hq-jr is an existing participant in thread
-      if (!mentionsBot && isReply) {
-        const involvesBot = threadHistory.some((t) => t.isBot || t.author.includes("hq-jr"));
-        if (!involvesBot) {
+      if (!mentionsBot) {
+        const root = threadHistory[0];
+        const hqJrStartedThread = Boolean(root && root.isBot && isHqJrLogin(root.author));
+        if (!hqJrStartedThread) {
           return;
         }
       }
