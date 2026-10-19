@@ -98,5 +98,5 @@ GitHub webhooks deliver at least once and can arrive out of order:
 - Each review run uses a SQLite `active_runs` mutex keyed by `owner/repo#pullNumber` (`acquireRunLock` / `releaseRunLock` in `db.ts`), with TTL recovery for stale locks.
 - In-flight runs are guarded inside a strict `try ... finally` so the lock is always released, even on GitHub API 403, 429, or network timeouts.
 - Known remediation commits synthesized by `hq-jr` are recorded in the SQLite `remediation_commits` table (pruned to a recent window) to prevent self-trigger feedback loops across process restarts.
-- Prior review findings prefer unresolved GitHub review threads opened by hq-jr. SQLite `review_findings` is merged in as a fallback when thread state is unavailable or incomplete.
+- Prior review findings prefer unresolved GitHub review threads opened by hq-jr. When thread state is unavailable, the latest hq-jr review comments and SQLite `review_findings` are merged as fallback.
 - If a newer commit arrives on the same PR branch, subsequent webhooks review the newest SHA.

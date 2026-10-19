@@ -13,14 +13,14 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: /gcloud/application_default_credentials.json
     volumes:
       - /opt/hq-jr/data:/app/data
-      # Reference host path. Replace with the service user's ADC directory on other hosts.
-      - /home/adi-IL/.config/gcloud:/gcloud:ro
+      # This directory must contain only the ADC file and be readable by uid 1001.
+      - /opt/hq-jr/gcloud:/gcloud:ro
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/livez',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
-      timeout: 5s
+      timeout: 6s
       retries: 3
       start_period: 20s
     logging:

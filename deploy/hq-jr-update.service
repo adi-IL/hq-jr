@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# Change User/Group to the deploy account on other hosts. It must be able to use Docker.
 User=adi-IL
 Group=adi-IL
+SupplementaryGroups=docker
 ExecStart=/opt/hq-jr/deploy/update.sh

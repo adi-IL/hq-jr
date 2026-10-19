@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No unreleased runtime changes.
+### Added
+
+- `/livez` process liveness endpoint. Container health checks and `deploy/update.sh` use it; `/healthz` remains the Vertex AI readiness probe.
+- Deploy updater rollback: it respects compose image pins, restores the previous image after a failed health check, skips a known-bad digest until a new one appears, bounds probes with a timeout, and removes the replaced image when possible.
+
+### Fixed
+
+- Scrub PR title and body before they enter the review prompt and label them as untrusted metadata.
+- Stage ADC in a dedicated directory readable by container uid 1001 and mount only that directory.
+- Retry release tag pushes and print manual recovery details if all attempts fail.
+- Remove the ineffective `Persistent=true` from the update timer and grant the update unit Docker access.
+
+### Changed
+
+- Documentation now matches the PR metadata scrubber, review-memory fallback, diff-text budgets, and the protected deployment paths.
 
 ## [0.1.7] - 2026-10-19
 

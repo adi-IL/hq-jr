@@ -18,8 +18,9 @@ Each release publishes two tags to GitHub Container Registry:
 
 ```bash
 docker pull ghcr.io/adi-il/hq-jr:latest
-docker pull ghcr.io/adi-il/hq-jr:0.1.7
 ```
+
+To pin a build, use its image digest (`ghcr.io/adi-il/hq-jr@sha256:...`). Tags can move; digests cannot.
 
 The image runs as the unprivileged `hqjr` user (uid/gid `1001`), exposes port `3000`, and starts Probot through `tini`:
 
@@ -52,7 +53,7 @@ Required repository secret:
 
 `GITHUB_TOKEN` is automatic and provides `contents: write` and `packages: write` for the tag push, GitHub Release, and GHCR push.
 
-Version rules and the publish-before-push ordering live in `.github/workflows/release.yml`. If a publish succeeds but the tag push fails, the workflow reports the published version instead of retrying the publish.
+Version rules and the publish-before-push ordering live in `.github/workflows/release.yml`. The tag push retries three times. If all attempts fail, the run pushes a `release-recovery/<tag>` branch and uploads the version commit patch as an artifact, then prints the recovery details; it never republishes.
 
 ## Reference Deployment: GHCR + Docker Compose
 
@@ -61,7 +62,7 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 | File | Purpose |
 | :--- | :--- |
 | `deploy/compose.yaml` | Container definition: image, env file, data volume, ADC mount, port, healthcheck, log rotation. |
-| `deploy/update.sh` | Pulls `:latest`, compares the image ID, recreates the container only on change, then health-checks it. |
+| `deploy/update.sh` | Reads the image from compose, pulls it, compares image IDs, recreates only on change, health-checks, and rolls back to the previous image if the new one fails. |
 | `deploy/hq-jr-update.service` | Oneshot systemd unit that runs `update.sh`. |
 | `deploy/hq-jr-update.timer` | Runs the update unit every 15 minutes. |
 
@@ -72,6 +73,7 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 3. ADC on the host, either:
    - a GCE VM service account with the Vertex AI scope, or
    - an ADC JSON file such as `~/.config/gcloud/application_default_credentials.json`.
+4. A deploy user that can run Docker, normally via membership in the `docker` group. The reference unit runs as `adi-IL`; change `User`/`Group` in `deploy/hq-jr-update.service` on other hosts.
 
 ### Setup
 
@@ -96,6 +98,10 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 
    Keep `PRIVATE_KEY` on one line with escaped `\n` characters. Do not put spaces around `=`.
 
+   ```bash
+   chmod 600 /opt/hq-jr/.env
+   ```
+
 3. Create the data directory. The container runs as uid `1001`, so that user must own the directory:
 
    ```bash
@@ -103,7 +109,16 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
    sudo chown -R 1001:1001 /opt/hq-jr/data
    ```
 
-4. Review the ADC mount in `deploy/compose.yaml`. The reference file mounts `/home/adi-IL/.config/gcloud` at `/gcloud` and sets `GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json`. On a GCE VM whose service account has the Vertex AI scope, remove that mount and the `GOOGLE_APPLICATION_CREDENTIALS` variable.
+4. Stage ADC. The container runs as uid `1001` and only needs the ADC JSON file:
+
+   ```bash
+   sudo install -d -m 700 -o 1001 -g 1001 /opt/hq-jr/gcloud
+   sudo install -m 400 -o 1001 -g 1001 \
+     ~/.config/gcloud/application_default_credentials.json \
+     /opt/hq-jr/gcloud/
+   ```
+
+   `deploy/compose.yaml` mounts `/opt/hq-jr/gcloud` at `/gcloud` and sets `GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json`. Mounting the dedicated directory keeps unrelated host credentials out of the container. On a GCE VM whose service account has the Vertex AI scope, remove that mount and the `GOOGLE_APPLICATION_CREDENTIALS` variable.
 
 5. Start the service:
 
@@ -115,6 +130,7 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 6. Verify health and logs:
 
    ```bash
+   curl -fsS http://127.0.0.1:3000/livez
    curl -fsS http://127.0.0.1:3000/healthz
    docker compose logs --tail=50
    ```
@@ -136,14 +152,15 @@ The reference `deploy/compose.yaml` does the following:
 - Forces `HOST=0.0.0.0` inside the container and `NODE_ENV=production`. The `.env` file can keep `HOST=127.0.0.1`; Compose overrides it.
 - Publishes only `127.0.0.1:3000` on the host. Put a reverse proxy or tunnel in front if GitHub must reach the webhook endpoint directly.
 - Mounts `/opt/hq-jr/data` at `/app/data` for SQLite.
-- Health-checks `http://127.0.0.1:3000/healthz` from inside the container every 30 seconds.
+- Mounts `/opt/hq-jr/gcloud` at `/gcloud` for ADC. The directory should contain only `application_default_credentials.json` and be readable by uid `1001`.
+- Health-checks `http://127.0.0.1:3000/livez` from inside the container every 30 seconds with a 6-second timeout. The probe aborts after 4 seconds.
 - Rotates JSON logs at 10 MB with three files.
 
 The image user is `hqjr` (`1001:1001`), not root. The data directory must remain writable by uid `1001`.
 
 ### Upgrades and Rollback
 
-The update timer pulls `:latest` every 15 minutes. `deploy/update.sh` compares the running image ID with the pulled image ID, recreates the container only when they differ, and polls `/healthz` for up to 60 seconds.
+The update timer runs every 15 minutes. `deploy/update.sh` reads the image reference from the compose file, pulls it, compares the running image ID with the pulled image ID, recreates the container only when they differ, and polls `/livez` until a 60-second deadline. If the new container stays unhealthy, the script restores the previous image when one exists and exits non-zero. It records the failed digest in `deploy/.last-failed-image` and skips that digest until a new image is published.
 
 Manual upgrade:
 
@@ -159,15 +176,40 @@ Update log:
 sudo journalctl -u hq-jr-update.service -n 50 --no-pager
 ```
 
-Rollback: pin the previous version in `deploy/compose.yaml` and recreate the container.
+Rollback: stop the update timer if you want to freeze automatic updates.
 
-```yaml
-image: ghcr.io/adi-il/hq-jr:0.1.6
+```bash
+sudo systemctl stop hq-jr-update.timer
 ```
+
+Resolve the known-good digest from the previous local image. Replace `0.1.6` with the previous release tag:
 
 ```bash
 cd /opt/hq-jr/deploy
-docker compose up -d
+IMAGE_REF=$(docker image inspect ghcr.io/adi-il/hq-jr:0.1.6 --format '{{index .RepoDigests 0}}')
+```
+
+If the image is no longer local, copy its digest from the previous GitHub Release instead.
+
+Create a Compose override that pins that digest and recreate the container:
+
+```bash
+cat > rollback.yaml <<YAML
+services:
+  app:
+    image: ${IMAGE_REF}
+YAML
+docker compose -f compose.yaml -f rollback.yaml up -d --force-recreate
+```
+
+Keep `rollback.yaml` and the timer stopped while the rollback is active. The updater reads only `compose.yaml`.
+
+To return to normal, remove the override, recreate from `compose.yaml`, and re-enable the timer:
+
+```bash
+rm rollback.yaml
+docker compose up -d --force-recreate
+sudo systemctl start hq-jr-update.timer
 ```
 
 Back up the database before a rollback that crosses schema changes.
@@ -276,9 +318,20 @@ Defaults come from `src/config.ts`. The Docker image also sets `NODE_ENV=product
 
 ## Observability
 
-### Health endpoint
+### Liveness and readiness
 
-`GET /healthz` calls `checkAiHealth` and returns JSON:
+`GET /livez` is a process liveness probe. It returns `200` with:
+
+```json
+{
+  "status": "alive",
+  "uptimeSeconds": 12.05
+}
+```
+
+It does not call Vertex AI. The Docker healthcheck and `deploy/update.sh` use this endpoint.
+
+`GET /healthz` is the readiness probe. It calls `checkAiHealth` and returns JSON:
 
 ```json
 {

@@ -78,9 +78,9 @@ Probot handles token generation and refresh automatically.
 
 ### 2. Secret Redaction at the Model Boundary
 The context packager scrubs packaged diff and file text before it is sent to Vertex AI:
-- Matches private keys (`-----BEGIN PRIVATE KEY-----`), JWTs, Anthropic (`sk-ant-`), OpenAI (`sk-proj-`, `sk-admin-`), fine-grained GitHub PATs (`github_pat_`), and legacy tokens (`ghp_`, `gho_`) with fixed regular expressions. It does not use entropy scoring.
+- Matches private keys, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), Google `AIza` API keys, AWS access key IDs and secret-key assignments, Slack `xox[baprs]` tokens, JWTs, OpenAI/Anthropic `sk-` tokens, and generic `password` / `secret` / `api_key` / `access_token` assignments with fixed regular expressions. It does not use entropy scoring.
 - Replaces matches with `[REDACTED_SECRET]` placeholders.
-- PR title and body are inserted into the review prompt as metadata and are not passed through the scrubber. Tier 3 clones the repository directly and does not use this scrubber.
+- Scrubs the PR title and body before interpolation, then labels them as untrusted metadata in the prompt. Tier 3 clones the repository directly and does not use this scrubber.
 
 ### 3. Role-Based Access Control (RBAC) on Privileged Commands
 For automated remediation and privileged actions (`@hq-jr fix`, `patch`, `remediate`, optional `and merge`, `commit-repro`, merge-only commands, and check-run action buttons):

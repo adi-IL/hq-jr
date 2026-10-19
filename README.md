@@ -31,7 +31,7 @@
 
 Junior sits on your webhook path. Humans skim diffs and type LGTM. Junior does not skim.
 
-It filters noise, scrubs credentials from diff text, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. Prior findings prefer unresolved hq-jr review threads, with SQLite WAL filling gaps across pushes. When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
+It filters noise, scrubs credentials from diff text, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. Prior findings prefer unresolved hq-jr review threads, with the latest hq-jr review and SQLite WAL as fallback when thread state is unavailable. When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
 
 ### Generic AI review bots vs hq-jr
 
@@ -173,25 +173,32 @@ NODE_ENV=development
 npm run build
 npm test
 npm start        # Probot App daemon
-npm run dev      # watches src/index.ts only; does not start the Probot server
+npm run dev      # watches src/index.ts and its imports; does not start the Probot server
 ```
 
-### Docker
+### Docker Quickstart (Linux)
 
 Published image (App daemon):
 
+On Linux, stage an ADC file readable by the container user (uid 1001):
+
 ```bash
-docker pull ghcr.io/adi-il/hq-jr:0.1.7
-# or: docker pull ghcr.io/adi-il/hq-jr:latest
+sudo install -d -m 700 -o 1001 -g 1001 /etc/hq-jr/gcloud
+sudo install -m 400 -o 1001 -g 1001 \
+  "$HOME/.config/gcloud/application_default_credentials.json" \
+  /etc/hq-jr/gcloud/
+
+docker pull ghcr.io/adi-il/hq-jr:latest
+# For a reproducible pin, use an image digest: ghcr.io/adi-il/hq-jr@sha256:...
 docker run --rm -p 127.0.0.1:3000:3000 \
   --env-file .env \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
-  -v "$HOME/.config/gcloud:/gcloud:ro" \
+  -v /etc/hq-jr/gcloud:/gcloud:ro \
   -v hq-jr-data:/app/data \
-  ghcr.io/adi-il/hq-jr:0.1.7
+  ghcr.io/adi-il/hq-jr:latest
 ```
 
-On a GCE VM whose service account has the Vertex AI scope, omit the gcloud mount and `GOOGLE_APPLICATION_CREDENTIALS`. The data volume keeps SQLite across container replacement.
+The mount contains only the ADC file. On Docker Desktop, share the ADC file through the VM and mount its host path. On a GCE VM whose service account has the Vertex AI scope, omit the mount and `GOOGLE_APPLICATION_CREDENTIALS`. The data volume keeps SQLite across container replacement.
 
 Build from source:
 
@@ -200,7 +207,7 @@ docker build -t hq-jr:local .
 docker run --rm -p 127.0.0.1:3000:3000 \
   --env-file .env \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
-  -v "$HOME/.config/gcloud:/gcloud:ro" \
+  -v /etc/hq-jr/gcloud:/gcloud:ro \
   -v hq-jr-data:/app/data \
   hq-jr:local
 ```

@@ -103,7 +103,22 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           TAG: v${{ steps.version.outputs.version }}
         run: |
-          git push origin "refs/tags/$TAG"
+          git format-patch -1 --stdout > "$RUNNER_TEMP/release.patch" || true
+          for attempt in 1 2 3 4; do
+            if git push origin "refs/tags/$TAG"; then
+              break
+            fi
+            if [ "$attempt" -eq 4 ]; then
+              RECOVERY_REF="refs/heads/release-recovery/$TAG"
+              if git push origin "HEAD:$RECOVERY_REF"; then
+                echo "::error::$TAG was published to npm but the tag push failed. The version commit is on $RECOVERY_REF and in artifact release-commit-$TAG; create $TAG from one of them. Do not republish."
+              else
+                echo "::error::$TAG was published to npm but the tag push failed. The version commit patch is in artifact release-commit-$TAG; create $TAG from it. Do not republish."
+              fi
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
           for attempt in 1 2 3 4 5; do
             if git push origin "HEAD:$BRANCH" 2>"$RUNNER_TEMP/push.err"; then
               break
@@ -126,6 +141,15 @@ jobs:
             fi
           done
           git checkout -q "$TAG"
+
+      - name: Save version commit patch
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-commit-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/release.patch
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
