@@ -458,7 +458,9 @@ export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Datab
 
 /**
  * Set a job's status. With a leaseToken the write only lands while that lease
- * is still held, and it releases the lease. Returns whether a row changed.
+ * is still held, and it releases the lease. Without one it only lands while no
+ * recovery worker holds the job, so a slow original worker cannot overwrite it.
+ * Returns whether a row changed.
  */
 export function updateSandboxJobStatus(
   interactionId: string,
@@ -479,7 +481,10 @@ export function updateSandboxJobStatus(
   }
   return (
     db
-      .prepare("UPDATE sandbox_jobs SET status = ?, updated_at = ? WHERE interaction_id = ?")
+      .prepare(
+        `UPDATE sandbox_jobs SET status = ?, updated_at = ?
+         WHERE interaction_id = ? AND lease_token IS NULL AND status = 'running'`
+      )
       .run(status, Date.now(), interactionId).changes === 1
   );
 }
@@ -653,7 +658,10 @@ export function claimStaleSandboxJobs(
   return claimed;
 }
 
-/** Heartbeat. With a leaseToken, returns false once another worker holds the lease. */
+/**
+ * Heartbeat. With a leaseToken, returns false once another worker holds the lease.
+ * Without one (the original worker), returns false once recovery has claimed the job.
+ */
 export function touchSandboxJob(
   interactionId: string,
   dbInstance?: Database.Database,
@@ -669,7 +677,10 @@ export function touchSandboxJob(
   }
   return (
     db
-      .prepare("UPDATE sandbox_jobs SET updated_at = ? WHERE interaction_id = ?")
+      .prepare(
+        `UPDATE sandbox_jobs SET updated_at = ?
+         WHERE interaction_id = ? AND lease_token IS NULL AND status = 'running'`
+      )
       .run(Date.now(), interactionId).changes === 1
   );
 }

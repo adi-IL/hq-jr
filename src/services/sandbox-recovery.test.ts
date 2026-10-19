@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { resumeStaleSandboxJobs } from "./sandbox-runner.js";
+import { resumeStaleSandboxJobs, executeSandboxCheckRun } from "./sandbox-runner.js";
 import { getDatabase, upsertSandboxJob } from "./db.js";
 
 function legacyJob(db: import("better-sqlite3").Database, id: string) {
@@ -146,5 +146,70 @@ describe("resumeStaleSandboxJobs lease loss during poll", () => {
     expect(update).not.toHaveBeenCalled();
     const r = db.prepare("SELECT lease_token FROM sandbox_jobs WHERE interaction_id = 'ix-abort'").get() as any;
     expect(r.lease_token).toBe("other");
+  });
+});
+
+describe("executeSandboxCheckRun after recovery claims the job", () => {
+  function run(db: import("better-sqlite3").Database, pollFn: any, update = vi.fn().mockResolvedValue({})) {
+    const octokit = { checks: { create: vi.fn().mockResolvedValue({ data: { id: 31 } }), update } };
+    const done = executeSandboxCheckRun({
+      octokit,
+      owner: "o",
+      repo: "r",
+      pullNumber: 1,
+      headSha: "sha",
+      branch: "main",
+      verificationGoal: "repro",
+      dispatchFn: vi.fn().mockResolvedValue("ix-orig"),
+      pollFn,
+      pollOptions: { sleep: async () => {} },
+      dbInstance: db,
+    } as any);
+    return { done, update };
+  }
+  const completedCalls = (update: any) => update.mock.calls.filter(([a]: any[]) => a.status === "completed");
+  const status = (db: any) => (db.prepare("SELECT status FROM sandbox_jobs WHERE interaction_id = 'ix-orig'").get() as any).status;
+
+  it("stops polling and leaves the check alone once recovery holds the job", async () => {
+    const db = getDatabase(":memory:");
+    let sleeps = 0;
+    const pollFn = vi.fn().mockImplementation(async (_id: string, opts: any) => {
+      db.prepare("UPDATE sandbox_jobs SET status = 'recovering', lease_token = 'rec' WHERE interaction_id = 'ix-orig'").run();
+      await opts.sleep(0);
+      sleeps += 1;
+      return { status: "completed", outputText: "" };
+    });
+    const { done, update } = run(db, pollFn);
+    const result = await done;
+
+    expect(sleeps).toBe(0);
+    expect(result.status).toBe("failed");
+    expect(completedCalls(update)).toEqual([]);
+    expect(status(db)).toBe("recovering");
+  });
+
+  it("does not overwrite a status recovery already finished", async () => {
+    const db = getDatabase(":memory:");
+    const pollFn = vi.fn().mockImplementation(async () => {
+      db.prepare("UPDATE sandbox_jobs SET status = 'failure', lease_token = NULL WHERE interaction_id = 'ix-orig'").run();
+      return { status: "completed", outputText: "" };
+    });
+    const { done, update } = run(db, pollFn);
+    await done;
+
+    expect(completedCalls(update)).toEqual([]);
+    expect(status(db)).toBe("failure");
+  });
+
+  it("finishes normally when nobody else claimed the job", async () => {
+    const db = getDatabase(":memory:");
+    const { done, update } = run(db, vi.fn().mockImplementation(async (_id: string, opts: any) => {
+      await opts.sleep(0);
+      return { status: "completed", outputText: "" };
+    }));
+    await done;
+
+    expect(completedCalls(update)).toHaveLength(1);
+    expect(status(db)).not.toBe("running");
   });
 });

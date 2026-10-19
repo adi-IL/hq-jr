@@ -240,6 +240,17 @@ export async function executeSandboxCheckRun(
 
   const testCommand = params.testCommand || detectTestCommand(modifiedFiles);
   let checkRunId: number | undefined;
+  let dispatchedId: string | undefined;
+  // persisted: this worker wrote the job row. reclaimed: recovery took it over.
+  let persisted = false;
+  let reclaimed = false;
+  // Recovery owns the job and its check run now, so this worker leaves both alone.
+  const reclaimedResult = (): SandboxCheckRunResult => ({
+    checkRunId,
+    interactionId: dispatchedId,
+    status: "failed",
+    summary: "Sandbox job was reclaimed by recovery; leaving the check run to it",
+  });
 
   try {
     const checkRun = await octokit.checks.create({
@@ -271,7 +282,7 @@ export async function executeSandboxCheckRun(
       : undefined;
 
     const dispatch = params.dispatchFn ?? dispatchSandboxVerification;
-    const interactionId = await dispatch({
+    const interactionId: string = await dispatch({
       repoUrl,
       branch,
       testCommand,
@@ -280,6 +291,7 @@ export async function executeSandboxCheckRun(
       probes: params.probes,
     });
 
+    dispatchedId = interactionId;
     const runningSummary = formatSandboxCheckRunSummary({
       pullNumber,
       branch,
@@ -320,6 +332,7 @@ export async function executeSandboxCheckRun(
         },
         params.dbInstance
       );
+      persisted = true;
     } catch {
       // Persistence is best-effort; polling still proceeds.
     }
@@ -332,13 +345,19 @@ export async function executeSandboxCheckRun(
       ...basePoll,
       sleep: async (ms: number) => {
         try {
-          touchSandboxJob(interactionId, params.dbInstance);
+          // A false return on a persisted row means recovery claimed the job.
+          if (persisted && !touchSandboxJob(interactionId, params.dbInstance)) reclaimed = true;
         } catch {
           // best-effort heartbeat for durable recovery
         }
+        if (reclaimed) throw new Error("sandbox job reclaimed by recovery");
         await baseSleep(ms);
       },
     });
+
+    if (reclaimed || (persisted && !touchSandboxJob(interactionId, params.dbInstance))) {
+      return reclaimedResult();
+    }
 
     const verdict =
       pollResult.verdict ??
@@ -409,6 +428,7 @@ export async function executeSandboxCheckRun(
       verdict,
     };
   } catch (err: unknown) {
+    if (reclaimed) return reclaimedResult();
     const errorMsg = err instanceof Error ? err.message : String(err);
     const failureSummary = `### Sandbox Verification Unavailable\n\nTertiary sandbox agent dispatch encountered an error: ${errorMsg}\n\nStandard Tier 1 & 2 reviews were completed.`;
 
