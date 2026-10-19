@@ -4,7 +4,7 @@
 
 `hq-jr` is architected around two operational tiers:
 
-1. **Active Production Pipeline (Implemented):** High-speed incremental PR diff ingestion. Fetches the diff through Octokit in `src/index.ts`, parses it in `diff-parser.ts`, applies heuristic noise rejection in `file-filter.ts`, redacts secrets from packaged diff text, tracks prior audit history (unresolved hq-jr GitHub threads first, SQLite `review_findings` as fallback), and packages context for multi-tier Gemini evaluation.
+1. **Active Production Pipeline (Implemented):** High-speed incremental PR diff ingestion. Fetches the diff through Octokit in `src/index.ts`, parses it in `diff-parser.ts`, applies heuristic noise rejection in `file-filter.ts`, redacts secrets from packaged diff text, tracks prior audit history (unresolved hq-jr GitHub threads first; latest hq-jr review comments plus SQLite `review_findings` when thread state is unavailable), and packages context for multi-tier Gemini evaluation.
 2. **Phase 5 Advanced Roadmap (Planned):** Full-repository tarball streaming, shallow clones, Tree-Sitter AST symbol indexing, and dependency blast-radius mapping. The SQLite `symbol_cache` table and `symbol-cache.ts` helpers exist, but no review-flow caller populates or reads them yet.
 
 ---
@@ -45,14 +45,14 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                v
 +-------------------------------------------------------------+
 | Multi-Turn Review Memory (src/services/review-memory.ts)    |
-| - Prefer unresolved hq-jr GitHub threads; SQLite fallback   |
+| - Prefer unresolved threads; review + SQLite fallback       |
 | - active_runs locks; verify prior issues resolved on push   |
 +------------------------------+------------------------------+
                                |
                                v
 +-------------------------------------------------------------+
 | Context Packager & Vertex AI Evaluation (src/services/ai.ts)|
-| - Character budgets: 30,000 per file, 120,000 total         |
+| - Diff-text caps: 30,000/file, 120,000 total                |
 | - Tier 1: Flash + High Thinking (triage schema)             |
 | - Tier 2: Flash + High Thinking (deep review schema)        |
 +-------------------------------------------------------------+
@@ -73,7 +73,7 @@ Large pull requests can exceed model limits. `hq-jr` applies character budgets a
    - The filter does not read `.gitignore`; it uses the fixed rules above.
 
 2. **Truncation and Character Budgeting:**
-   - Each file is capped at 30,000 characters. The total payload is capped at 120,000 characters. Both caps add a truncation notice.
+   - Each formatted file diff is capped at 30,000 characters. Accumulated diff text is capped at 120,000 characters. Both caps add a truncation notice. Prompt metadata and section headers are added after these caps, so the final prompt is larger.
    - Long developer discussion replies keep the root turn plus the latest 8 turns, at 1,500 characters per turn.
 
 ---

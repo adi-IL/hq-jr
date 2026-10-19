@@ -32,3 +32,6 @@ scratch/
 
 # Untracked internal maintainer handoffs & operational runbooks
 .internal/
+
+# Deploy host state
+deploy/.last-failed-image

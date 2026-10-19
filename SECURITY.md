@@ -13,7 +13,7 @@
 ### What we protect
 
 1. **Webhook authenticity.** Probot verifies `X-Hub-Signature-256` (HMAC-SHA256) with `WEBHOOK_SECRET`. Unsigned or bad-signature deliveries are rejected.
-2. **Secret scrubbing.** Before diff and file content is sent to Vertex AI, [`src/services/scrubber.ts`](src/services/scrubber.ts) redacts common credentials (GitHub PATs, OpenAI/Anthropic keys, PEM private keys, JWTs). Matches become `[REDACTED_SECRET]`. PR title and body are prompt metadata and are not scrubbed. Tier 3 clones the repository directly and does not pass through this scrubber.
+2. **Secret scrubbing.** Before diff and file content is sent to Vertex AI, [`src/services/scrubber.ts`](src/services/scrubber.ts) redacts common credentials (GitHub PATs, OpenAI/Anthropic keys, PEM private keys, JWTs). Matches become `[REDACTED_SECRET]`. PR title and body are scrubbed and labeled as untrusted prompt metadata. Tier 3 clones the repository directly and does not pass through this scrubber.
 3. **Sandbox isolation.** Tier 3 reproduction (experimental Antigravity agent) runs remotely and may execute the requested test command there. It does not execute target code in the bot host process. Treat the sandbox as untrusted; do not point sandbox runners at privileged host mounts.
 4. **Mention gating.** The bot ignores peer-to-peer PR chatter unless `@hq-jr` is mentioned or a user replies in a review thread hq-jr started. That limits notification spam and social engineering via comment floods.
 5. **Remediation RBAC.** Explicit `@hq-jr fix` / `patch` / `remediate`, merge commands, `commit-repro`, and check action buttons require collaborator `admin` or `write` on the repo. `@hq-jr review` does not add a separate permission check.
@@ -28,7 +28,7 @@
 
 - A compromised host or leaked App private key can post as the App. Rotate keys immediately.
 - Scrubbers are regex-based. Novel secret formats may slip through. Prefer short-lived credentials and pre-commit secret scanning.
-- PR title and body are sent to Vertex AI as unscrubbed review metadata. Tier 3 clones the repository and can read files outside the packaged diff. Treat both as part of your trust boundary.
+- Tier 3 clones the repository and can read files outside the packaged diff. Treat that sandbox and its network access as part of your trust boundary.
 - Vertex AI receives scrubbed code context. Treat GCP IAM and project isolation seriously.
 
 ## Reporting a vulnerability

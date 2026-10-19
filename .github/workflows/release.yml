@@ -103,7 +103,16 @@ jobs:
           BRANCH: ${{ github.ref_name }}
           TAG: v${{ steps.version.outputs.version }}
         run: |
-          git push origin "refs/tags/$TAG"
+          for attempt in 1 2 3; do
+            if git push origin "refs/tags/$TAG"; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::$TAG was published to npm but the tag push failed. Create $TAG at $(git rev-parse HEAD) and push it manually. Do not republish."
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
           for attempt in 1 2 3 4 5; do
             if git push origin "HEAD:$BRANCH" 2>"$RUNNER_TEMP/push.err"; then
               break
