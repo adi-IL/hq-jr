@@ -3,6 +3,7 @@ import {
   getReviewFindingsForPull,
   type ReviewFindingRow,
 } from "./db.js";
+import { isHqJrLogin } from "../hq-jr-login.js";
 
 export interface PriorReviewIssue {
   id: number;
@@ -72,10 +73,66 @@ function mergeIssues(
   return out;
 }
 
+const UNRESOLVED_THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          isResolved
+          diffSide
+          comments(first: 1) {
+            nodes { databaseId author { login } path line originalLine body }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+/** Root comments of hq-jr's unresolved review threads, or null when GraphQL is unavailable. */
+async function getUnresolvedHqJrThreadIssues(
+  octokit: any,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<PriorReviewIssue[] | null> {
+  if (typeof octokit.graphql !== "function") return null;
+  const issues: PriorReviewIssue[] = [];
+  let cursor: string | null = null;
+  try {
+    do {
+      const data: any = await octokit.graphql(UNRESOLVED_THREADS_QUERY, { owner, repo, number: pullNumber, cursor });
+      const threads = data?.repository?.pullRequest?.reviewThreads;
+      if (!threads || !Array.isArray(threads.nodes) || !threads.pageInfo) {
+        return null;
+      }
+      for (const thread of threads.nodes) {
+        if (!thread || thread.isResolved) continue;
+        const root = thread.comments?.nodes?.[0];
+        if (!root || !isHqJrLogin(root.author?.login)) continue;
+        const titleMatch = (root.body || "").match(/###\s*\[([^\]]+)\]\s*(.+)/);
+        issues.push({
+          id: root.databaseId,
+          path: root.path,
+          line: root.line ?? root.originalLine ?? undefined,
+          side: thread.diffSide === "LEFT" ? "LEFT" : "RIGHT",
+          title: titleMatch ? scrubIssueBody(`[${titleMatch[1]}] ${titleMatch[2]}`) : undefined,
+          body: scrubIssueBody(root.body || ""),
+        });
+      }
+      cursor = threads.pageInfo.hasNextPage ? threads.pageInfo.endCursor : null;
+    } while (cursor);
+  } catch {
+    return null;
+  }
+  return issues;
+}
+
 /**
  * Fetches prior review context for a PR.
- * Loads SQLite findings from earlier head SHAs for continuity across pushes,
- * then merges with the latest hq-jr GitHub review comments (GitHub preferred on collision).
+ * Open issues are hq-jr's unresolved review threads. When thread state is unavailable,
+ * falls back to SQLite findings merged with the latest hq-jr review comments.
  */
 export async function getPreviousReviewContext(params: {
   octokit: any;
@@ -121,7 +178,7 @@ export async function getPreviousReviewContext(params: {
       const botReviews = reviews.filter((r: any) => {
         const login = r.user?.login || "";
         const isBotType = r.user?.type === "Bot" || login.endsWith("[bot]");
-        return isBotType && login.includes("hq-jr");
+        return isBotType && isHqJrLogin(login);
       });
 
       if (botReviews.length > 0) {
@@ -158,6 +215,19 @@ export async function getPreviousReviewContext(params: {
     }
   } catch {
     // If review list fails or insufficient permissions, degrade gracefully.
+  }
+
+  const threadIssues = await getUnresolvedHqJrThreadIssues(octokit, owner, repo, pullNumber);
+  if (threadIssues) {
+    if (!githubContext && threadIssues.length === 0) return null;
+    return {
+      reviewId: githubContext?.reviewId ?? 0,
+      lastCommitSha: githubContext?.lastCommitSha || sqliteLastSha || currentHeadSha || "unknown",
+      verdict: githubContext?.verdict ?? "COMMENT",
+      summary: githubContext?.summary ?? "",
+      openIssues: threadIssues,
+      source: "github",
+    };
   }
 
   if (sqliteIssues.length === 0 && !githubContext) {

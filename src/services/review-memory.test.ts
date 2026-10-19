@@ -205,6 +205,177 @@ describe("review-memory service", () => {
     expect(raw.body).not.toContain(rawToken);
   });
 
+  it("builds open issues from hq-jr's unresolved threads, not the latest review", async () => {
+    const thread = (isResolved: boolean, comment: Record<string, unknown>) => ({
+      isResolved,
+      diffSide: "RIGHT",
+      comments: { nodes: [comment] },
+    });
+    const mockOctokit = {
+      graphql: vi.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                thread(true, { databaseId: 601, author: { login: "hq-jr" }, path: "src/a.ts", line: 3, originalLine: 3, body: "### [BUG] Already fixed" }),
+                thread(false, { databaseId: 602, author: { login: "hq-jr" }, path: "src/b.ts", line: null, originalLine: 9, body: "### [BUG] Still open" }),
+                thread(false, { databaseId: 603, author: { login: "greptile-apps" }, path: "src/c.ts", line: 1, originalLine: 1, body: "P2: not ours" }),
+              ],
+            },
+          },
+        },
+      }),
+      pulls: {
+        listReviews: vi.fn().mockResolvedValue({
+          data: [{ id: 700, user: { login: "hq-jr[bot]", type: "Bot" }, state: "COMMENTED", body: "Latest", commit_id: "sha-9" }],
+        }),
+        listCommentsForReview: vi.fn().mockResolvedValue({
+          data: [{ id: 601, path: "src/a.ts", line: 3, side: "RIGHT", body: "### [BUG] Already fixed" }],
+        }),
+      },
+    };
+
+    const result = await getPreviousReviewContext({
+      octokit: mockOctokit,
+      owner: "adi-IL",
+      repo: "hq-jr",
+      pullNumber: 6,
+      dbInstance: db,
+    });
+
+    expect(result?.reviewId).toBe(700);
+    expect(result?.openIssues.map((i) => i.title)).toEqual(["[BUG] Still open"]);
+    expect(result?.openIssues[0]).toMatchObject({ id: 602, path: "src/b.ts", line: 9 });
+  });
+
+  it("does not resurrect SQLite findings once hq-jr's threads are resolved", async () => {
+    saveReviewFindings(
+      [{ owner: "adi-IL", repo: "hq-jr", pullNumber: 6, headSha: "old", path: "src/a.ts", line: 3, side: "RIGHT", title: "[BUG] Already fixed", body: "Already fixed", severity: "WARNING", category: "BUG" }] as any,
+      db
+    );
+    const mockOctokit = {
+      graphql: vi.fn().mockResolvedValue({
+        repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [
+          { isResolved: true, comments: { nodes: [{ databaseId: 601, author: { login: "hq-jr" }, path: "src/a.ts", line: 3, originalLine: 3, body: "### [BUG] Already fixed" }] } },
+        ] } } },
+      }),
+      pulls: {
+        listReviews: vi.fn().mockResolvedValue({
+          data: [{ id: 701, user: { login: "hq-jr[bot]", type: "Bot" }, state: "COMMENTED", body: "Latest", commit_id: "sha-9" }],
+        }),
+        listCommentsForReview: vi.fn().mockResolvedValue({ data: [] }),
+      },
+    };
+
+    const result = await getPreviousReviewContext({ octokit: mockOctokit, owner: "adi-IL", repo: "hq-jr", pullNumber: 6, currentHeadSha: "new", dbInstance: db });
+
+    expect(result?.openIssues ?? []).toEqual([]);
+  });
+
+  it("falls back when GraphQL reviewThreads shape is incomplete", async () => {
+    saveReviewFindings(
+      [{ owner: "owner", repo: "repo", pullNumber: 9, headSha: "sha-old", path: "src/a.ts", line: 1, side: "RIGHT", title: "[BUG] From sqlite", body: "sqlite finding", severity: "WARNING", category: "BUG" }] as any,
+      db
+    );
+    const mockOctokit = {
+      graphql: vi.fn().mockResolvedValue({
+        repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false } } } },
+      }),
+      pulls: {
+        listReviews: vi.fn().mockResolvedValue({ data: [] }),
+      },
+    };
+
+    const result = await getPreviousReviewContext({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      dbInstance: db,
+    });
+
+    expect(result?.source).toBe("sqlite");
+    expect(result?.openIssues).toHaveLength(1);
+    expect(result?.openIssues[0].title).toBe("[BUG] From sqlite");
+  });
+
+  it("skips null GraphQL thread nodes without throwing", async () => {
+    const mockOctokit = {
+      graphql: vi.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                null,
+                {
+                  isResolved: false,
+                  diffSide: "RIGHT",
+                  comments: {
+                    nodes: [{ databaseId: 802, author: { login: "hq-jr[bot]" }, path: "src/b.ts", line: 2, originalLine: 2, body: "### [BUG] Kept" }],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }),
+      pulls: {
+        listReviews: vi.fn().mockResolvedValue({ data: [] }),
+      },
+    };
+
+    const result = await getPreviousReviewContext({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      dbInstance: db,
+    });
+
+    expect(result?.openIssues.map((i) => i.id)).toEqual([802]);
+  });
+
+  it("ignores logins that only contain hq-jr as a substring", async () => {
+    const mockOctokit = {
+      graphql: vi.fn().mockResolvedValue({
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  isResolved: false,
+                  diffSide: "RIGHT",
+                  comments: {
+                    nodes: [{ databaseId: 901, author: { login: "not-hq-jr" }, path: "src/c.ts", line: 1, originalLine: 1, body: "### [BUG] Impostor" }],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }),
+      pulls: {
+        listReviews: vi.fn().mockResolvedValue({
+          data: [{ id: 1, user: { login: "hq-jr-helper[bot]", type: "Bot" }, state: "COMMENTED", body: "nope", commit_id: "sha" }],
+        }),
+        listCommentsForReview: vi.fn().mockResolvedValue({ data: [] }),
+      },
+    };
+
+    const result = await getPreviousReviewContext({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      dbInstance: db,
+    });
+
+    expect(result).toBeNull();
+  });
+
   it("reconstructs multi-turn comment threads in chronological order", async () => {
     const mockOctokit = {
       pulls: {

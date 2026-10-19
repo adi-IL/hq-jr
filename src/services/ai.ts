@@ -7,12 +7,54 @@ import {
   DeepReviewResultSchema,
 } from "../schemas/review.js";
 import { safeParseJson } from "./json-repair.js";
+import { Agent, fetch as undiciFetch } from "undici";
+
+export const AI_REQUEST_TIMEOUT_MS = config.HQ_JR_AI_TIMEOUT_MS;
+
+// Node's fetch gives up after 300s without response headers, which high-thinking
+// deep reviews of large diffs exceed ("fetch failed"). Scoped to AI requests only.
+export const aiDispatcherOptions = {
+  headersTimeout: AI_REQUEST_TIMEOUT_MS,
+  bodyTimeout: AI_REQUEST_TIMEOUT_MS,
+};
+export const aiDispatcher = new Agent(aiDispatcherOptions);
+
+export const aiFetch = ((input: Parameters<typeof undiciFetch>[0], init?: Parameters<typeof undiciFetch>[1]) =>
+  undiciFetch(input, { ...init, dispatcher: aiDispatcher })) as unknown as typeof fetch;
+
+export const aiHttpOptions = { timeout: AI_REQUEST_TIMEOUT_MS, fetch: aiFetch };
 
 export const ai = new GoogleGenAI({
   vertexai: true,
   project: config.GOOGLE_CLOUD_PROJECT,
   location: config.GOOGLE_CLOUD_LOCATION,
+  httpOptions: aiHttpOptions,
 });
+
+const INFRA_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+/** True when a review failed because of network, timeout, or upstream availability, not the PR. */
+export function isAiInfraError(err: unknown): boolean {
+  for (let e: any = err, depth = 0; e && depth < 5; e = e.cause, depth++) {
+    if (e.name === "AbortError" || e.name === "TimeoutError") return true;
+    if (INFRA_ERROR_CODES.has(e.code)) return true;
+    const status = Number(e.status ?? e.code);
+    if (status === 429 || (status >= 500 && status < 600)) return true;
+    const msg = String(e.message ?? "");
+    if (/fetch failed|socket hang up/i.test(msg) || /\b(RESOURCE_EXHAUSTED|UNAVAILABLE|DEADLINE_EXCEEDED)\b/.test(msg)) return true;
+  }
+  return false;
+}
 
 /**
  * Resilient retry wrapper with exponential backoff for transient 429 / 503 errors

@@ -169,3 +169,70 @@ describe("extractSandboxVerdict balanced braces", () => {
     expect(v?.synthesizedTestCode).toBe(code);
   });
 });
+
+describe("AI request timeouts", () => {
+  it("allows deep reviews to run past undici's 300s default header timeout", async () => {
+    const { AI_REQUEST_TIMEOUT_MS, aiDispatcherOptions, aiHttpOptions, aiFetch } = await import("./ai.js");
+    const undiciDefaultMs = 300_000;
+    // Only assert the default is above undici's 300s. Overrides may be shorter.
+    if (!process.env.HQ_JR_AI_TIMEOUT_MS) {
+      expect(AI_REQUEST_TIMEOUT_MS).toBeGreaterThan(undiciDefaultMs);
+    } else {
+      expect(AI_REQUEST_TIMEOUT_MS).toBe(Number(process.env.HQ_JR_AI_TIMEOUT_MS));
+    }
+    expect(aiDispatcherOptions.headersTimeout).toBe(AI_REQUEST_TIMEOUT_MS);
+    expect(aiDispatcherOptions.bodyTimeout).toBe(AI_REQUEST_TIMEOUT_MS);
+    expect(aiHttpOptions.fetch).toBe(aiFetch);
+  });
+
+  it("leaves the process-wide fetch dispatcher on its defaults", async () => {
+    const { getGlobalDispatcher } = await import("undici");
+    const { aiDispatcher } = await import("./ai.js");
+    expect(getGlobalDispatcher()).not.toBe(aiDispatcher);
+  });
+
+  it("routes AI requests through the AI dispatcher", async () => {
+    const { createServer } = await import("node:http");
+    const { setGlobalDispatcher, getGlobalDispatcher } = await import("undici");
+    const { aiFetch } = await import("./ai.js");
+
+    const server = createServer((_req, res) => res.end("ok"));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+
+    const previous = getGlobalDispatcher();
+    // If aiFetch accidentally used the global dispatcher, this request would fail.
+    const broken = {
+      dispatch() {
+        throw new Error("global dispatcher must not handle AI requests");
+      },
+      close() {
+        return Promise.resolve();
+      },
+      destroy() {
+        return Promise.resolve();
+      },
+    };
+    setGlobalDispatcher(broken as never);
+    try {
+      const res = await aiFetch(`http://127.0.0.1:${port}/`);
+      expect(await res.text()).toBe("ok");
+    } finally {
+      setGlobalDispatcher(previous);
+      server.close();
+    }
+  });
+});
+
+describe("isAiInfraError", () => {
+  it("treats gRPC UNAVAILABLE and DEADLINE_EXCEEDED as infra errors", async () => {
+    const { isAiInfraError } = await import("./ai.js");
+    expect(isAiInfraError(new Error("14 UNAVAILABLE: upstream connect error"))).toBe(true);
+    expect(isAiInfraError(new Error("4 DEADLINE_EXCEEDED: Deadline exceeded"))).toBe(true);
+  });
+
+  it("does not treat an ordinary error mentioning 'unavailable' as an infra error", async () => {
+    const { isAiInfraError } = await import("./ai.js");
+    expect(isAiInfraError(new Error("Model output unavailable: response had no candidates"))).toBe(false);
+  });
+});

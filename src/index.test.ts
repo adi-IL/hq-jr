@@ -3,6 +3,7 @@ import appFn from "./index.js";
 import { addRemediationCommit, acquireRunLock, releaseRunLock } from "./services/db.js";
 import * as aiModule from "./services/ai.js";
 import * as sandboxRunnerModule from "./services/sandbox-runner.js";
+import * as discussionModule from "./services/discussion.js";
 
 describe("hq-jr Event Handlers & Security Guards", () => {
   let handlers: Map<string, Function>;
@@ -58,6 +59,163 @@ describe("hq-jr Event Handlers & Security Guards", () => {
     };
 
     appFn(mockApp);
+  });
+
+  const reviewCommentEvent = (comment: Record<string, unknown>) => ({
+    octokit: octokitMock,
+    payload: {
+      action: "created",
+      repository: { name: "test-repo", owner: { login: "test-owner" } },
+      pull_request: { number: 6 },
+      comment: { path: "src/index.ts", diff_hunk: "@@ -1,2 +1,2 @@", ...comment },
+    },
+  });
+
+  it("does not reply to unmentioned human root review comments", async () => {
+    const replySpy = vi.spyOn(discussionModule, "replyToDiscussion").mockResolvedValue("ack");
+
+    await handlers.get("pull_request_review_comment.created")!(
+      reviewCommentEvent({ id: 40, body: "Just leaving a note.", user: { login: "adi-IL", type: "User" } })
+    );
+
+    expect(replySpy).not.toHaveBeenCalled();
+    expect(octokitMock.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
+    expect(octokitMock.pulls.listReviewComments).not.toHaveBeenCalled();
+  });
+
+  it("does not reply in threads started by another bot", async () => {
+    octokitMock.pulls.listReviewComments.mockResolvedValueOnce({
+      data: [
+        { id: 20, user: { login: "greptile-apps[bot]", type: "Bot" }, body: "P1: retry is skipped", created_at: "2026-10-18T10:00:00Z" },
+        { id: 21, in_reply_to_id: 20, user: { login: "hq-jr[bot]", type: "Bot" }, body: "Agreed.", created_at: "2026-10-18T10:01:00Z" },
+        { id: 22, in_reply_to_id: 20, user: { login: "adi-IL", type: "User" }, body: "Fixed in the next push.", created_at: "2026-10-18T10:05:00Z" },
+      ],
+    });
+    const replySpy = vi.spyOn(discussionModule, "replyToDiscussion").mockResolvedValue("ack");
+
+    await handlers.get("pull_request_review_comment.created")!(
+      reviewCommentEvent({ id: 22, in_reply_to_id: 20, body: "Fixed in the next push.", user: { login: "adi-IL", type: "User" } })
+    );
+
+    expect(replySpy).not.toHaveBeenCalled();
+    expect(octokitMock.pulls.createReplyForReviewComment).not.toHaveBeenCalled();
+  });
+
+  it("replies in threads hq-jr started", async () => {
+    octokitMock.pulls.listReviewComments.mockResolvedValueOnce({
+      data: [
+        { id: 30, user: { login: "hq-jr[bot]", type: "Bot" }, body: "### [BUG] Missing await", created_at: "2026-10-18T10:00:00Z" },
+        { id: 31, in_reply_to_id: 30, user: { login: "adi-IL", type: "User" }, body: "Why is it needed?", created_at: "2026-10-18T10:05:00Z" },
+      ],
+    });
+    vi.spyOn(discussionModule, "replyToDiscussion").mockResolvedValue("Because the promise rejects unobserved.");
+
+    await handlers.get("pull_request_review_comment.created")!(
+      reviewCommentEvent({ id: 31, in_reply_to_id: 30, body: "Why is it needed?", user: { login: "adi-IL", type: "User" } })
+    );
+
+    expect(octokitMock.pulls.createReplyForReviewComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 31, body: "Because the promise rejects unobserved." })
+    );
+  });
+
+  it("reports a neutral check when the deep review hits a network failure", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Large change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockRejectedValueOnce(new TypeError("fetch failed"));
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 6, state: "open", head: { sha: "sha-6", ref: "big" }, title: "Big PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+  });
+
+  it("still fails the check when the review requests changes", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "Login logs credentials",
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        { path: "src/auth.ts", line: 2, side: "RIGHT", severity: "CRITICAL", category: "SECURITY", title: "Logs in login path", body: "Remove the log." },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 8, state: "open", head: { sha: "sha-8", ref: "c" }, title: "PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({ status: "completed", conclusion: "failure" });
+  });
+
+  it("still fails the check when the review itself errors", async () => {
+    vi.spyOn(aiModule, "runTriage").mockRejectedValueOnce(new Error("Triage response failed schema validation"));
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 7, state: "open", head: { sha: "sha-7", ref: "b" }, title: "PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({ conclusion: "failure" });
   });
 
   it("handles 0-hunk PRs neutrally without calling AI deep review", async () => {
