@@ -1,0 +1,27 @@
+name: Unpublish 0.1.4
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/unpublish-014.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unpublish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          registry-url: https://registry.npmjs.org
+      - name: Identity check
+        run: npm whoami
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Unpublish hq-jr@0.1.4
+        run: npm unpublish hq-jr@0.1.4 --force
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
