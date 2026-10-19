@@ -73,8 +73,9 @@ export function initSchema(db: Database.Database): void {
       test_command TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      status TEXT NOT NULL DEFAULT 'dispatched',
-      installation_id INTEGER
+      status TEXT NOT NULL DEFAULT 'running',
+      installation_id INTEGER,
+      lease_token TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_sandbox_jobs_check
       ON sandbox_jobs (owner, repo, check_run_id);
@@ -423,7 +424,7 @@ export interface SandboxJobRow {
 /**
  * Record a dispatched sandbox job. Status defaults to "running" because the
  * unleased heartbeat and final write in updateSandboxJobStatus/touchSandboxJob
- * only land on running rows, and recovery only claims running rows.
+ * only land on running rows, and recovery claims running or recovering rows.
  */
 export function upsertSandboxJob(job: SandboxJobRow, dbInstance?: Database.Database): void {
   const db = dbInstance ?? getDatabase();

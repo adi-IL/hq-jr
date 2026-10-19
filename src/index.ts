@@ -7,7 +7,7 @@ import { getPreviousReviewContext, getReviewCommentThread } from "./services/rev
 import { executeRemediation } from "./services/remediation.js";
 import { scrubSecrets } from "./services/scrubber.js";
 import { addRemediationCommit, hasRemediationCommit, acquireRunLock, releaseRunLock, saveReviewFindings, getSandboxJobByCheckRun, resolveFindingsMissingFromCurrent, pruneResolvedFindings } from "./services/db.js";
-import { executeSandboxCheckRun, resumeStaleSandboxJobs } from "./services/sandbox-runner.js";
+import { executeSandboxCheckRun, resumeStaleSandboxJobs, singleFlight } from "./services/sandbox-runner.js";
 import type { SandboxProbeRequest } from "./schemas/review.js";
 
 /** Remediation only on explicit @hq-jr fix|patch|remediate (optional and merge). */
@@ -31,7 +31,8 @@ export const COMMIT_REPRO_COMMAND_RE = /@hq-jr(?:\[bot\])?\s+commit-repro\b/i;
 export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any } = {}) => {
   // Resume Tier 3 polls left in_progress after Cloud Run scale-to-zero / crash.
   // Needs a durable HQ_JR_DB_PATH shared across instances.
-  const resumeOnce = () => {
+  // singleFlight skips a tick while the previous sweep is still polling.
+  const resumeOnce = singleFlight(() =>
     resumeStaleSandboxJobs({
       getOctokit: async (installationId) => {
         try {
@@ -52,8 +53,8 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
       log: app.log,
     }).catch((err: unknown) => {
       app.log.warn({ err }, "Sandbox job recovery sweep failed");
-    });
-  };
+    })
+  );
   setTimeout(resumeOnce, 5_000);
   setInterval(resumeOnce, 60_000).unref?.();
 

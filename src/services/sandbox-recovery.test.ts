@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { resumeStaleSandboxJobs, executeSandboxCheckRun } from "./sandbox-runner.js";
+import { resumeStaleSandboxJobs, executeSandboxCheckRun, singleFlight } from "./sandbox-runner.js";
 import { getDatabase, upsertSandboxJob } from "./db.js";
 
 function legacyJob(db: import("better-sqlite3").Database, id: string) {
@@ -249,5 +249,78 @@ describe("executeSandboxCheckRun ownership check errors", () => {
     const db = getDatabase(":memory:");
     upsertSandboxJob({ interactionId: "ix-default", checkRunId: 1, owner: "o", repo: "r", pullNumber: 1, headSha: "s" }, db);
     expect((db.prepare("SELECT status FROM sandbox_jobs WHERE interaction_id = 'ix-default'").get() as any).status).toBe("running");
+  });
+});
+
+describe("executeSandboxCheckRun poll failure persistence", () => {
+  function runFailing(db: import("better-sqlite3").Database, update: any) {
+    const octokit = { checks: { create: vi.fn().mockResolvedValue({ data: { id: 33 } }), update } };
+    return executeSandboxCheckRun({
+      octokit,
+      owner: "o",
+      repo: "r",
+      pullNumber: 1,
+      headSha: "sha",
+      branch: "main",
+      verificationGoal: "repro",
+      dispatchFn: vi.fn().mockResolvedValue("ix-pollfail"),
+      pollFn: vi.fn().mockRejectedValue(new Error("boom")),
+      dbInstance: db,
+    } as any);
+  }
+  const status = (db: any) => (db.prepare("SELECT status FROM sandbox_jobs WHERE interaction_id = 'ix-pollfail'").get() as any).status;
+
+  it("marks the job failed after closing the check so recovery skips it", async () => {
+    const db = getDatabase(":memory:");
+    const update = vi.fn().mockResolvedValue({});
+    await runFailing(db, update);
+    expect(update).toHaveBeenCalledWith(expect.objectContaining({ status: "completed", conclusion: "neutral" }));
+    expect(status(db)).toBe("failed");
+  });
+
+  it("leaves the job running when the check cannot be closed", async () => {
+    const db = getDatabase(":memory:");
+    const update = vi.fn().mockImplementation(async (a: any) => {
+      if (a.status === "completed") throw new Error("502");
+      return {};
+    });
+    await runFailing(db, update);
+    expect(status(db)).toBe("running");
+  });
+});
+
+describe("singleFlight", () => {
+  it("skips calls while one is in flight and runs again after it settles", async () => {
+    let release!: () => void;
+    const task = vi.fn().mockImplementation(() => new Promise<void>((r) => (release = r)));
+    const run = singleFlight(task);
+
+    const first = run();
+    await run();
+    expect(task).toHaveBeenCalledTimes(1);
+
+    release();
+    await first;
+    const second = run();
+    release();
+    await second;
+    expect(task).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases the guard when the task rejects", async () => {
+    const task = vi.fn().mockRejectedValueOnce(new Error("x")).mockResolvedValue(undefined);
+    const run = singleFlight(task);
+    await expect(run()).rejects.toThrow("x");
+    await run();
+    expect(task).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("sandbox_jobs schema", () => {
+  it("creates lease_token in the base table", () => {
+    const db = getDatabase(":memory:");
+    const cols = (db.prepare("PRAGMA table_info(sandbox_jobs)").all() as Array<{ name: string; dflt_value: string | null }>);
+    expect(cols.map((c) => c.name)).toContain("lease_token");
+    expect(cols.find((c) => c.name === "status")?.dflt_value).toBe("'running'");
   });
 });

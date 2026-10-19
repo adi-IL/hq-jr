@@ -437,6 +437,7 @@ export async function executeSandboxCheckRun(
     const errorMsg = err instanceof Error ? err.message : String(err);
     const failureSummary = `### Sandbox Verification Unavailable\n\nTertiary sandbox agent dispatch encountered an error: ${errorMsg}\n\nStandard Tier 1 & 2 reviews were completed.`;
 
+    let checkClosed = false;
     if (checkRunId) {
       try {
         await octokit.checks.update({
@@ -451,6 +452,15 @@ export async function executeSandboxCheckRun(
             summary: failureSummary,
           },
         });
+        checkClosed = true;
+      } catch {
+        // Leave the row running so a recovery sweep can close the check later.
+      }
+    }
+    // Mark the job finished so recovery does not re-poll a check that is already closed.
+    if (persisted && dispatchedId && checkClosed) {
+      try {
+        updateSandboxJobStatus(dispatchedId, "failed", params.dbInstance);
       } catch {
         // ignore
       }
@@ -685,4 +695,21 @@ export async function resumeStaleSandboxJobs(params: {
     }
   }
   return finished;
+}
+
+/**
+ * Wrap an async task so overlapping calls are skipped while one is in flight.
+ * Used for the periodic recovery sweep, whose polls can outlast the interval.
+ */
+export function singleFlight(task: () => Promise<unknown>): () => Promise<void> {
+  let running = false;
+  return async () => {
+    if (running) return;
+    running = true;
+    try {
+      await task();
+    } finally {
+      running = false;
+    }
+  };
 }
