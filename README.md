@@ -176,7 +176,7 @@ npm start        # Probot App daemon
 npm run dev      # watches src/index.ts and its imports; does not start the Probot server
 ```
 
-### Docker
+### Docker Quickstart (Linux)
 
 Published image (App daemon):
 
