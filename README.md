@@ -180,15 +180,16 @@ npm run dev      # watches src/index.ts and its imports; does not start the Prob
 
 Published image (App daemon):
 
+On Linux, stage an ADC file readable by the container user (uid 1001):
+
 ```bash
-# On Linux, stage an ADC file readable by the container user (uid 1001).
 sudo install -d -m 700 -o 1001 -g 1001 /etc/hq-jr/gcloud
 sudo install -m 400 -o 1001 -g 1001 \
   "$HOME/.config/gcloud/application_default_credentials.json" \
   /etc/hq-jr/gcloud/
 
 docker pull ghcr.io/adi-il/hq-jr:latest
-# For a reproducible pin, use a release tag: ghcr.io/adi-il/hq-jr:<version>
+# For a reproducible pin, use an image digest: ghcr.io/adi-il/hq-jr@sha256:...
 docker run --rm -p 127.0.0.1:3000:3000 \
   --env-file .env \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
@@ -197,7 +198,7 @@ docker run --rm -p 127.0.0.1:3000:3000 \
   ghcr.io/adi-il/hq-jr:latest
 ```
 
-The mount contains only the ADC file. On a GCE VM whose service account has the Vertex AI scope, omit the mount and `GOOGLE_APPLICATION_CREDENTIALS`. The data volume keeps SQLite across container replacement.
+The mount contains only the ADC file. On Docker Desktop, share the ADC file through the VM and mount its host path. On a GCE VM whose service account has the Vertex AI scope, omit the mount and `GOOGLE_APPLICATION_CREDENTIALS`. The data volume keeps SQLite across container replacement.
 
 Build from source:
 

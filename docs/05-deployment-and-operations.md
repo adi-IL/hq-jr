@@ -18,8 +18,9 @@ Each release publishes two tags to GitHub Container Registry:
 
 ```bash
 docker pull ghcr.io/adi-il/hq-jr:latest
-docker pull ghcr.io/adi-il/hq-jr:<version>
 ```
+
+To pin a build, use its image digest (`ghcr.io/adi-il/hq-jr@sha256:...`). Tags can move; digests cannot.
 
 The image runs as the unprivileged `hqjr` user (uid/gid `1001`), exposes port `3000`, and starts Probot through `tini`:
 
@@ -52,7 +53,7 @@ Required repository secret:
 
 `GITHUB_TOKEN` is automatic and provides `contents: write` and `packages: write` for the tag push, GitHub Release, and GHCR push.
 
-Version rules and the publish-before-push ordering live in `.github/workflows/release.yml`. The tag push retries three times. If all attempts fail, the run stops and prints the published version and commit so you can create the tag manually; it never republishes.
+Version rules and the publish-before-push ordering live in `.github/workflows/release.yml`. The tag push retries three times. If all attempts fail, the run pushes a `release-recovery/<tag>` branch and uploads the version commit patch as an artifact, then prints the recovery details; it never republishes.
 
 ## Reference Deployment: GHCR + Docker Compose
 
@@ -159,7 +160,7 @@ The image user is `hqjr` (`1001:1001`), not root. The data directory must remain
 
 ### Upgrades and Rollback
 
-The update timer runs every 15 minutes. `deploy/update.sh` reads the image reference from the compose file, pulls it, compares the running image ID with the pulled image ID, recreates the container only when they differ, and polls `/livez` for up to 60 seconds. If the new container stays unhealthy, the script restores the previous image and exits non-zero. It records the failed digest in `deploy/.last-failed-image` and skips that digest until a new image is published.
+The update timer runs every 15 minutes. `deploy/update.sh` reads the image reference from the compose file, pulls it, compares the running image ID with the pulled image ID, recreates the container only when they differ, and polls `/livez` until a 60-second deadline. If the new container stays unhealthy, the script restores the previous image when one exists and exits non-zero. It records the failed digest in `deploy/.last-failed-image` and skips that digest until a new image is published.
 
 Manual upgrade:
 

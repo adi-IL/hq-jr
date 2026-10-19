@@ -45,7 +45,7 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                v
 +-------------------------------------------------------------+
 | Multi-Turn Review Memory (src/services/review-memory.ts)    |
-| - Prefer unresolved threads; review + SQLite fallback       |
+| - Prefer unresolved hq-jr threads; review+SQLite fallback   |
 | - active_runs locks; verify prior issues resolved on push   |
 +------------------------------+------------------------------+
                                |
@@ -73,7 +73,7 @@ Large pull requests can exceed model limits. `hq-jr` applies character budgets a
    - The filter does not read `.gitignore`; it uses the fixed rules above.
 
 2. **Truncation and Character Budgeting:**
-   - Each formatted file diff is capped at 30,000 characters. Accumulated diff text is capped at 120,000 characters. Both caps add a truncation notice. Prompt metadata and section headers are added after these caps, so the final prompt is larger.
+   - Each formatted file diff is capped at 30,000 characters before truncation notices are added. Accumulated diff text is capped at 120,000 characters before notices. Secret replacement can expand a match, and prompt metadata and section headers are added after these caps, so the emitted prompt can exceed these budgets.
    - Long developer discussion replies keep the root turn plus the latest 8 turns, at 1,500 characters per turn.
 
 ---

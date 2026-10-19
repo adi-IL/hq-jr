@@ -185,7 +185,7 @@ Both direct tiers use `generateContent` with `responseMimeType: "application/jso
 }
 ```
 
-The TypeScript definitions live in `src/schemas/review.ts`; `line` defaults to `1`, `side` defaults to `RIGHT`, and `resolvedPriorIssues`, `unresolvedPriorIssues`, and `sandboxProbes` default to empty. `comments` is required.
+The TypeScript definitions live in `src/schemas/review.ts`; `line` defaults to `1`, `side` defaults to `RIGHT`, `requiresSandboxVerification` defaults to `false`, and `resolvedPriorIssues`, `unresolvedPriorIssues`, and `sandboxProbes` default to empty. `comments` is required.
 
 ## Implementation Snippets
 

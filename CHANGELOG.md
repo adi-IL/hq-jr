@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `/livez` process liveness endpoint. Container health checks and `deploy/update.sh` use it; `/healthz` remains the Vertex AI readiness probe.
-- Deploy updater rollback: it respects compose image pins, restores the previous image after a failed health check, skips a known-bad digest until a new one appears, bounds probes with a timeout, and prunes dangling images.
+- Deploy updater rollback: it respects compose image pins, restores the previous image after a failed health check, skips a known-bad digest until a new one appears, bounds probes with a timeout, and removes the replaced image when possible.
 
 ### Fixed
 
