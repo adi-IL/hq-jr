@@ -16,9 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Scrub PR title and body before they enter the review prompt and label them as untrusted metadata.
+- Scrub PR title and body before they enter the review prompt, label them as untrusted metadata, and escape delimiter variants that could close the wrapper.
 - Stage ADC in a dedicated directory readable by container uid 1001 and mount only that directory.
-- Retry release tag pushes and print manual recovery details if all attempts fail.
+- Handle `docker compose up` failures without marking the digest bad; transient failures are retried on the next run.
+- Retry release tag pushes and push a recovery branch plus a commit-patch artifact if all attempts fail.
 - Remove the ineffective `Persistent=true` from the update timer and grant the update unit Docker access.
 
 ### Changed
