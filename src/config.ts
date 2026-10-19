@@ -9,6 +9,7 @@ const envSchema = z.object({
   HQ_JR_MODEL_TIER1: z.string().default("gemini-3.8-flash"),
   HQ_JR_MODEL_TIER2: z.string().default("gemini-3.8-flash"),
   HQ_JR_AGENT_TIER3: z.string().default("antigravity-preview-05-2026"),
+  HQ_JR_AI_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
   HQ_JR_DB_PATH: z.string().default("./data/hq-jr.db"),
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),

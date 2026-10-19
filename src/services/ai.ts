@@ -7,12 +7,49 @@ import {
   DeepReviewResultSchema,
 } from "../schemas/review.js";
 import { safeParseJson } from "./json-repair.js";
+import { Agent, setGlobalDispatcher } from "undici";
+
+export const AI_REQUEST_TIMEOUT_MS = config.HQ_JR_AI_TIMEOUT_MS;
+
+// Node's fetch gives up after 300s without response headers, which high-thinking
+// deep reviews of large diffs exceed ("fetch failed").
+export const aiDispatcherOptions = {
+  headersTimeout: AI_REQUEST_TIMEOUT_MS,
+  bodyTimeout: AI_REQUEST_TIMEOUT_MS,
+};
+setGlobalDispatcher(new Agent(aiDispatcherOptions));
 
 export const ai = new GoogleGenAI({
   vertexai: true,
   project: config.GOOGLE_CLOUD_PROJECT,
   location: config.GOOGLE_CLOUD_LOCATION,
+  httpOptions: { timeout: AI_REQUEST_TIMEOUT_MS },
 });
+
+const INFRA_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+/** True when a review failed because of network, timeout, or upstream availability, not the PR. */
+export function isAiInfraError(err: unknown): boolean {
+  for (let e: any = err, depth = 0; e && depth < 5; e = e.cause, depth++) {
+    if (e.name === "AbortError" || e.name === "TimeoutError") return true;
+    if (INFRA_ERROR_CODES.has(e.code)) return true;
+    const status = Number(e.status ?? e.code);
+    if (status === 429 || (status >= 500 && status < 600)) return true;
+    const msg = String(e.message ?? "");
+    if (/fetch failed|RESOURCE_EXHAUSTED|UNAVAILABLE|DEADLINE_EXCEEDED|socket hang up/i.test(msg)) return true;
+  }
+  return false;
+}
 
 /**
  * Resilient retry wrapper with exponential backoff for transient 429 / 503 errors

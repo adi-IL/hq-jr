@@ -169,3 +169,13 @@ describe("extractSandboxVerdict balanced braces", () => {
     expect(v?.synthesizedTestCode).toBe(code);
   });
 });
+
+describe("AI request timeouts", () => {
+  it("allows deep reviews to run past undici's 300s default header timeout", async () => {
+    const { AI_REQUEST_TIMEOUT_MS, aiDispatcherOptions } = await import("./ai.js");
+    const undiciDefaultMs = 300_000;
+    expect(AI_REQUEST_TIMEOUT_MS).toBeGreaterThan(undiciDefaultMs);
+    expect(aiDispatcherOptions.headersTimeout).toBe(AI_REQUEST_TIMEOUT_MS);
+    expect(aiDispatcherOptions.bodyTimeout).toBe(AI_REQUEST_TIMEOUT_MS);
+  });
+});

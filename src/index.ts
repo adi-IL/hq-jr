@@ -1,5 +1,5 @@
 import { Probot } from "probot";
-import { checkAiHealth, runTriage, runDeepReview } from "./services/ai.js";
+import { checkAiHealth, runTriage, runDeepReview, isAiInfraError } from "./services/ai.js";
 import { parseUnifiedDiff, isLineInDiff, DiffFile } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
 import { replyToDiscussion } from "./services/discussion.js";
@@ -529,9 +529,9 @@ ${contextPackage.promptPayload}
             repo: repoName,
             check_run_id: checkRun.data.id,
             status: "completed",
-            conclusion: "failure",
+            conclusion: isAiInfraError(err) ? "neutral" : "failure",
             output: {
-              title: "Review Failed",
+              title: isAiInfraError(err) ? "Review Skipped: hq-jr Infrastructure Error" : "Review Failed",
               summary: `Automated review encountered an error: ${errorMsg}`,
             },
           });
@@ -619,10 +619,11 @@ ${contextPackage.promptPayload}
         inReplyToId: comment.in_reply_to_id,
       });
 
-      // Avoid thread hijacking: if not explicitly mentioned, only respond if hq-jr is an existing participant in thread
+      // Without an explicit mention, only answer in threads hq-jr started.
       if (!mentionsBot && isReply) {
-        const involvesBot = threadHistory.some((t) => t.isBot || t.author.includes("hq-jr"));
-        if (!involvesBot) {
+        const root = threadHistory[0];
+        const hqJrStartedThread = Boolean(root && root.isBot && root.author.includes("hq-jr"));
+        if (!hqJrStartedThread) {
           return;
         }
       }
