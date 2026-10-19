@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-19
+
 ### Added
 
 - `/livez` process liveness endpoint. Container health checks and `deploy/update.sh` use it; `/healthz` remains the Vertex AI readiness probe.
@@ -126,7 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default models match `src/config.ts`: `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` are `gemini-3.8-flash`. Override Tier 2 with `gemini-3.1-pro-preview` if you want Pro.
 - Tier 3 / Antigravity is experimental.
 
-[Unreleased]: https://github.com/adi-IL/hq-jr/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/adi-IL/hq-jr/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.8
 [0.1.7]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.7
 [0.1.6]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.6
 [0.1.5]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.5
