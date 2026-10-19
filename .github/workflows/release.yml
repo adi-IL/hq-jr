@@ -105,7 +105,14 @@ jobs:
         run: |
           git push origin "refs/tags/$TAG"
           for attempt in 1 2 3 4 5; do
-            git push origin "HEAD:$BRANCH" && break
+            if git push origin "HEAD:$BRANCH" 2>"$RUNNER_TEMP/push.err"; then
+              break
+            fi
+            cat "$RUNNER_TEMP/push.err" >&2
+            if ! grep -Eq '\[rejected\].*\((fetch first|non-fast-forward)\)' "$RUNNER_TEMP/push.err"; then
+              echo "::error::$BRANCH refused the $TAG version commit for a reason other than new commits. $TAG is published and tagged. Bump package.json on $BRANCH by hand."
+              exit 1
+            fi
             if [ "$attempt" -eq 5 ]; then
               echo "::error::Could not push the $TAG version commit to $BRANCH after 5 attempts."
               exit 1
