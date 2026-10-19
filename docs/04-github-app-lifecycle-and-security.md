@@ -27,7 +27,7 @@ The bot requires only the following permissions:
 | Permission | Access | Justification |
 | :--- | :--- | :--- |
 | **Pull requests** | `Read & write` | Read PR metadata, diffs, and post line-anchored review comments. |
-| **Repository contents** | `Read & write` | Ingest source code trees, parse symbols, and commit automated remediation branches (`hq-jr/fix-pr-<id>`). |
+| **Repository contents** | `Read & write` | Read changed files and blobs, and commit automated remediation branches (`hq-jr/fix-pr-<id>`). |
 | **Checks** | `Read & write` | Create and update Check Runs to show review progress and verdicts. |
 | **Issues** | `Read & write` | Comment on PR conversation threads and process `@hq-jr review` or `@hq-jr fix` commands. |
 | **Metadata** | `Read` | Required by GitHub for all GitHub Apps to resolve repository IDs. |
@@ -39,7 +39,7 @@ The app manifest (`app.yml`) registers listeners for four event classes:
 - `pull_request` (`opened`, `synchronize`, `reopened`).
 - `pull_request_review_comment` (`created`).
 - `issue_comment` (`created`).
-- `check_run` (`rerequested`).
+- `check_run` (`rerequested` and `requested_action`). The action buttons are `Commit Repro Test` and `Re-run Sandbox`.
 
 ## Authentication Mechanics
 
@@ -73,24 +73,25 @@ Probot handles token generation and refresh automatically.
 
 ## Security Boundaries and Data Protection
 
-### 1. Zero Untrusted Code Execution
-`hq-jr` strictly parses source code using unified diff parsing and AI semantic reasoning. The bot never executes arbitrary build scripts, test runners, or binaries from target pull requests.
+### 1. Untrusted Code Stays Off the Bot Host
+`hq-jr` parses diffs and reasons over them as text. The Probot process never executes target build scripts, test runners, or binaries. When Tier 3 verification is enabled, the Antigravity agent clones the repository and runs the requested test command inside a remote sandbox (`environment: "remote"`). Treat that sandbox as untrusted: do not attach privileged host mounts or long-lived credentials.
 
-### 2. Secret Redaction at Boundary
-Before transmitting source code or diffs to Vertex AI, the context packager passes all text through a credential scrubber:
-- Matches high-entropy strings, private keys (`-----BEGIN PRIVATE KEY-----`), JWTs, Anthropic (`sk-ant-`), OpenAI (`sk-proj-`, `sk-admin-`), fine-grained GitHub PATs (`github_pat_`), and legacy tokens (`ghp_`, `gho_`).
+### 2. Secret Redaction at the Model Boundary
+The context packager scrubs packaged diff and file text before it is sent to Vertex AI:
+- Matches private keys (`-----BEGIN PRIVATE KEY-----`), JWTs, Anthropic (`sk-ant-`), OpenAI (`sk-proj-`, `sk-admin-`), fine-grained GitHub PATs (`github_pat_`), and legacy tokens (`ghp_`, `gho_`) with fixed regular expressions. It does not use entropy scoring.
 - Replaces matches with `[REDACTED_SECRET]` placeholders.
-- Protects private credentials from appearing in model logs.
+- PR title and body are inserted into the review prompt as metadata and are not passed through the scrubber. Tier 3 clones the repository directly and does not use this scrubber.
 
-### 3. Role-Based Access Control (RBAC) on Remediation
-For automated code remediation commands (`@hq-jr fix`, `@hq-jr patch`, `@hq-jr fix and merge`):
+### 3. Role-Based Access Control (RBAC) on Privileged Commands
+For automated remediation and privileged actions (`@hq-jr fix`, `patch`, `remediate`, optional `and merge`, `commit-repro`, merge-only commands, and check-run action buttons):
 - The bot verifies caller identity using `octokit.repos.getCollaboratorPermissionLevel`.
-- Only collaborators with `admin` or `write` permissions are permitted to trigger automated commits or merges.
+- Only collaborators with `admin` or `write` permissions are permitted to trigger automated commits, merges, or sandbox actions.
 - Non-collaborators or unauthorized users receive an immediate `⛔ Access Denied` response in the PR timeline.
+- `@hq-jr review` / `audit` / `scan` / `diff` is not RBAC-gated; any commenter on the pull request can request a review.
 
 ### 4. Review Comment Anti-Hijacking
-- In `pull_request_review_comment.created` events, if a user replies to an existing review thread without mentioning `@hq-jr`, the bot traverses the comment thread history.
-- The bot only replies if `hq-jr` was already a participant in that specific thread. Human-to-human peer reviews are completely ignored.
+- In `pull_request_review_comment.created` events, if a user replies to an existing review thread without mentioning `@hq-jr`, the bot traverses the thread history.
+- The bot only replies without a mention when hq-jr authored the thread root. Being a later participant is not enough, so human-to-human peer reviews stay quiet.
 
 ### 5. Memory Management and Denial-of-Service Defense
 - In-flight reviews are gated via SQLite `active_runs` (`acquireRunLock` / `releaseRunLock`) inside `try ... finally` so concurrent webhooks for the same PR/SHA do not double-run.

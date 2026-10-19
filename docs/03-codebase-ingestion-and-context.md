@@ -4,8 +4,8 @@
 
 `hq-jr` is architected around two operational tiers:
 
-1. **Active Production Pipeline (Implemented):** High-speed incremental PR diff ingestion. Parses GitHub unified diffs directly via Octokit, applies heuristic noise rejection, redacts secrets, calculates line anchors, tracks prior audit history via SQLite `review_findings` plus GitHub hq-jr reviews (`review-memory.ts`), and packages context for multi-tier Gemini evaluation.
-2. **Phase 5 Advanced Roadmap (Planned):** Full-repository tarball streaming, local Tree-Sitter AST symbol indexing, dependency blast radius mapping, and persistent SQLite caching.
+1. **Active Production Pipeline (Implemented):** High-speed incremental PR diff ingestion. Fetches the diff through Octokit in `src/index.ts`, parses it in `diff-parser.ts`, applies heuristic noise rejection in `file-filter.ts`, redacts secrets from packaged diff text, tracks prior audit history (unresolved hq-jr GitHub threads first, SQLite `review_findings` as fallback), and packages context for multi-tier Gemini evaluation.
+2. **Phase 5 Advanced Roadmap (Planned):** Full-repository tarball streaming, shallow clones, Tree-Sitter AST symbol indexing, and dependency blast-radius mapping. The SQLite `symbol_cache` table and `symbol-cache.ts` helpers exist, but no review-flow caller populates or reads them yet.
 
 ---
 
@@ -20,16 +20,17 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                |
                                v
 +-------------------------------------------------------------+
-| Octokit Diff Stream (src/services/diff-parser.ts)           |
-| - GET /repos/{owner}/{repo}/pulls/{number} (diff format)    |
-| - Parse hunks, old/new line anchors, quoted paths with space|
-| - Filter binary files and Git submodules (mode 160000)      |
+| Octokit PR Diff Fetch + Parser                              |
+|   src/index.ts -> src/services/diff-parser.ts               |
+| - pulls.get with the diff media type                        |
+| - Parse hunks, old/new line anchors, quoted paths           |
+| - Tag binaries and submodules (mode 160000)                 |
 +------------------------------+------------------------------+
                                |
                                v
 +-------------------------------------------------------------+
 | Heuristic Noise & Extension Filter (src/services/file-filter.ts)
-| - Skip lockfiles (package-lock.json, bun.lock, Cargo.lock)  |
+| - Skip lockfiles (package-lock.json, bun.lockb, Cargo.lock)  |
 | - Skip compiled assets (dist/, build/, minified JS)         |
 | - Include SVGs in frontend triage for stored XSS detection  |
 +------------------------------+------------------------------+
@@ -44,14 +45,14 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                v
 +-------------------------------------------------------------+
 | Multi-Turn Review Memory (src/services/review-memory.ts)    |
-| - SQLite review_findings + GitHub hq-jr reviews merge       |
+| - Prefer unresolved hq-jr GitHub threads; SQLite fallback   |
 | - active_runs locks; verify prior issues resolved on push   |
 +------------------------------+------------------------------+
                                |
                                v
 +-------------------------------------------------------------+
 | Context Packager & Vertex AI Evaluation (src/services/ai.ts)|
-| - Budget token limits per file                              |
+| - Character budgets: 30,000 per file, 120,000 total         |
 | - Tier 1: Flash + High Thinking (triage schema)             |
 | - Tier 2: Flash + High Thinking (deep review schema)        |
 +-------------------------------------------------------------+
@@ -61,17 +62,19 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
 
 ## Context Window Optimization Rules
 
-Large pull requests can easily exceed model token limits. `hq-jr` applies strict budgeting per `principle-guard-the-context-window`:
+Large pull requests can exceed model limits. `hq-jr` applies character budgets and deterministic filters before any model call.
 
-1. **Deterministic Ignore Rules:** Skips files matching `.gitignore` and noise heuristics:
-   - Documentation (`*.md`, `*.txt`, `docs/**`).
-   - Lockfiles (`package-lock.json`, `bun.lock`, `Cargo.lock`, `pnpm-lock.yaml`).
-   - Asset binaries (`*.png`, `*.jpg`, `*.wasm`, `*.bin`).
-   - Generated code (`dist/**`, `build/**`, `*.min.js`).
+1. **Deterministic Ignore Rules** (`src/services/file-filter.ts`):
+   - Documentation (`*.md`, `*.markdown`, `*.txt`, `docs/**`).
+   - Lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock`, `composer.lock`, `flake.lock`).
+   - Asset binaries and archives (`*.png`, `*.jpg`, `*.wasm`, `*.bin`, `*.zip`, and similar).
+   - Generated directories (`node_modules/`, `dist/`, `build/`, `out/`, `target/`, `.next/`, `vendor/`, `coverage/`).
+   - Minified bundles (`*.min.*`, `*.bundle.js`).
+   - The filter does not read `.gitignore`; it uses the fixed rules above.
 
-2. **Truncation and Token Budgeting:**
-   - Diffs larger than 120,000 characters are pre-truncated with truncation notices to avoid regex denial-of-service in secret scrubbers.
-   - Long developer discussion replies are constrained via a sliding window (root turn + latest 8 turns, max 1,500 chars/turn).
+2. **Truncation and Character Budgeting:**
+   - Each file is capped at 30,000 characters. The total payload is capped at 120,000 characters. Both caps add a truncation notice.
+   - Long developer discussion replies keep the root turn plus the latest 8 turns, at 1,500 characters per turn.
 
 ---
 
@@ -87,5 +90,6 @@ The following features are designed for future full-codebase repository audits:
 - Parsing source files with Tree-Sitter grammar bindings to identify function declarations, classes, and exported interfaces.
 - Mapping cross-file dependency call-sites to detect when changing a signature breaks external consumers across the repository.
 
-### 3. SQLite Cache Persistence
-- Maintaining an on-disk cache `(repo_id, commit_sha, file_path, content_hash, symbols_json)` to avoid re-parsing unchanged files across commit iterations.
+### 3. SQLite Symbol Cache (Present, Not Wired)
+- `src/services/db.ts` creates `symbol_cache (repo, commit_sha, file_path, content_hash, symbols_json, created_at)` with primary key `(repo, commit_sha, file_path)`.
+- `src/services/symbol-cache.ts` provides read/write helpers, but no production review path calls them yet. The table is groundwork for avoiding repeated parsing once whole-repository ingestion lands.

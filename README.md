@@ -31,16 +31,16 @@
 
 Junior sits on your webhook path. Humans skim diffs and type LGTM. Junior does not skim.
 
-It filters noise, scrubs credentials, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. SQLite WAL stores prior findings across pushes (GitHub hq-jr reviews still supplement). When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
+It filters noise, scrubs credentials from diff text, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. Prior findings prefer unresolved hq-jr review threads, with SQLite WAL filling gaps across pushes. When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
 
 ### Generic AI review bots vs hq-jr
 
 | Dimension | Generic AI review bots | hq-jr |
 | :--- | :--- | :--- |
 | **Verification** | Guesses from completions. | Polls Tier 3 sandbox for a real verdict before concluding the check (experimental). |
-| **Memory** | Stateless; repeats nags after force-push. | SQLite WAL stores findings; GitHub reviews used as supplement. |
+| **Memory** | Stateless; repeats nags after force-push. | Unresolved hq-jr review threads first; SQLite WAL fallback across pushes. |
 | **Noise** | Reviews lockfiles and vendor junk. | Heuristic filter + Tier 1 triage skip low-risk diffs. |
-| **Etiquette** | Hijacks human threads. | Speaks when `@hq-jr` is mentioned (or already in-thread). |
+| **Etiquette** | Hijacks human threads. | Speaks when `@hq-jr` is mentioned (or hq-jr started the thread). |
 | **Hosting** | Third-party SaaS sees your diffs. | Self-hosted; Vertex AI in *your* GCP project. |
 | **Secrets** | Raw diffs to vendor endpoints. | Scrubber redacts common tokens/keys before model calls. |
 
@@ -53,7 +53,7 @@ flowchart TD
     PR["GitHub Webhook: PR / Comment / Check Run"] --> Ingress["Probot Webhook Ingress: HMAC SHA-256"]
     Ingress --> Route{"Event Router"}
     
-    Route -->|"PR Discussion Comment"| AntiHijack{"Is @hq-jr mentioned or in thread history?"}
+    Route -->|"PR Discussion Comment"| AntiHijack{"Is @hq-jr mentioned or hq-jr the thread root?"}
     AntiHijack -->|"Yes"| Disc["Discussion Engine: replyToDiscussion"]
     Disc --> PostReply["Post PR Thread Reply"]
     AntiHijack -->|"No"| Ignore["Ignore (Human Peer Review)"]
@@ -105,8 +105,8 @@ Defaults match [`src/config.ts`](src/config.ts): Tier 1 and Tier 2 use `gemini-3
 - **Interactive PR Chat**: Mention `@hq-jr` to ask questions. Human-to-human threads stay quiet.
 - **On-Demand Review**: `@hq-jr review`, `@hq-jr audit`, or `@hq-jr scan`.
 - **Remediation with RBAC**: Explicit `@hq-jr fix` / `@hq-jr patch` / `@hq-jr remediate` (optional `and merge`) only; loose wording like "how to fix naming" does not trigger. Synthesizes branch `hq-jr/fix-pr-<id>`. Requires collaborator `admin` or `write`.
-- **Commit repro test**: Check action **Commit Repro Test** or `@hq-jr commit-repro` commits the synthesized test from the sandbox check summary.
-- **Re-run sandbox**: Check action **Re-run Sandbox** re-dispatches Tier 3 with prior probes when available.
+- **Commit repro test**: Check action **Commit Repro Test** or `@hq-jr commit-repro` commits the synthesized test from the sandbox check summary. Requires collaborator `admin` or `write`.
+- **Re-run sandbox**: Check action **Re-run Sandbox** re-dispatches Tier 3 with prior probes when available. Requires collaborator `admin` or `write`.
 
 ---
 
@@ -172,8 +172,8 @@ NODE_ENV=development
 ```bash
 npm run build
 npm test
-npm start
-npm run dev   # watch mode
+npm start        # Probot App daemon
+npm run dev      # watches src/index.ts only; does not start the Probot server
 ```
 
 ### Docker
@@ -181,19 +181,31 @@ npm run dev   # watch mode
 Published image (App daemon):
 
 ```bash
-docker pull ghcr.io/adi-il/hq-jr:0.1.2
+docker pull ghcr.io/adi-il/hq-jr:0.1.7
 # or: docker pull ghcr.io/adi-il/hq-jr:latest
-docker run --rm -p 3000:3000 --env-file .env ghcr.io/adi-il/hq-jr:0.1.2
+docker run --rm -p 127.0.0.1:3000:3000 \
+  --env-file .env \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
+  -v "$HOME/.config/gcloud:/gcloud:ro" \
+  -v hq-jr-data:/app/data \
+  ghcr.io/adi-il/hq-jr:0.1.7
 ```
+
+On a GCE VM whose service account has the Vertex AI scope, omit the gcloud mount and `GOOGLE_APPLICATION_CREDENTIALS`. The data volume keeps SQLite across container replacement.
 
 Build from source:
 
 ```bash
 docker build -t hq-jr:local .
-docker run --rm -p 3000:3000 --env-file .env hq-jr:local
+docker run --rm -p 127.0.0.1:3000:3000 \
+  --env-file .env \
+  -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
+  -v "$HOME/.config/gcloud:/gcloud:ro" \
+  -v hq-jr-data:/app/data \
+  hq-jr:local
 ```
 
-Image runs Probot under `tini` (PID 1) with `probot` on `PATH`. For Cloud Run and systemd options, see [docs/05-deployment-and-operations.md](docs/05-deployment-and-operations.md).
+Image runs Probot under `tini` (PID 1) with `probot` on `PATH`, as the unprivileged `hqjr` user (uid 1001). For the reference Compose deployment, update timer, and Cloud Run options, see [docs/05-deployment-and-operations.md](docs/05-deployment-and-operations.md).
 
 ---
 
@@ -202,6 +214,7 @@ Image runs Probot under `tini` (PID 1) with `probot` on `PATH`. For Cloud Run an
 ```
 hq-jr/
 ├── app.yml                  # GitHub App Manifest (permissions & events)
+├── deploy/                  # Reference GHCR + Compose deployment and update timer
 ├── Dockerfile               # Multi-stage Node 22 production image
 ├── docs/                    # Architecture and operations guides
 ├── src/

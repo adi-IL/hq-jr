@@ -7,26 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+No unreleased runtime changes.
+
+## [0.1.7] - 2026-10-19
+
 ### Fixed
 
+- Release workflow: keep the tag on the published commit, fail on registry errors other than E404, and bound the rebase/push retry.
 
-- Review-fix follow-ups: fail-closed sandbox conclusions on agent failure, no actions on completed checks, incomplete poll status for infra get failures, fork-safe commit-repro, scrub secrets at SQLite save, GitHub-preferred review-memory merge with title normalization.
+## [0.1.6] - 2026-10-19
+
+### Fixed
+
+- Ship `smee-client` as a production dependency. The pruned image previously logged `Run npm install --save-dev smee-client` and received no webhooks when `WEBHOOK_PROXY_URL` was set.
+
+## [0.1.5] - 2026-10-19
 
 ### Added
 
-- Tier 3 `pollSandboxInteraction` polls Antigravity interactions and sets Check Run conclusions from real verdicts (with backoff; tests inject short polls).
-- SQLite `review_findings` table plus merge path in `review-memory` (prefer prior SHAs; scrub bodies; hq-jr-only GitHub filter).
-- SQLite `sandbox_jobs` for interaction/check linkage and rerun context.
-- `@hq-jr commit-repro` comment command sharing logic with the Commit Repro Test check action.
-- `rerun_sandbox` requested_action handler (write/admin RBAC).
-- Durable Tier 3 poll recovery: sandbox job heartbeats and `resumeStaleSandboxJobs` on boot/interval (requires shared `HQ_JR_DB_PATH` across instances).
-- Review finding resolution when a later review drops a prior path+line+title, plus prune of resolved rows once they have been resolved for the retention window.
+- Durable Tier 3 poll recovery: sandbox job heartbeats, `resumeStaleSandboxJobs`, lease tokens, and stale-job claims on startup and interval.
+- Review finding resolution when a later review drops a prior path + line + title, plus pruning of resolved rows after the retention window.
+
+### Fixed
+
+- Sandbox conclusions fail closed on agent failure; completed checks expose no actions; infra `interactions.get` failures report an incomplete poll.
+- Fork-safe commit-repro.
+- Scrub secrets before writing SQLite review memory.
+- Prefer unresolved hq-jr GitHub review threads; merge SQLite findings as a fallback with normalized titles.
+- Stop review loops on hq-jr's own threads and findings.
+- Release workflow derives the next version from `patch(max(package.json, npm latest))` and retags/rebases instead of looping on E409.
 
 ### Changed
 
-- Sandbox Check Run stays `in_progress` after dispatch (no success-on-dispatch).
 - Remediation triggers only on explicit `@hq-jr fix|patch|remediate` (optional `and merge`).
-- Docs aligned: SQLite concurrency (not BoundedShaCache), `generateContent` + `responseSchema`, Flash remediation (not Antigravity), honest Tier 3 poll wording, `withRetry` count, Cloud Run SQLite persistence note.
+- GitHub Actions bumped to current majors.
+
+## [0.1.4] - 2026-10-19
+
+### Deprecated
+
+- Published to npm, but the release workflow lost the tag push race, so no `v0.1.4` tag or GitHub Release exists. Deprecated on npm ([0.1.4 on npm](https://www.npmjs.com/package/hq-jr/v/0.1.4)); use 0.1.5 or newer.
+
+### Fixed
+
+- Verify action refs before reporting them as missing.
+
+## [0.1.3] - 2026-09-21
+
+### Added
+
+- Tier 3 `pollSandboxInteraction` sets check conclusions from real verdicts instead of success-on-dispatch.
+- SQLite `review_findings` and `sandbox_jobs`, plus the review-memory merge path.
+- `@hq-jr commit-repro` and the `Re-run Sandbox` check action.
+
+### Changed
+
+- Sandbox check stays `in_progress` after dispatch.
+- Docs aligned on `generateContent` + `responseSchema`, Flash remediation, Tier 3 poll behavior, `withRetry`, and Cloud Run SQLite persistence.
 
 ## [0.1.2] - 2026-09-20
 
@@ -75,7 +112,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default models match `src/config.ts`: `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` are `gemini-3.8-flash`. Override Tier 2 with `gemini-3.1-pro-preview` if you want Pro.
 - Tier 3 / Antigravity is experimental.
 
-[Unreleased]: https://github.com/adi-IL/hq-jr/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/adi-IL/hq-jr/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.7
+[0.1.6]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.6
+[0.1.5]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.5
+[0.1.3]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.3
 [0.1.2]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.2
 [0.1.1]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.1
 [0.1.0]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.0

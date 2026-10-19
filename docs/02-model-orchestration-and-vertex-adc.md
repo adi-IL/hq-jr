@@ -4,12 +4,12 @@
 
 `hq-jr` uses Google Cloud Vertex AI for model execution. Authentication runs through Application Default Credentials (ADC) without hardcoded API keys.
 
-The bot inherits credentials directly from the host environment:
-- Project ID: `your-google-cloud-project-id` (configured via `GOOGLE_CLOUD_PROJECT` or `VERTEXAI_PROJECT`).
-- Credentials path: `~/.config/gcloud/application_default_credentials.json` (or GCE VM instance metadata identity).
-- Default location: `global` (verified and supported for `gemini-3.8-flash` and `gemini-3.1-pro-preview` on Vertex AI).
+The bot reads configuration from the host environment:
+- Project ID: `GOOGLE_CLOUD_PROJECT`. The schema default is the placeholder `test-gcp-project`; set a real project in production.
+- Credentials: ADC via `GOOGLE_APPLICATION_CREDENTIALS`, `~/.config/gcloud/application_default_credentials.json`, or the GCE metadata server when the attached service account has the Vertex AI scope.
+- Default location: `global`.
 
-Both local development environments and production servers use Application Default Credentials. Both Node.js (`@google/genai` >= 2.3.0) and Python (`google-genai` >= 2.3.0) resolve ADC automatically when configured with `vertexAI: { project, location }`.
+Local development and production both use Application Default Credentials. This repository ships only the Node.js client (`@google/genai` >= 2.3.0). It does not include a Python client.
 
 ```
 +-------------------------------------------------------------------------+
@@ -21,7 +21,7 @@ Both local development environments and production servers use Application Defau
 |                                                                         |
 |  +-------------------------------------------------------------------+  |
 |  |                     Google GenAI Client                           |  |
-|  |  `new GoogleGenAI({ vertexAI: { project, location } })`          |  |
+|  |  `new GoogleGenAI({ vertexai: true, project, location })`       |  |
 |  +---------------------------------+---------------------------------+  |
 +------------------------------------+------------------------------------+
                                      |
@@ -32,13 +32,14 @@ Both local development environments and production servers use Application Defau
 |                                                                         |
 |  +------------------------+  +--------------------+  +---------------+  |
 |  | gemini-3.8-flash       |  | gemini-3.1-pro-    |  | antigravity-  |  |
-|  |                        |  | preview            |  | preview-      |  |
-|  | - Fast file triage     |  |                    |  | 05-2026       |  |
-|  | - AST diff mapping     |  | - Deep logic trace |  |               |  |
-|  | - Noise filtering      |  | - Security audit   |  | - Sandbox VM  |  |
-|  | - Strict JSON schema   |  | - Concurrency bugs |  | - Runs tests  |  |
-|  | - Synchronous          |  | - Strict patch JSON|  | - Asynchronous|  |
-|  +------------------------+  +--------------------+  +---------------+  |
+|  |                        |  | preview (optional) |  | preview-      |  |
+|  |                        |  |                    |  | 05-2026       |  |
+|  | - Fast file triage     |  | - Deep logic trace |  | - Sandbox VM  |  |
+|  | - Noise filtering      |  | - Security audit   |  | - Runs tests  |  |
+|  | - Risk JSON schema     |  | - Concurrency bugs |  | - Async       |  |
+|  | - Synchronous          |  | - Line anchoring   |  |               |  |
+|  +------------------------+  | - Strict patch JSON|  +---------------+  |
+|                              +--------------------+                     |
 +-------------------------------------------------------------------------+
 ```
 
@@ -71,22 +72,22 @@ The system splits operational responsibilities according to capabilities: direct
   - Verify boundary conditions, nil-safety, and exception handling paths.
   - Trace state changes across callers and callee chains.
   - Identify race conditions, concurrency hazards, and memory leaks.
-  - Map issues to exact line ranges with actionable ````suggestion` replacement diffs.
+  - Map each issue to a single diff line and side, with an optional `suggestedPatch` replacement snippet.
   - Author inline review comments posted directly via Octokit.
 
 ### Tier 3: Antigravity Managed Agent (`antigravity-preview-05-2026`)
 
 - **Role.** Asynchronous test validation and adversarial reproduction (not remediation synthesis; remediation uses Flash via `synthesizeFileFix`).
-- **Latency.** 30 to 300 seconds (autonomous multi-turn loop).
+- **Latency.** The bot polls for up to 180 seconds by default. After that the attempt is reported as `timed_out` and maps to a neutral conclusion; the remote agent may continue longer server-side.
 - **Execution Mode.** Asynchronous background execution (`background: true`) in a remote Linux sandbox container.
-- **Output.** Markdown execution report and verified patch artifacts.
+- **Output.** Structured reproduction verdict JSON (`/workspace/reproduction-verdict.json`) plus an execution report.
 - **Crucial Capability Boundaries:**
   - Antigravity is a managed agent with access to bash, compilers, git, and file management.
   - It does **not** support `response_format` or structured outputs.
   - It does **not** support manual generation parameters (`temperature`, `top_p`, `max_output_tokens`).
   - Budget must be governed via `agent_config.max_total_tokens`.
 - **Tasks:**
-  - Mount repository source trees into `/workspace/repo`.
+  - Clone the target repository into `/workspace/repo` (the dispatch uses `environment: "remote"` and sends no source bundle).
   - Detect and execute baseline test suites (`cargo test`, `npm test`, `pytest`).
   - Synthesize **new adversarial reproduction tests** targeting Tier 2 findings using 4 archetypes: Unit Assertions, Property-Based Tests (PBT), Subprocess Boundary Probes, and Fault-Injection Scripts.
   - Execute dual-commit trials: prove unpatched code reproduces the failure (red), apply suggested patches, and confirm the fix passes with zero regressions (green).
@@ -94,7 +95,7 @@ The system splits operational responsibilities according to capabilities: direct
   - Support 1-click maintainer test adoption via the `Commit Repro Test` action button (`check_run.requested_action`).
 
 > [!NOTE]
-> In production, Tier 1 and Tier 2 execute synchronously on incoming pull request webhooks to deliver reviews within seconds. When Tier 2 detects critical boundary defects or concurrency hazards, it populates `sandboxProbes` and triggers the asynchronous Tier 3 Check Run via `src/services/sandbox-runner.ts`. After dispatch the check stays `in_progress` while `pollSandboxInteraction` polls `ai.interactions.get` (backoff, capped ~3 minutes). Conclusion mapping: `failure` when the agent hard-fails (`failed` / `budget_exceeded`) or when completed with reproduced and not cured; `success` when completed and not-reproduced or patch cured; `neutral` on incomplete, timeout, cancelled, or infra `interactions.get` failure. NOTE: On Cloud Run without a persistent volume, process death can leave checks `in_progress` until timeout/re-run; with a shared durable `HQ_JR_DB_PATH`, `resumeStaleSandboxJobs` claims jobs whose heartbeat is older than 45 seconds and finishes the poll. Each claim writes a `lease_token`. Heartbeats, status writes and check-run closes only land while that token still matches, and the original worker stops once recovery holds the job, so two workers never conclude the same check. Tier 3 can also be tested on demand via CLI: `hq-jr sandbox-test --repo <url> --branch <name> --cmd <test_cmd>`.
+> In production, Tier 1 and Tier 2 execute synchronously on incoming pull request webhooks and post results when the run completes. When Tier 2 detects critical boundary defects or concurrency hazards, it populates `sandboxProbes` and triggers the asynchronous Tier 3 Check Run via `src/services/sandbox-runner.ts`. After dispatch the check stays `in_progress` while `pollSandboxInteraction` polls `ai.interactions.get` (backoff, capped ~3 minutes). Conclusion mapping: `failure` when the agent hard-fails (`failed` / `budget_exceeded`) or when completed with reproduced and not cured; `success` when completed and not-reproduced or patch cured; `neutral` on incomplete, timeout, cancelled, or infra `interactions.get` failure. NOTE: On Cloud Run without a persistent volume, process death can leave checks `in_progress` until timeout/re-run; with a shared durable `HQ_JR_DB_PATH`, `resumeStaleSandboxJobs` claims jobs whose heartbeat is older than 45 seconds and finishes the poll. Each claim writes a `lease_token`. Heartbeats, status writes and check-run closes only land while that token still matches, and the original worker stops once recovery holds the job, so two workers never conclude the same check. Tier 3 can also be tested on demand via CLI: `hq-jr sandbox-test --repo <url> --branch <name> --cmd <test_cmd>`.
 
 ## Pipeline Flow
 
@@ -103,9 +104,8 @@ GitHub Webhook Event (pull_request.opened / synchronize)
        │
        ▼
 [ Tier 1: Flash + High Thinking (triage schema) ]
-  ├─ Drop generated files & lockfiles
-  ├─ Fast lint & syntactic boundary check
-  ├─ Risk classification (Low / Medium / High)
+  ├─ Drop generated files & lockfiles in the heuristic filter
+  ├─ Model-based risk classification (Low / Medium / High)
   └─ Output: Strict JSON triage report
        │
         ├── All Low Risk ──► [ Complete Check Run: Success ]
@@ -123,34 +123,69 @@ GitHub Webhook Event (pull_request.opened / synchronize)
 [ GitHub Inline Review Comments ]     ( Critical bug or verification needed? )
   - Posts via Octokit REST                       ├── YES ──► [ Tier 3: antigravity-preview-05-2026 ]
   - Direct PR line annotations                   │             ├─ Dispatches background job
-  - Check Run status updated                     │             ├─ Mounts repo in Linux sandbox
+  - Check Run status updated                     │             ├─ Clones repo in Linux sandbox
                                                  │             ├─ Runs test suite & verifies fix
                                                  │             └─ Posts verified audit report
                                                  └── NO  ──► Done
 ```
 
-## Structured Output Schema (Tier 1 & Tier 2)
+## Structured Output Schemas
 
-Direct models (Tier 1 and Tier 2) enforce strict JSON schema output via `generateContent` with `responseMimeType: "application/json"` and `responseSchema`:
+Both direct tiers use `generateContent` with `responseMimeType: "application/json"` and `responseSchema`. They do not share one schema.
+
+### Tier 1: triage
 
 ```json
 {
-  "summary": "High-level summary of review findings",
+  "summary": "High-level triage summary",
+  "overallRisk": "LOW | MEDIUM | HIGH",
+  "files": [
+    {
+      "path": "src/services/auth.ts",
+      "risk": "LOW | MEDIUM | HIGH",
+      "reason": "Why this file received this risk",
+      "shouldReview": true
+    }
+  ]
+}
+```
+
+### Tier 2: deep review
+
+```json
+{
+  "summary": "Detailed semantic review summary",
   "verdict": "APPROVE | COMMENT | REQUEST_CHANGES",
+  "resolvedPriorIssues": ["Prior issue verified as fixed"],
+  "unresolvedPriorIssues": ["Prior issue still open"],
   "comments": [
     {
       "path": "src/services/auth.ts",
       "line": 42,
       "side": "RIGHT",
       "severity": "CRITICAL | WARNING | SUGGESTION",
-      "category": "SECURITY | BUG | PERFORMANCE | DESIGN",
+      "category": "SECURITY | BUG | PERFORMANCE | DESIGN | STYLE",
       "title": "Unvalidated redirect target allows open redirection",
       "body": "The redirect URL parameter is not checked against an allowlist.",
-      "suggested_patch": "const target = isValidRedirect(url) ? url : '/dashboard';"
+      "suggestedPatch": "const target = isValidRedirect(url) ? url : '/dashboard';"
+    }
+  ],
+  "requiresSandboxVerification": false,
+  "verificationGoal": "Optional objective for Tier 3",
+  "sandboxProbes": [
+    {
+      "targetFile": "src/services/auth.ts",
+      "targetLine": 42,
+      "archetype": "UNIT_ASSERTION | PROPERTY_BASED | SUBPROCESS_PROBE | FAULT_INJECTION",
+      "failureHypothesis": "Boundary condition that triggers the defect",
+      "expectedFailureKind": "PANIC | EXCEPTION | RESOURCE_LEAK | WRONG_OUTPUT | CRASH",
+      "suggestedPatch": "Optional remediation snippet"
     }
   ]
 }
 ```
+
+The TypeScript definitions live in `src/schemas/review.ts`; `line` defaults to `1`, `side` defaults to `RIGHT`, and the Tier 2 arrays default to empty.
 
 ## Implementation Snippets
 
@@ -161,7 +196,7 @@ import { GoogleGenAI } from "@google/genai";
 
 const ai = new GoogleGenAI({
   vertexai: true,
-  project: process.env.GOOGLE_CLOUD_PROJECT || "your-google-cloud-project-id",
+  project: process.env.GOOGLE_CLOUD_PROJECT || "test-gcp-project",
   location: process.env.GOOGLE_CLOUD_LOCATION || "global",
 });
 
@@ -193,38 +228,24 @@ export async function dispatchSandboxVerification(params: {
   repoUrl: string;
   branch: string;
   testCommand: string;
-  base64AuthToken: string;
+  instructions: string;
 }) {
   const interaction = await ai.interactions.create({
     agent: "antigravity-preview-05-2026",
-    input: `Clone ${params.repoUrl}, checkout ${params.branch}, run "${params.testCommand}", and report test results and failures.`,
+    input: `You are the Tier 3 verification agent.
+Clone ${params.repoUrl} on branch ${params.branch} into /workspace/repo,
+run "${params.testCommand}", and write the verdict to
+/workspace/reproduction-verdict.json.`,
     agent_config: {
       type: "antigravity",
-      max_total_tokens: 150000,
+      max_total_tokens: "150000",
     },
-    environment: {
-      type: "remote",
-      sources: [
-        {
-          type: "repository",
-          source: params.repoUrl,
-          target: "/workspace/repo",
-        },
-      ],
-      network: {
-        allowlist: [
-          {
-            domain: "github.com",
-            transform: {
-              Authorization: `Basic ${params.base64AuthToken}`,
-            },
-          },
-        ],
-      },
-    },
+    environment: "remote",
     background: true,
   });
 
   return interaction.id;
 }
 ```
+
+The real implementation in `src/services/ai.ts` also injects probe instructions and the full verdict contract. It does not attach a source bundle or a network allowlist; the agent clones the repository itself. `pollSandboxInteraction` then polls the interaction with backoff and a 180-second default cap.
