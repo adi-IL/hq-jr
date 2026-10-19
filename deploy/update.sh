@@ -137,8 +137,7 @@ fi
 
 echo "updating hq-jr from ${running:7:12} to ${latest:7:12}"
 if ! docker compose up -d --force-recreate --no-deps app; then
-  echo "docker compose up failed for ${latest:7:12}" >&2
-  printf '%s\n' "$latest" > "$failed_marker"
+  echo "docker compose up failed for ${latest:7:12}; not marking the digest as bad" >&2
   if [ -n "$running" ]; then
     echo "rolling back to ${running:7:12}" >&2
     docker tag "$running" hq-jr:rollback
