@@ -4,7 +4,7 @@
 
 `hq-jr` is architected around two operational tiers:
 
-1. **Active Production Pipeline (Implemented):** High-speed incremental PR diff ingestion. Fetches the diff through Octokit in `src/index.ts`, parses it in `diff-parser.ts`, applies heuristic noise rejection in `file-filter.ts`, redacts secrets from packaged diff text, tracks prior audit history (unresolved hq-jr GitHub threads first, SQLite `review_findings` as fallback), and packages context for multi-tier Gemini evaluation.
+1. **Active Production Pipeline (Implemented):** High-speed incremental PR diff ingestion. Fetches the diff through Octokit in `src/index.ts`, parses it in `diff-parser.ts`, applies heuristic noise rejection in `file-filter.ts`, redacts secrets from packaged diff text, tracks prior audit history (unresolved hq-jr GitHub threads first; when thread state is unavailable, merges SQLite `review_findings` with the latest hq-jr review comments), and packages context for multi-tier Gemini evaluation.
 2. **Phase 5 Advanced Roadmap (Planned):** Full-repository tarball streaming, shallow clones, Tree-Sitter AST symbol indexing, and dependency blast-radius mapping. The SQLite `symbol_cache` table and `symbol-cache.ts` helpers exist, but no review-flow caller populates or reads them yet.
 
 ---
@@ -45,7 +45,7 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                v
 +-------------------------------------------------------------+
 | Multi-Turn Review Memory (src/services/review-memory.ts)    |
-| - Prefer unresolved hq-jr GitHub threads; SQLite fallback   |
+| - Prefer unresolved hq-jr threads; else SQLite+latest review|
 | - active_runs locks; verify prior issues resolved on push   |
 +------------------------------+------------------------------+
                                |
@@ -73,7 +73,7 @@ Large pull requests can exceed model limits. `hq-jr` applies character budgets a
    - The filter does not read `.gitignore`; it uses the fixed rules above.
 
 2. **Truncation and Character Budgeting:**
-   - Each file is capped at 30,000 characters. The total payload is capped at 120,000 characters. Both caps add a truncation notice.
+   - `packageReviewContext` caps accumulated formatted file-diff text at 30,000 characters per file and 120,000 characters total. Both caps add a truncation notice. Prompt metadata and those notices are appended after the budgeted diff text, so the final `promptPayload` can be slightly larger than 120,000 characters.
    - Long developer discussion replies keep the root turn plus the latest 8 turns, at 1,500 characters per turn.
 
 ---

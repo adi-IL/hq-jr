@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# Edit User and Group to the deploy user on other hosts. That user must be in
+# the docker group (or equivalent) so update.sh can talk to the Docker daemon.
 User=adi-IL
 Group=adi-IL
 ExecStart=/opt/hq-jr/deploy/update.sh

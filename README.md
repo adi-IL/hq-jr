@@ -31,14 +31,14 @@
 
 Junior sits on your webhook path. Humans skim diffs and type LGTM. Junior does not skim.
 
-It filters noise, scrubs credentials from diff text, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. Prior findings prefer unresolved hq-jr review threads, with SQLite WAL filling gaps across pushes. When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
+It filters noise, scrubs credentials from diff text, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. Prior findings prefer unresolved hq-jr review threads; when thread state is unavailable, SQLite WAL merges with the latest hq-jr review comments. When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
 
 ### Generic AI review bots vs hq-jr
 
 | Dimension | Generic AI review bots | hq-jr |
 | :--- | :--- | :--- |
 | **Verification** | Guesses from completions. | Polls Tier 3 sandbox for a real verdict before concluding the check (experimental). |
-| **Memory** | Stateless; repeats nags after force-push. | Unresolved hq-jr review threads first; SQLite WAL fallback across pushes. |
+| **Memory** | Stateless; repeats nags after force-push. | Unresolved hq-jr review threads first; when unavailable, SQLite WAL merges with the latest hq-jr review. |
 | **Noise** | Reviews lockfiles and vendor junk. | Heuristic filter + Tier 1 triage skip low-risk diffs. |
 | **Etiquette** | Hijacks human threads. | Speaks when `@hq-jr` is mentioned (or hq-jr started the thread). |
 | **Hosting** | Third-party SaaS sees your diffs. | Self-hosted; Vertex AI in *your* GCP project. |
@@ -173,7 +173,7 @@ NODE_ENV=development
 npm run build
 npm test
 npm start        # Probot App daemon
-npm run dev      # watches src/index.ts only; does not start the Probot server
+npm run dev      # tsx watch on src/index.ts and its imports; does not start the Probot server
 ```
 
 ### Docker
@@ -183,15 +183,19 @@ Published image (App daemon):
 ```bash
 docker pull ghcr.io/adi-il/hq-jr:0.1.7
 # or: docker pull ghcr.io/adi-il/hq-jr:latest
+# Stage ADC for image uid 1001 (do not mount the whole host gcloud directory):
+#   mkdir -p /tmp/hq-jr-adc && sudo install -o 1001 -g 1001 -m 0400 \
+#     "$HOME/.config/gcloud/application_default_credentials.json" \
+#     /tmp/hq-jr-adc/application_default_credentials.json
 docker run --rm -p 127.0.0.1:3000:3000 \
   --env-file .env \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
-  -v "$HOME/.config/gcloud:/gcloud:ro" \
+  -v /tmp/hq-jr-adc/application_default_credentials.json:/gcloud/application_default_credentials.json:ro \
   -v hq-jr-data:/app/data \
   ghcr.io/adi-il/hq-jr:0.1.7
 ```
 
-On a GCE VM whose service account has the Vertex AI scope, omit the gcloud mount and `GOOGLE_APPLICATION_CREDENTIALS`. The data volume keeps SQLite across container replacement.
+On a GCE VM whose service account has the Vertex AI scope, omit the ADC mount and `GOOGLE_APPLICATION_CREDENTIALS`. The data volume keeps SQLite across container replacement.
 
 Build from source:
 
@@ -200,12 +204,12 @@ docker build -t hq-jr:local .
 docker run --rm -p 127.0.0.1:3000:3000 \
   --env-file .env \
   -e GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json \
-  -v "$HOME/.config/gcloud:/gcloud:ro" \
+  -v /tmp/hq-jr-adc/application_default_credentials.json:/gcloud/application_default_credentials.json:ro \
   -v hq-jr-data:/app/data \
   hq-jr:local
 ```
 
-Image runs Probot under `tini` (PID 1) with `probot` on `PATH`, as the unprivileged `hqjr` user (uid 1001). For the reference Compose deployment, update timer, and Cloud Run options, see [docs/05-deployment-and-operations.md](docs/05-deployment-and-operations.md).
+Image runs Probot under `tini` (PID 1) with `probot` on `PATH`, as the unprivileged `hqjr` user (uid 1001). Mount only the ADC JSON file, and make it readable by uid 1001. For the reference Compose deployment, update timer, and Cloud Run options, see [docs/05-deployment-and-operations.md](docs/05-deployment-and-operations.md).
 
 ---
 

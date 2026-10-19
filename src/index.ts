@@ -384,10 +384,12 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         );
       }
 
-      const reviewPrompt = `Pull Request: #${pullNumber} - ${pr.title}
+      const scrubbedTitle = scrubSecrets(pr.title || "").scrubbed;
+      const scrubbedBody = scrubSecrets(pr.body || "No description provided.").scrubbed;
+      const reviewPrompt = `Pull Request: #${pullNumber} - ${scrubbedTitle}
 Author: ${pr.user?.login}
 Description:
-${pr.body || "No description provided."}
+${scrubbedBody}
 
 Files requiring deep review:
 ${filesToReview.map((f) => `- ${f.path} (Risk: ${f.risk}, Reason: ${f.reason})`).join("\n")}

@@ -77,10 +77,10 @@ Probot handles token generation and refresh automatically.
 `hq-jr` parses diffs and reasons over them as text. The Probot process never executes target build scripts, test runners, or binaries. When Tier 3 verification is enabled, the Antigravity agent clones the repository and runs the requested test command inside a remote sandbox (`environment: "remote"`). Treat that sandbox as untrusted: do not attach privileged host mounts or long-lived credentials.
 
 ### 2. Secret Redaction at the Model Boundary
-The context packager scrubs packaged diff and file text before it is sent to Vertex AI:
-- Matches private keys (`-----BEGIN PRIVATE KEY-----`), JWTs, Anthropic (`sk-ant-`), OpenAI (`sk-proj-`, `sk-admin-`), fine-grained GitHub PATs (`github_pat_`), and legacy tokens (`ghp_`, `gho_`) with fixed regular expressions. It does not use entropy scoring.
+The context packager and review prompt builder scrub text before it is sent to Vertex AI:
+- Matches private keys (`-----BEGIN ... PRIVATE KEY-----`), JWTs, Anthropic (`sk-ant-`), OpenAI (`sk-proj-`, `sk-admin-`), fine-grained GitHub PATs (`github_pat_`), classic and app tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`), Google `AIza` keys, AWS access key IDs and nearby secret key assignments, Slack `xox*` tokens, and generic `password` / `secret` / `api_key` / `access_token` style assignments. Patterns are fixed regular expressions; there is no entropy scoring.
 - Replaces matches with `[REDACTED_SECRET]` placeholders.
-- PR title and body are inserted into the review prompt as metadata and are not passed through the scrubber. Tier 3 clones the repository directly and does not use this scrubber.
+- PR title and body are scrubbed before they are interpolated into the review prompt. Packaged diff text is scrubbed by the context packager. Tier 3 clones the repository directly and does not use this scrubber on sandbox contents.
 
 ### 3. Role-Based Access Control (RBAC) on Privileged Commands
 For automated remediation and privileged actions (`@hq-jr fix`, `patch`, `remediate`, optional `and merge`, `commit-repro`, merge-only commands, and check-run action buttons):

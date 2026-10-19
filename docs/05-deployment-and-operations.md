@@ -52,7 +52,7 @@ Required repository secret:
 
 `GITHUB_TOKEN` is automatic and provides `contents: write` and `packages: write` for the tag push, GitHub Release, and GHCR push.
 
-Version rules and the publish-before-push ordering live in `.github/workflows/release.yml`. If a publish succeeds but the tag push fails, the workflow reports the published version instead of retrying the publish.
+Version rules and the publish-before-push ordering live in `.github/workflows/release.yml`. npm publish runs before the git tag and branch pushes. If the initial tag push fails, the workflow exits before the branch recovery loop, so recover the published version by hand. If the tag lands but the branch push cannot be rebased, the workflow error text names the published tag and asks you to bump `package.json` on the branch by hand.
 
 ## Reference Deployment: GHCR + Docker Compose
 
@@ -68,10 +68,11 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 ### Prerequisites
 
 1. Docker Engine with the Compose v2 plugin.
-2. A GitHub App (`APP_ID`, `PRIVATE_KEY`, `WEBHOOK_SECRET`) and a Vertex AI project.
-3. ADC on the host, either:
+2. A deploy user in the `docker` group (the update unit runs as that user and talks to the Docker daemon without root).
+3. A GitHub App (`APP_ID`, `PRIVATE_KEY`, `WEBHOOK_SECRET`) and a Vertex AI project.
+4. ADC on the host, either:
    - a GCE VM service account with the Vertex AI scope, or
-   - an ADC JSON file such as `~/.config/gcloud/application_default_credentials.json`.
+   - an ADC JSON file staged so the image user (uid `1001`) can read it.
 
 ### Setup
 
@@ -94,7 +95,11 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
    HQ_JR_DB_PATH=/app/data/hq-jr.db
    ```
 
-   Keep `PRIVATE_KEY` on one line with escaped `\n` characters. Do not put spaces around `=`.
+   Keep `PRIVATE_KEY` on one line with escaped `\n` characters. Do not put spaces around `=`. Then lock the file down:
+
+   ```bash
+   chmod 600 /opt/hq-jr/.env
+   ```
 
 3. Create the data directory. The container runs as uid `1001`, so that user must own the directory:
 
@@ -103,7 +108,16 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
    sudo chown -R 1001:1001 /opt/hq-jr/data
    ```
 
-4. Review the ADC mount in `deploy/compose.yaml`. The reference file mounts `/home/adi-IL/.config/gcloud` at `/gcloud` and sets `GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json`. On a GCE VM whose service account has the Vertex AI scope, remove that mount and the `GOOGLE_APPLICATION_CREDENTIALS` variable.
+4. Stage ADC for the image user and review the mount in `deploy/compose.yaml`. The reference file mounts only `/opt/hq-jr/adc/application_default_credentials.json` (not the whole host gcloud directory) and sets `GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json`. Stage a copy readable by uid `1001`:
+
+   ```bash
+   sudo mkdir -p /opt/hq-jr/adc
+   sudo install -o 1001 -g 1001 -m 0400 \
+     "$HOME/.config/gcloud/application_default_credentials.json" \
+     /opt/hq-jr/adc/application_default_credentials.json
+   ```
+
+   On a GCE VM whose service account has the Vertex AI scope, remove that mount and the `GOOGLE_APPLICATION_CREDENTIALS` variable.
 
 5. Start the service:
 
@@ -119,7 +133,7 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
    docker compose logs --tail=50
    ```
 
-7. Install the update timer:
+7. Install the update timer. Edit `User=` and `Group=` in `deploy/hq-jr-update.service` to the deploy user on this host before copying (the reference file uses `adi-IL`). That user must be in the `docker` group.
 
    ```bash
    sudo cp /opt/hq-jr/deploy/hq-jr-update.service /opt/hq-jr/deploy/hq-jr-update.timer /etc/systemd/system/
@@ -136,14 +150,15 @@ The reference `deploy/compose.yaml` does the following:
 - Forces `HOST=0.0.0.0` inside the container and `NODE_ENV=production`. The `.env` file can keep `HOST=127.0.0.1`; Compose overrides it.
 - Publishes only `127.0.0.1:3000` on the host. Put a reverse proxy or tunnel in front if GitHub must reach the webhook endpoint directly.
 - Mounts `/opt/hq-jr/data` at `/app/data` for SQLite.
-- Health-checks `http://127.0.0.1:3000/healthz` from inside the container every 30 seconds.
+- Mounts only the staged ADC JSON file (readable by uid `1001`), not the whole host gcloud directory.
+- Health-checks `http://127.0.0.1:3000/healthz` from inside the container every 30 seconds. That endpoint calls Vertex AI (60s cache), so the Compose healthcheck timeout is 30 seconds.
 - Rotates JSON logs at 10 MB with three files.
 
-The image user is `hqjr` (`1001:1001`), not root. The data directory must remain writable by uid `1001`.
+The image user is `hqjr` (`1001:1001`), not root. The data directory must remain writable by uid `1001`, and any ADC file mount must be readable by that uid.
 
 ### Upgrades and Rollback
 
-The update timer pulls `:latest` every 15 minutes. `deploy/update.sh` compares the running image ID with the pulled image ID, recreates the container only when they differ, and polls `/healthz` for up to 60 seconds.
+The update timer pulls the image named in `deploy/compose.yaml` every 15 minutes. `deploy/update.sh` reads that image from Compose, compares the running image ID with the pulled image ID, recreates the container only when they differ, polls `/healthz` for up to 60 seconds, rolls back to the previous image ID if the new container fails health, and prunes dangling images after a healthy update. When the image is already current, the script still checks that the container is running and healthy before exiting.
 
 Manual upgrade:
 
@@ -159,7 +174,7 @@ Update log:
 sudo journalctl -u hq-jr-update.service -n 50 --no-pager
 ```
 
-Rollback: pin the previous version in `deploy/compose.yaml` and recreate the container.
+Rollback: stop the update timer first (`sudo systemctl stop hq-jr-update.timer`), because `update.sh` always pulls the image named in Compose (normally `:latest`) and would undo a pin. Pin the previous version in `deploy/compose.yaml` and recreate the container. Re-enable the timer with `sudo systemctl start hq-jr-update.timer` after you remove the pin.
 
 ```yaml
 image: ghcr.io/adi-il/hq-jr:0.1.6

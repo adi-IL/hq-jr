@@ -185,7 +185,7 @@ Both direct tiers use `generateContent` with `responseMimeType: "application/jso
 }
 ```
 
-The TypeScript definitions live in `src/schemas/review.ts`; `line` defaults to `1`, `side` defaults to `RIGHT`, and the Tier 2 arrays default to empty.
+The TypeScript definitions live in `src/schemas/review.ts`; `line` defaults to `1`, `side` defaults to `RIGHT`, and `resolvedPriorIssues`, `unresolvedPriorIssues`, and `sandboxProbes` default to `[]`. `comments` is required and has no empty default.
 
 ## Implementation Snippets
 
@@ -233,6 +233,7 @@ export async function dispatchSandboxVerification(params: {
   const interaction = await ai.interactions.create({
     agent: "antigravity-preview-05-2026",
     input: `You are the Tier 3 verification agent.
+${params.instructions}
 Clone ${params.repoUrl} on branch ${params.branch} into /workspace/repo,
 run "${params.testCommand}", and write the verdict to
 /workspace/reproduction-verdict.json.`,
