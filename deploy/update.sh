@@ -136,12 +136,22 @@ if [ -n "$running" ] && [ "$running" = "$latest" ]; then
 fi
 
 echo "updating hq-jr from ${running:7:12} to ${latest:7:12}"
-docker compose up -d --no-deps app
+if ! docker compose up -d --force-recreate --no-deps app; then
+  echo "docker compose up failed for ${latest:7:12}" >&2
+  printf '%s\n' "$latest" > "$failed_marker"
+  if [ -n "$running" ]; then
+    echo "rolling back to ${running:7:12}" >&2
+    docker tag "$running" hq-jr:rollback
+    deploy_image hq-jr:rollback || true
+  fi
+  exit 1
+fi
 
 if wait_healthy; then
   rm -f "$failed_marker"
   echo "hq-jr healthy on ${latest:7:12}"
   if [ -n "$running" ]; then
+    docker image rm hq-jr:rollback >/dev/null 2>&1 || true
     docker image rm "$running" >/dev/null 2>&1 || true
   fi
   exit 0

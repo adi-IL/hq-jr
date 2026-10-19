@@ -41,7 +41,7 @@ export function buildReviewPrompt(params: {
   const title = scrubSecrets(params.title || "").scrubbed;
   const body = scrubSecrets(params.body || "").scrubbed;
   const escapeDelimiter = (value: string) =>
-    value.replace(/<(\/?untrusted_pr_metadata)>/gi, "<\\$1>");
+    value.replace(/<\s*(\/?)\s*untrusted_pr_metadata\b[^>]*>/gi, "<\\$1untrusted_pr_metadata>");
   const metadata = JSON.stringify(
     {
       title: escapeDelimiter(title),
