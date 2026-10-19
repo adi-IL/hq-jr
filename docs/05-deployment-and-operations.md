@@ -182,20 +182,33 @@ Rollback: stop the update timer if you want to freeze automatic updates.
 sudo systemctl stop hq-jr-update.timer
 ```
 
-Pin the previous version in `deploy/compose.yaml` and recreate the container:
-
-```yaml
-image: ghcr.io/adi-il/hq-jr:0.1.6
-```
+Resolve the known-good digest from the previous local image. Replace `0.1.6` with the previous release tag:
 
 ```bash
 cd /opt/hq-jr/deploy
-docker compose up -d
+IMAGE_REF=$(docker image inspect ghcr.io/adi-il/hq-jr:0.1.6 --format '{{index .RepoDigests 0}}')
 ```
 
-The updater reads the image from compose, so it respects the pin while the timer is active. Re-enable the timer after removing the pin:
+If the image is no longer local, copy its digest from the previous GitHub Release instead.
+
+Create a Compose override that pins that digest and recreate the container:
 
 ```bash
+cat > rollback.yaml <<YAML
+services:
+  app:
+    image: ${IMAGE_REF}
+YAML
+docker compose -f compose.yaml -f rollback.yaml up -d --force-recreate
+```
+
+Keep `rollback.yaml` and the timer stopped while the rollback is active. The updater reads only `compose.yaml`.
+
+To return to normal, remove the override, recreate from `compose.yaml`, and re-enable the timer:
+
+```bash
+rm rollback.yaml
+docker compose up -d --force-recreate
 sudo systemctl start hq-jr-update.timer
 ```
 

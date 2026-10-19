@@ -41,7 +41,11 @@ services:
   app:
     image: ${ref}
 YAML
-  docker compose -f compose.yaml -f "$override" up -d --force-recreate --no-deps app
+  if ! docker compose -f compose.yaml -f "$override" up -d --force-recreate --no-deps app; then
+    rm -f "$override"
+    override=""
+    return 1
+  fi
   local result=1
   if wait_healthy; then
     result=0
@@ -61,6 +65,18 @@ latest=$(docker image inspect --format '{{.Id}}' "$image")
 
 if [ -f "$failed_marker" ] && [ "$(cat "$failed_marker")" = "$latest" ]; then
   echo "image ${latest:7:12} is marked as failed; not deploying it"
+
+  if [ -z "$running" ]; then
+    if docker image inspect hq-jr:rollback >/dev/null 2>&1; then
+      echo "no hq-jr container; restoring the previous rollback image"
+      if deploy_image hq-jr:rollback; then
+        echo "rollback image is healthy; update failed" >&2
+      fi
+      exit 1
+    fi
+    echo "no hq-jr container and no rollback image; cannot recover" >&2
+    exit 1
+  fi
 
   if [ "$running" = "$latest" ]; then
     if docker image inspect hq-jr:rollback >/dev/null 2>&1; then
