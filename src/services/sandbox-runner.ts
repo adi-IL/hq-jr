@@ -476,6 +476,8 @@ export async function completeSandboxJobPoll(params: {
         } catch {
           // ignore
         }
+        // Stop polling as soon as another worker owns the job.
+        if (leaseLost) throw new Error("sandbox recovery lease lost");
         await baseSleep(ms);
       },
     });

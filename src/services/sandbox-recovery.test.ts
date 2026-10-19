@@ -117,3 +117,34 @@ describe("resumeStaleSandboxJobs failure paths", () => {
     expect(r).toEqual({ status: "recovering", lease_token: "other" });
   });
 });
+
+describe("resumeStaleSandboxJobs lease loss during poll", () => {
+  it("aborts the poll at the next heartbeat once the lease is reclaimed", async () => {
+    const db = getDatabase(":memory:");
+    staleJob(db, "ix-abort");
+    const update = vi.fn().mockResolvedValue({});
+    let sleeps = 0;
+    const pollFn = vi.fn().mockImplementation(async (_id: string, opts: { sleep: (ms: number) => Promise<void> }) => {
+      for (let i = 0; i < 10; i++) {
+        if (i === 1) {
+          db.prepare("UPDATE sandbox_jobs SET lease_token = 'other' WHERE interaction_id = 'ix-abort'").run();
+        }
+        await opts.sleep(0);
+        sleeps += 1;
+      }
+      return { status: "completed", outputText: "" };
+    });
+
+    await resumeStaleSandboxJobs({
+      getOctokit: vi.fn().mockResolvedValue({ checks: { update } }),
+      pollFn,
+      pollOptions: { sleep: async () => {} },
+      dbInstance: db,
+    } as any);
+
+    expect(sleeps).toBe(1);
+    expect(update).not.toHaveBeenCalled();
+    const r = db.prepare("SELECT lease_token FROM sandbox_jobs WHERE interaction_id = 'ix-abort'").get() as any;
+    expect(r.lease_token).toBe("other");
+  });
+});
