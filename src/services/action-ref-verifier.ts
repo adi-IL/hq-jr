@@ -97,8 +97,20 @@ export async function dropUnverifiedMissingActionRefs(
   const kept: ReviewComment[] = [];
   for (const comment of comments) {
     const verdict = await judge(octokit, cache, `${comment.title}\n${comment.body}`);
-    if (verdict) dropped.push(verdict);
-    else kept.push(comment);
+    if (!verdict) {
+      kept.push(comment);
+      continue;
+    }
+    dropped.push(verdict);
+    // The claim is false, but the comment can carry other findings, so the
+    // sentences that carry the claim are removed and the rest of the comment
+    // is kept. A comment whose headline or whose whole body was the claim is
+    // dropped, because nothing else in it stands on its own.
+    const droppedKeys = new Set(verdict.refs.map(refKey));
+    const title = scrubSentences(comment.title, droppedKeys);
+    const body = scrubSentences(comment.body, droppedKeys);
+    if (title === "" || body === "") continue;
+    kept.push({ ...comment, title, body });
   }
   return kept;
 }
