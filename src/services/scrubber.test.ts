@@ -202,6 +202,20 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(redactedCount).toBe(1);
   });
 
+  it("redacts a short malformed bracket value whole", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password=[a[b c]");
+
+    expect(scrubbed).toBe("password=[REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("keeps a value that is only an opening bracket", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password = [");
+
+    expect(scrubbed).toBe("password = [");
+    expect(redactedCount).toBe(0);
+  });
+
   it("keeps the bracket reads that are code and redacts the ones that are literals", () => {
     const code = ['configuration["secretKey"]', "config[ key ]", "arr[0]", "config['a']['b']"];
     for (const value of code) {
@@ -211,7 +225,7 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
       expect(redactedCount).toBe(0);
     }
 
-    const literals = ["[abcdefgh]", "[abcdefgh[i jkl]", "abcde1234(secret)"];
+    const literals = ["[abcdefgh]", "[abcdefgh[i jkl]", "[a[b c]", "abcde1234(secret)"];
     for (const value of literals) {
       const { scrubbed, redactedCount } = scrubSecrets(`password=${value}`);
 

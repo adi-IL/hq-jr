@@ -8,7 +8,9 @@
  * unquoted generic value is kept when it reads configuration (process.env.X,
  * config.X, vault.read(...)); any other unquoted value is redacted. A call
  * with a root that is not a known accessor, such as getSecret(), is a literal
- * value and is redacted.
+ * value and is redacted. A broken bracket value, such as [abcdefgh[i jkl], is
+ * a literal and is redacted whole, whatever its length, because a broken
+ * bracket is never a name in the source.
  */
 const SECRET_PATTERNS = [
   // Private keys (RSA, EC, PGP, OPENSSH)
@@ -264,6 +266,34 @@ function isReferenceRoot(root: string): boolean {
 }
 
 /**
+ * True when the value is a bracket expression whose brackets do not balance,
+ * such as [abcdefgh[i jkl] or [a[b c]. A broken bracket is not a reference to
+ * a configuration value, so it is a literal and has to be redacted. A lone
+ * opening bracket is an expression that was not finished, not a value, so it
+ * is left alone.
+ */
+function isBrokenBracketLiteral(value: string): boolean {
+  if (!value.startsWith("[")) {
+    return false;
+  }
+  let depth = 0;
+  let material = 0;
+  for (const char of value) {
+    if (char === "[") {
+      depth++;
+    } else if (char === "]") {
+      if (depth === 0) {
+        return true;
+      }
+      depth--;
+    } else {
+      material++;
+    }
+  }
+  return depth !== 0 && material > 0;
+}
+
+/**
  * Replaces the value of each generic secret assignment with the placeholder.
  * A value that an earlier pattern already replaced is left as is, so each
  * secret is counted once.
@@ -282,10 +312,11 @@ function redactGenericAssignments(input: string): { text: string; count: number 
       continue;
     }
     const core = quoted ? value : value.slice(0, value.length - trailingPunctuationLength(value));
+    const brokenBracket = !quoted && isBrokenBracketLiteral(core);
     if (
-      core.length < MIN_GENERIC_SECRET_LENGTH ||
       core === REDACTION_PLACEHOLDER ||
-      (!quoted && isReferenceValue(core))
+      (!quoted && isReferenceValue(core)) ||
+      (!brokenBracket && core.length < MIN_GENERIC_SECRET_LENGTH)
     ) {
       continue;
     }
