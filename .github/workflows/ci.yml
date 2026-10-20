@@ -37,10 +37,20 @@ jobs:
           path: ./
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           head: ${{ github.sha }}
-          # The two test files listed in the filter hold fake credential
-          # fixtures. Exclude only those paths. The scan still reports
-          # unverified secrets everywhere else, including private keys.
+          # Skip the two fixture files. Unverified secrets everywhere else,
+          # including private keys, still fail this step.
           extra_args: --exclude-paths=.github/trufflehog-exclude-paths.txt
+
+      - name: TruffleHog verified scan of fixture paths
+        uses: trufflesecurity/trufflehog@v3.88.5
+        with:
+          version: 3.88.5
+          path: ./
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          head: ${{ github.sha }}
+          # Scan only those fixture paths, and only secrets that verify.
+          # The fake fixtures stay quiet. A live credential there fails the job.
+          extra_args: --include-paths=.github/trufflehog-exclude-paths.txt --only-verified
 
   build-and-test:
     name: Lint, Typecheck, Test, and Build
