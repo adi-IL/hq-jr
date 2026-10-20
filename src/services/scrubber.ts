@@ -205,7 +205,43 @@ function isKnownCall(value: string): boolean {
     return false;
   }
   const root = match[1];
-  return CALL_ROOTS.has(root.toLowerCase()) || isReferenceRoot(root);
+  if (!CALL_ROOTS.has(root.toLowerCase()) && !isReferenceRoot(root)) {
+    return false;
+  }
+  // The call has to span the whole value. A fallback joined to it, such as
+  // os.getenv("DB_PASSWORD") || "literal", is a value of its own, so the span
+  // is not a pure reference and the literal in it has to be redacted.
+  return callSpansWholeValue(value);
+}
+
+/**
+ * True when the call in the value spans the whole value. Anything after the
+ * closing parenthesis, apart from spaces, is not part of the call.
+ */
+function callSpansWholeValue(value: string): boolean {
+  const open = value.indexOf("(");
+  if (open < 0) {
+    return false;
+  }
+  let depth = 0;
+  let index = open;
+  while (index < value.length) {
+    const char = value[index];
+    if (char === '"' || char === "'" || char === "`") {
+      index = skipString(value, index);
+      continue;
+    }
+    if (char === "(") {
+      depth++;
+    } else if (char === ")") {
+      depth--;
+      if (depth === 0) {
+        return skipSpacesOnly(value, index + 1) === value.length;
+      }
+    }
+    index++;
+  }
+  return false;
 }
 
 /**

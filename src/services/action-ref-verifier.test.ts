@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { dropUnverifiedMissingActionRefs, verifyReviewActionRefs } from "./action-ref-verifier.js";
+import { resolveVerdict } from "./ai.js";
 import type { ReviewComment } from "../schemas/review.js";
 
 const comment = (overrides: Partial<ReviewComment>): ReviewComment => ({
@@ -140,7 +141,7 @@ describe("action ref verification edge cases", () => {
     expect(await dropUnverifiedMissingActionRefs(octokit, [url])).toEqual([url]);
   });
 
-  it("stops requesting changes and scrubs the summary when only false findings caused it", async () => {
+  it("drops false findings and leaves the verdict for the caller to resolve", async () => {
     const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
     const review = {
       verdict: "REQUEST_CHANGES" as const,
@@ -148,10 +149,35 @@ describe("action ref verification edge cases", () => {
       comments: [comment({ body: "actions/checkout@v7 does not exist." })],
     };
     const out = await verifyReviewActionRefs(octokit, review);
-    expect(out.verdict).toBe("COMMENT");
+    expect(out.verdict).toBe("REQUEST_CHANGES");
     expect(out.comments).toEqual([]);
+    expect(resolveVerdict(out)).toBe("COMMENT");
     expect(out.summary).not.toContain("does not exist");
     expect(out.summary).toContain("Otherwise the change is fine.");
+  });
+
+  it("keeps a blocking finding that shares a comment with a false ref claim", async () => {
+    const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
+    const review = {
+      verdict: "REQUEST_CHANGES" as const,
+      summary: "s",
+      comments: [
+        comment({
+          severity: "CRITICAL" as const,
+          category: "SECURITY" as const,
+          title: "SQL injection",
+          body: "The query concatenates user input.\nactions/checkout@v7 does not exist.",
+        }),
+      ],
+    };
+
+    const out = await verifyReviewActionRefs(octokit, review);
+
+    expect(out.comments).toHaveLength(1);
+    expect(out.comments[0].title).toBe("SQL injection");
+    expect(out.comments[0].body).toContain("The query concatenates user input.");
+    expect(out.comments[0].body).not.toContain("does not exist");
+    expect(resolveVerdict(out)).toBe("REQUEST_CHANGES");
   });
 
   it("keeps REQUEST_CHANGES when a blocking finding remains", async () => {
@@ -162,6 +188,7 @@ describe("action ref verification edge cases", () => {
       comments: [comment({ body: "actions/checkout@v7 does not exist." }), comment({ title: "Real bug", body: "Off by one." })],
     });
     expect(out.verdict).toBe("REQUEST_CHANGES");
+    expect(resolveVerdict(out)).toBe("REQUEST_CHANGES");
     expect(out.comments.map((c) => c.title)).toEqual(["Real bug"]);
   });
 });
@@ -177,9 +204,10 @@ describe("verifyReviewActionRefs prior issues and notes", () => {
     });
     expect(out.unresolvedPriorIssues).toEqual(["Off-by-one in loop bound is still open."]);
     expect(out.verdict).toBe("REQUEST_CHANGES");
+    expect(resolveVerdict(out)).toBe("REQUEST_CHANGES");
   });
 
-  it("stops requesting changes when the only prior issue was a false claim", async () => {
+  it("leaves the verdict unchanged when the only prior issue was a false claim", async () => {
     const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
     const out = await verifyReviewActionRefs(octokit, {
       verdict: "REQUEST_CHANGES" as const,
@@ -188,7 +216,8 @@ describe("verifyReviewActionRefs prior issues and notes", () => {
       unresolvedPriorIssues: ["actions/checkout@v7 does not exist."],
     });
     expect(out.unresolvedPriorIssues).toEqual([]);
-    expect(out.verdict).toBe("COMMENT");
+    expect(out.verdict).toBe("REQUEST_CHANGES");
+    expect(resolveVerdict(out)).toBe("COMMENT");
   });
 
   it("says the claim was unverified when the lookup failed", async () => {

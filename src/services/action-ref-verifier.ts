@@ -97,8 +97,20 @@ export async function dropUnverifiedMissingActionRefs(
   const kept: ReviewComment[] = [];
   for (const comment of comments) {
     const verdict = await judge(octokit, cache, `${comment.title}\n${comment.body}`);
-    if (verdict) dropped.push(verdict);
-    else kept.push(comment);
+    if (!verdict) {
+      kept.push(comment);
+      continue;
+    }
+    dropped.push(verdict);
+    // The claim is false, but the comment can carry other findings, so the
+    // sentences that carry the claim are removed and the rest of the comment
+    // is kept. A comment whose headline or whose whole body was the claim is
+    // dropped, because nothing else in it stands on its own.
+    const droppedKeys = new Set(verdict.refs.map(refKey));
+    const title = scrubSentences(comment.title, droppedKeys);
+    const body = scrubSentences(comment.body, droppedKeys);
+    if (title === "" || body === "") continue;
+    kept.push({ ...comment, title, body });
   }
   return kept;
 }
@@ -137,8 +149,9 @@ type VerifiableReview = Pick<DeepReviewResult, "comments" | "summary" | "verdict
 
 /**
  * Apply the filter to a full review: drop false missing-ref findings and prior
- * issues, remove summary sentences that repeat them, and stop requesting
- * changes when nothing blocking is left.
+ * issues, and remove summary sentences that repeat them. The verdict is left
+ * as the model wrote it. The caller resolves it against the comment list and
+ * the prior issues this function returns.
  */
 export async function verifyReviewActionRefs<T extends VerifiableReview>(octokit: RefLookupOctokit, review: T): Promise<T> {
   const cache: Cache = new Map();
@@ -157,10 +170,8 @@ export async function verifyReviewActionRefs<T extends VerifiableReview>(octokit
   const droppedKeys = new Set([...dropped, ...priorDropped].flatMap((d) => d.refs.map(refKey)));
   const summary = scrubSentences(review.summary, droppedKeys);
   const note = dropNote([...dropped, ...priorDropped]);
-  const blocking = comments.some((c) => c.severity !== "SUGGESTION") || unresolved.length > 0;
-  const verdict = review.verdict === "REQUEST_CHANGES" && !blocking ? "COMMENT" : review.verdict;
 
-  const out: T = { ...review, comments, summary: summary ? `${summary}\n\n${note}` : note, verdict };
+  const out: T = { ...review, comments, summary: summary ? `${summary}\n\n${note}` : note };
   if (review.unresolvedPriorIssues) out.unresolvedPriorIssues = unresolved;
   return out;
 }

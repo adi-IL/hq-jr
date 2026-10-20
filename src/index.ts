@@ -1,5 +1,5 @@
 import { Probot } from "probot";
-import { checkAiHealth, runTriage, runDeepReview, isAiInfraError, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags } from "./services/ai.js";
+import { checkAiHealth, runTriage, runDeepReview, isAiInfraError, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags, resolveVerdict } from "./services/ai.js";
 import { config } from "./config.js";
 import { parseUnifiedDiff, isLineInDiff, DiffFile } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
@@ -42,6 +42,273 @@ export function markdownCodeSpan(value: string): string {
   const fence = "`".repeat(longestRun + 1);
   const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
   return `${fence}${pad}${text}${pad}${fence}`;
+}
+
+/** GitHub rejects a check summary longer than 65535 characters. */
+const MAX_CHECK_SUMMARY_CHARS = 60000;
+/** Files listed in a capped check summary list. */
+const MAX_SUMMARY_FILES_LISTED = 50;
+/** Longest path rendered in a capped check summary list. One line always fits in the summary budget. */
+const MAX_SUMMARY_PATH_CHARS = 2000;
+const SUMMARY_TRUNCATION_MARKER = "...[truncated]";
+/** Notice that marks model supplied text as cut for the check summary. */
+const SUMMARY_TEXT_TRUNCATION_NOTICE = "\n\n... [model summary truncated to fit the check output limit]";
+/**
+ * Short marker that marks cut text when the full notice does not fit in the
+ * allowance. It keeps the cut visible instead of dropping the marker.
+ */
+const SHORT_TEXT_TRUNCATION_NOTICE = "\n...[cut]";
+
+/** Cuts a path that is too long to render and marks it as truncated. */
+function shortenSummaryPath(path: string): string {
+  return path.length > MAX_SUMMARY_PATH_CHARS
+    ? path.slice(0, MAX_SUMMARY_PATH_CHARS) + SUMMARY_TRUNCATION_MARKER
+    : path;
+}
+
+/**
+ * Renders a list of files into a check summary. The list is capped by count
+ * and by total length, so a pull request that touches a whole folder cannot
+ * push the summary past the character limit GitHub accepts. The header states
+ * the true total when the list is capped.
+ */
+function buildCappedFileListSummary<T>(params: {
+  base: string;
+  items: T[];
+  renderLine: (item: T) => string;
+  header: (shown: number, total: number) => string;
+}): string {
+  const { base, items, renderLine, header } = params;
+  const shown: string[] = [];
+  for (const item of items.slice(0, MAX_SUMMARY_FILES_LISTED)) {
+    const line = renderLine(item);
+    const candidate = [...shown, line];
+    const length =
+      base.length + 2 + header(candidate.length, items.length).length + 1 + candidate.join("\n").length;
+    if (length > MAX_CHECK_SUMMARY_CHARS) break;
+    shown.push(line);
+  }
+
+  return `${base}\n\n${header(shown.length, items.length)}\n${shown.join("\n")}`;
+}
+
+/**
+ * Builds the check summary for a pull request without reviewable hunks. The
+ * renamed file list is capped and the header states the true total, so a pull
+ * request that renames a whole folder cannot push the summary past the
+ * character limit GitHub accepts.
+ */
+export function buildNoCodeChangesSummary(
+  renamedFiles: Array<{ oldPath: string; newPath: string }>
+): string {
+  const base =
+    "Pull request contains no textual diff or code hunks to analyze (e.g. pure file mode changes or binary assets).";
+  if (renamedFiles.length === 0) return base;
+
+  return buildCappedFileListSummary({
+    base,
+    items: renamedFiles,
+    renderLine: (file) =>
+      `- ${markdownCodeSpan(shortenSummaryPath(file.oldPath))} -> ${markdownCodeSpan(shortenSummaryPath(file.newPath))}`,
+    header: (shown, total) =>
+      shown < total ? `Renamed files (showing first ${shown} of ${total}):` : `Renamed files (${total}):`,
+  });
+}
+
+/**
+ * Builds the check summary for a pull request where every modified file was
+ * excluded by the noise filters or dropped because the context budget ran
+ * out. The excluded file list is capped and the header states the true
+ * total, so a pull request that touches thousands of lockfiles or generated
+ * bundles cannot push the summary past the character limit GitHub accepts.
+ * The header names both reasons, because a file that was dropped for the
+ * budget was not an artifact.
+ */
+export function buildExcludedFilesSummary(
+  ignoredItems: Array<{ path: string; reason: string }>
+): string {
+  const base =
+    "Modified files were excluded from review, as non-reviewable artifacts or because the context budget ran out:";
+  if (ignoredItems.length === 0) return base;
+
+  return buildCappedFileListSummary({
+    base,
+    items: ignoredItems,
+    renderLine: (item) => `- ${markdownCodeSpan(shortenSummaryPath(item.path))}: ${item.reason}`,
+    header: (shown, total) =>
+      shown < total ? `Excluded files (showing first ${shown} of ${total}):` : `Excluded files (${total}):`,
+  });
+}
+
+/**
+ * Cuts model supplied text to the check summary budget and marks it as
+ * truncated, so a reader can tell a cut summary from a short one.
+ *
+ * The marker is cut to the budget as well, so the result never grows past the
+ * allowance it was given. A budget too small for the full notice gets the
+ * short marker instead, so a cut text is still marked as cut.
+ */
+function capSummaryText(
+  text: string,
+  maxChars: number,
+  notice: string = SUMMARY_TEXT_TRUNCATION_NOTICE
+): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 0) return "";
+  const boundedNotice =
+    notice.length <= maxChars
+      ? notice
+      : SHORT_TEXT_TRUNCATION_NOTICE.length <= maxChars
+        ? SHORT_TEXT_TRUNCATION_NOTICE
+        : SHORT_TEXT_TRUNCATION_NOTICE.slice(0, maxChars);
+  const room = Math.max(0, maxChars - boundedNotice.length);
+  return text.slice(0, room) + boundedNotice;
+}
+
+/**
+ * Builds the check summary for a pull request whose files were all low risk.
+ * The model supplied text is capped, so a verbose answer cannot push the
+ * summary past the character limit GitHub accepts.
+ */
+export function buildTriagePassedSummary(triageSummary: string): string {
+  const header = "### Review Summary\n\n";
+  const footer = "\n\nAll modified files are low risk or auto-generated. Deep review bypassed.";
+  const text = capSummaryText(
+    triageSummary,
+    MAX_CHECK_SUMMARY_CHARS - header.length - footer.length
+  );
+  return `${header}${text}${footer}`;
+}
+
+/**
+ * Budget for the review body. GitHub rejects a review body longer than 65535
+ * characters, so the body uses the same budget as the check summaries.
+ */
+const MAX_REVIEW_BODY_CHARS = MAX_CHECK_SUMMARY_CHARS;
+/** Notice that marks model supplied review text as cut. */
+const REVIEW_TEXT_TRUNCATION_NOTICE =
+  "\n\n... [model text truncated to fit the review body limit]";
+/** Heading of the pull request review body. */
+const REVIEW_BODY_HEADING = "## hq-jr Automated Code Review";
+/** Heading of the section with the prior issues that are fixed. */
+const RESOLVED_ISSUES_HEADING = "### ✅ Resolved Issues from Prior Review";
+/** Heading of the section with the prior issues that are still open. */
+const UNRESOLVED_ISSUES_HEADING = "### ⚠️ Remaining Open Issues from Prior Review";
+/** Heading of the section with the observations that have no diff line. */
+const ORPHAN_OBSERVATIONS_HEADING =
+  "### Additional File Observations (Outside Modified Diff Lines)";
+/** Heading of the section with the inline comments the 422 fallback attaches. */
+const INLINE_COMMENTS_HEADING =
+  "### Inline Comments (Attached as Summary due to diff positioning):";
+/** Smallest room a section keeps when the body budget runs out. */
+const REVIEW_SECTION_MIN_CHARS = 240;
+
+export interface DeepReviewBodyInput {
+  /** Model supplied review summary. */
+  summary: string;
+  /** Effective verdict of the review. */
+  verdict: string;
+  /** Number of findings the review reports. */
+  commentCount: number;
+  /** Prior issues that are fixed. */
+  resolvedPriorIssues?: string[];
+  /** Prior issues that are still open. */
+  unresolvedPriorIssues?: string[];
+  /** Observations that could not be anchored to a diff line. */
+  orphanComments?: string[];
+  /** Inline comments the 422 fallback attaches to the body. */
+  inlineComments?: Array<{ path: string; line: number; side: string; body: string }>;
+  /** Budget for the whole body. */
+  maxChars?: number;
+}
+
+/**
+ * Keeps the review body inside its budget. The heading, the verdict line and
+ * the section headings are the fixed part of the body, and they can already be
+ * longer than a small budget, so the body is cut as a last resort. The cut is
+ * marked, so the body never grows past the cap it was given and a reader can
+ * still tell a cut review from a short one.
+ */
+function capReviewBody(body: string, maxChars: number): string {
+  if (body.length <= maxChars) return body;
+  if (maxChars <= 0) return "";
+  const marker =
+    REVIEW_TEXT_TRUNCATION_NOTICE.length <= maxChars
+      ? REVIEW_TEXT_TRUNCATION_NOTICE
+      : SHORT_TEXT_TRUNCATION_NOTICE.length <= maxChars
+        ? SHORT_TEXT_TRUNCATION_NOTICE
+        : SHORT_TEXT_TRUNCATION_NOTICE.slice(0, maxChars);
+  return body.slice(0, Math.max(0, maxChars - marker.length)) + marker;
+}
+
+/**
+ * Builds the pull request review body. The model supplied text is cut to the
+ * review body budget, so a verbose answer cannot push the body past the
+ * character limit GitHub accepts. The heading, the summary, the verdict line,
+ * the count of findings and the issue sections keep their place, and every cut
+ * is marked so a reader can tell a cut review from a short one.
+ */
+export function buildDeepReviewBody(input: DeepReviewBodyInput): string {
+  const maxChars = input.maxChars ?? MAX_REVIEW_BODY_CHARS;
+
+  const sections: Array<{ heading: string; lines: string[] }> = [];
+  const resolved = (input.resolvedPriorIssues ?? []).map((issue) => `- ${issue}`);
+  if (resolved.length > 0) sections.push({ heading: RESOLVED_ISSUES_HEADING, lines: resolved });
+  const unresolved = (input.unresolvedPriorIssues ?? []).map((issue) => `- ${issue}`);
+  if (unresolved.length > 0) sections.push({ heading: UNRESOLVED_ISSUES_HEADING, lines: unresolved });
+  const orphan = input.orphanComments ?? [];
+  if (orphan.length > 0) sections.push({ heading: ORPHAN_OBSERVATIONS_HEADING, lines: orphan });
+  const inline = (input.inlineComments ?? []).map(
+    (comment) => `- **${comment.path}:${comment.line}** (${comment.side}):\n${comment.body}`
+  );
+  if (inline.length > 0) sections.push({ heading: INLINE_COMMENTS_HEADING, lines: inline });
+
+  const verdictLine = `**Verdict:** \`${input.verdict}\``;
+  // The count of findings is the same one the check run reports, so a reader of
+  // the review sees the same number of observations as a reader of the check.
+  const countLine = `Found **${input.commentCount}** observation(s).`;
+  // The heading, the verdict line, the count line and the section headings are
+  // the fixed part of the body. Everything else is model supplied text that
+  // can be cut.
+  const headingsLength = sections.reduce((sum, section) => sum + section.heading.length + 3, 0);
+  let budget = Math.max(
+    0,
+    maxChars -
+      REVIEW_BODY_HEADING.length -
+      2 -
+      verdictLine.length -
+      2 -
+      countLine.length -
+      2 -
+      headingsLength
+  );
+
+  // The summary carries the verdict, so it keeps the largest share of the
+  // budget. Every section keeps a minimum, so the structure of the body
+  // survives a verbose answer.
+  const sectionFloor =
+    sections.length > 0
+      ? Math.min(REVIEW_SECTION_MIN_CHARS, Math.floor(budget / (sections.length + 1)))
+      : 0;
+  const summary = capSummaryText(
+    input.summary ?? "",
+    Math.max(0, budget - sectionFloor * sections.length),
+    REVIEW_TEXT_TRUNCATION_NOTICE
+  );
+  budget -= summary.length;
+
+  const cutSections = sections.map((section, index) => {
+    const room = Math.max(0, Math.floor(budget / (sections.length - index)));
+    const text = capSummaryText(section.lines.join("\n"), room, REVIEW_TEXT_TRUNCATION_NOTICE);
+    budget -= text.length;
+    return { heading: section.heading, text };
+  });
+
+  let body = `${REVIEW_BODY_HEADING}\n\n${summary}\n\n${verdictLine}\n\n${countLine}`;
+  for (const section of cutSections) {
+    body += `\n\n${section.heading}\n${section.text}`;
+  }
+  return capReviewBody(body, maxChars);
 }
 
 export function buildReviewPrompt(params: {
@@ -375,16 +642,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             conclusion: "neutral",
             output: {
               title: "No Code Changes Detected",
-              summary:
-                "Pull request contains no textual diff or code hunks to analyze (e.g. pure file mode changes or binary assets)." +
-                (renamedFiles.length > 0
-                  ? `\n\nRenamed files (${renamedFiles.length}):\n${renamedFiles
-                      .map(
-                        (f) =>
-                          `- ${markdownCodeSpan(f.oldPath)} -> ${markdownCodeSpan(f.newPath)}`
-                      )
-                      .join("\n")}`
-                  : ""),
+              summary: buildNoCodeChangesSummary(renamedFiles),
             },
           });
         }
@@ -403,7 +661,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             conclusion: "success",
             output: {
               title: "Triage Passed: Excluded Files Only",
-              summary: `Modified files were identified as non-reviewable artifacts (lockfiles, documentation, generated bundles):\n\n${contextPackage.ignoredItems.map((i: any) => `- ${markdownCodeSpan(i.path)}: ${i.reason}`).join("\n")}`,
+              summary: buildExcludedFilesSummary(contextPackage.ignoredItems),
             },
           });
         }
@@ -426,7 +684,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             conclusion: "success",
             output: {
               title: "Triage Passed: Low Risk Changes",
-              summary: `### Review Summary\n\n${triage.summary}\n\nAll modified files are low risk or auto-generated. Deep review bypassed.`,
+              summary: buildTriagePassedSummary(triage.summary),
             },
           });
         }
@@ -479,10 +737,22 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
 
       const deepReview = await runEscalatedDeepReview({
         overallRisk: triage.overallRisk,
-        run: (model) => runDeepReview(reviewPrompt, { previousReview, model }),
+        run: (model, role) => runDeepReview(reviewPrompt, { previousReview, model, role }),
         log: (payload, message) => app.log.warn({ ...payload, pullNumber }, message),
       });
       const review = await verifyReviewActionRefs(octokit, deepReview.result);
+      // Resolve once, against the comment list and prior issues that remain
+      // after missing-ref claims have been dropped. The model verdict is still
+      // on the review, so this comparison sees the real downgrade.
+      const verdict = resolveVerdict(review);
+      if (verdict !== review.verdict) {
+        app.log.warn(
+          { pullNumber, verdict: review.verdict, effectiveVerdict: verdict },
+          verdict === "COMMENT"
+            ? "Downgraded a REQUEST_CHANGES verdict with no blocking finding to COMMENT"
+            : "Raised a verdict that reports a blocking finding to REQUEST_CHANGES"
+        );
+      }
 
       // 6. Post inline review comments via Octokit REST (with line anchor validation)
       const normalizePath = (p: string) => p.replace(/^[./]+/, "").replace(/\\/g, "/");
@@ -525,19 +795,16 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         }
       }
 
-      let reviewBody = `## hq-jr Automated Code Review\n\n${review.summary}\n\n**Verdict:** \`${review.verdict}\``;
-
-      if (review.resolvedPriorIssues && review.resolvedPriorIssues.length > 0) {
-        reviewBody += `\n\n### ✅ Resolved Issues from Prior Review\n${review.resolvedPriorIssues.map((i) => `- ${i}`).join("\n")}`;
-      }
-
-      if (review.unresolvedPriorIssues && review.unresolvedPriorIssues.length > 0) {
-        reviewBody += `\n\n### ⚠️ Remaining Open Issues from Prior Review\n${review.unresolvedPriorIssues.map((i) => `- ${i}`).join("\n")}`;
-      }
-
-      if (orphanComments.length > 0) {
-        reviewBody += `\n\n### Additional File Observations (Outside Modified Diff Lines)\n${orphanComments.join("\n")}`;
-      }
+      // The model supplied summary and the issue lists are cut to the review
+      // body budget, so a verbose answer cannot make GitHub reject the review.
+      const reviewBody = buildDeepReviewBody({
+        summary: review.summary,
+        verdict,
+        commentCount: review.comments.length,
+        resolvedPriorIssues: review.resolvedPriorIssues,
+        unresolvedPriorIssues: review.unresolvedPriorIssues,
+        orphanComments,
+      });
 
       if (validComments.length > 0 || orphanComments.length > 0 || previousReview) {
         try {
@@ -546,7 +813,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             repo: repoName,
             pull_number: pullNumber,
             commit_id: pr.head.sha,
-            event: review.verdict === "REQUEST_CHANGES" ? "REQUEST_CHANGES" : "COMMENT",
+            event: verdict === "REQUEST_CHANGES" ? "REQUEST_CHANGES" : "COMMENT",
             body: reviewBody,
             comments: validComments,
           });
@@ -556,16 +823,28 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
               { reviewErr: reviewErr.message },
               "Inline comment position rejected by GitHub (HTTP 422). Falling back to review summary."
             );
-            let fallbackBody = reviewBody + "\n\n### Inline Comments (Attached as Summary due to diff positioning):\n";
-            for (const vc of validComments) {
-              fallbackBody += `\n- **${vc.path}:${vc.line}** (${vc.side}):\n${vc.body}\n`;
-            }
+            // The fallback body carries the inline comments, so it is built
+            // from the same budget instead of appending to the review body.
+            const fallbackBody = buildDeepReviewBody({
+              summary: review.summary,
+              verdict,
+              commentCount: review.comments.length,
+              resolvedPriorIssues: review.resolvedPriorIssues,
+              unresolvedPriorIssues: review.unresolvedPriorIssues,
+              orphanComments,
+              inlineComments: validComments.map((vc) => ({
+                path: vc.path,
+                line: vc.line,
+                side: vc.side,
+                body: vc.body,
+              })),
+            });
             await octokit.pulls.createReview({
               owner,
               repo: repoName,
               pull_number: pullNumber,
               commit_id: pr.head.sha,
-              event: review.verdict === "REQUEST_CHANGES" ? "REQUEST_CHANGES" : "COMMENT",
+              event: verdict === "REQUEST_CHANGES" ? "REQUEST_CHANGES" : "COMMENT",
               body: fallbackBody,
             });
           } else {
@@ -611,13 +890,19 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
 
       // 7. Complete Check Run
       if (checkRun?.data?.id) {
+        // The conclusion follows the effective verdict, so a review that
+        // reports no finding can never fail the check run.
         const conclusion =
-          review.verdict === "REQUEST_CHANGES"
+          verdict === "REQUEST_CHANGES"
             ? "failure"
-            : review.verdict === "APPROVE"
+            : verdict === "APPROVE"
               ? "success"
               : "neutral";
 
+        // The model supplied summary is cut to the check summary budget, so a
+        // verbose answer cannot make GitHub reject the check run update.
+        const summaryHeader = "### Summary\n\n";
+        const summaryFooter = `\n\nFound **${review.comments.length}** observation(s).`;
         await octokit.checks.update({
           owner,
           repo: repoName,
@@ -625,8 +910,11 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           status: "completed",
           conclusion,
           output: {
-            title: `Review Completed: ${review.verdict}`,
-            summary: `### Summary\n\n${review.summary}\n\nFound **${review.comments.length}** observation(s).`,
+            title: `Review Completed: ${verdict}`,
+            summary: `${summaryHeader}${capSummaryText(
+              review.summary,
+              MAX_CHECK_SUMMARY_CHARS - summaryHeader.length - summaryFooter.length
+            )}${summaryFooter}`,
           },
         });
       }
