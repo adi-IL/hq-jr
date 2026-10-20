@@ -251,6 +251,64 @@ describe("AI request timeouts", () => {
       server.close();
     }
   });
+
+  it("forwards native Request objects with method, headers, and body through the AI dispatcher", async () => {
+    const { createServer } = await import("node:http");
+    const { setGlobalDispatcher, getGlobalDispatcher } = await import("undici");
+    const { aiFetch } = await import("./ai.js");
+
+    const server = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(Buffer.from(chunk));
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          method: req.method,
+          url: req.url,
+          header: req.headers["x-test-header"],
+          body: Buffer.concat(chunks).toString("utf8"),
+        })
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+
+    const previous = getGlobalDispatcher();
+    const broken = {
+      dispatch() {
+        throw new Error("global dispatcher must not handle AI requests");
+      },
+      close() {
+        return Promise.resolve();
+      },
+      destroy() {
+        return Promise.resolve();
+      },
+    };
+    setGlobalDispatcher(broken as never);
+    try {
+      const req = new globalThis.Request(`http://127.0.0.1:${port}/v1beta/interactions`, {
+        method: "POST",
+        headers: {
+          "x-test-header": "tier3",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ agent: "antigravity" }),
+      });
+      const res = await aiFetch(req);
+      expect(await res.json()).toEqual({
+        method: "POST",
+        url: "/v1beta/interactions",
+        header: "tier3",
+        body: '{"agent":"antigravity"}',
+      });
+    } finally {
+      setGlobalDispatcher(previous);
+      server.close();
+    }
+  });
 });
 
 describe("isAiInfraError", () => {
