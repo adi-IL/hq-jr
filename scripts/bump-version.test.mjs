@@ -133,7 +133,8 @@ describe("version writers", () => {
   });
 });
 
-describe("bump-version.mjs end to end", () => {
+// The fake npm is a POSIX shell script, so this block runs only where /bin/sh exists.
+describe.skipIf(process.platform === "win32")("bump-version.mjs end to end", () => {
   const dirs = [];
   afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -309,6 +310,18 @@ describe("bump-version.mjs end to end", () => {
     expect(result.stderr).toMatch(/Nothing was committed or tagged/);
     expect(git(["status", "--porcelain"]).trim()).toBe("");
     expect(JSON.parse(readFileSync(path.join(repo, "package-lock.json"), "utf8")).version).toBe("0.1.8");
+  });
+
+  it("rejects a mismatched lockfile on --dry-run too", () => {
+    const { repo, git, bump } = setup();
+    const lockPath = path.join(repo, "package-lock.json");
+    const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+    lock.name = "other";
+    writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+    git(["commit", "-q", "-am", "break lockfile"]);
+    const result = bump("--dry-run");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/package-lock.json is for 'other'/);
   });
 
   it("prints the plan and changes nothing on --dry-run", () => {

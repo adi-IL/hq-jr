@@ -139,11 +139,33 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARBALL: npm-package/${{ needs.verify.outputs.tarball }}
         run: |
-          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
-            echo "$NAME@$VERSION is already on the npm registry; skipping publish"
-            exit 0
+          if published="$(npm view "$NAME@$VERSION" version 2>"$RUNNER_TEMP/npm-view.err")"; then
+            if [ "$published" = "$VERSION" ]; then
+              echo "$NAME@$VERSION is already on the npm registry; skipping publish"
+              exit 0
+            fi
+          elif ! grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
+            cat "$RUNNER_TEMP/npm-view.err" >&2
+            echo "::error::Could not check whether $NAME@$VERSION is on the npm registry."
+            exit 1
           fi
-          npm publish "$TARBALL" --access public --provenance
+          # npm moves the latest dist-tag on every publish. A release older than the
+          # current latest goes out under the backport dist-tag so latest never moves back.
+          if current="$(npm view "$NAME" dist-tags.latest 2>"$RUNNER_TEMP/npm-view.err")"; then
+            :
+          elif grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
+            current=""
+          else
+            cat "$RUNNER_TEMP/npm-view.err" >&2
+            echo "::error::Could not read the npm latest dist-tag for $NAME."
+            exit 1
+          fi
+          dist_tag=latest
+          if [ -n "$current" ] && [ "$(printf '%s\n%s\n' "$current" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]; then
+            dist_tag=backport
+            echo "$VERSION is older than npm latest $current; publishing under the backport dist-tag"
+          fi
+          npm publish "$TARBALL" --access public --provenance --tag "$dist_tag"
 
   publish-image:
     name: Build and push GHCR image

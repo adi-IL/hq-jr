@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "deploy", "refresh-deploy-files.sh");
 
-describe("deploy/refresh-deploy-files.sh", () => {
+// The script under test and the fake docker are shell scripts, so skip on Windows.
+describe.skipIf(process.platform === "win32")("deploy/refresh-deploy-files.sh", () => {
   const dirs = [];
   afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });

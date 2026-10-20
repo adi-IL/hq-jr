@@ -51,7 +51,7 @@ The workflow runs five jobs:
 
 1. **Verify tag and version.** Checks the tag shape and asserts it matches `package.json`.
 2. **Test and pack.** Installs, typechecks, tests, builds, packs the tarball, and runs `scripts/check-package-contents.mjs` on it, the same forbidden-file check CI runs on every branch.
-3. **Publish to npm.** Downloads that tarball and runs `npm publish --access public --provenance` on it. This job holds `id-token: write`, so it runs no repository code and no dependency install.
+3. **Publish to npm.** Downloads that tarball and runs `npm publish --access public --provenance` on it. This job holds `id-token: write`, so it runs no repository code and no dependency install. A version older than the current npm `latest` is published under the `backport` dist-tag, so `latest` never moves backward.
 4. **Build and push GHCR image.** Builds the image from the tagged commit with the OCI labels from `docker/metadata-action` and pushes the version tag. It lists the `vX.Y.Z` tags on `origin` and moves `latest` only when this tag is the highest, so re-running an older tag never moves `latest` backward.
 5. **Create GitHub Release.** Creates the release for the tag with generated release notes and the install commands.
 
@@ -191,7 +191,7 @@ In image-baked mode, refresh the deploy files from the new release before or tog
 /opt/hq-jr/deploy/refresh-deploy-files.sh
 ```
 
-It pulls the image that `compose.yaml` runs, copies the deploy files from it, and keeps the host `compose.yaml`, writing the release copy as `compose.yaml.release`. Pass an image reference to take the files from a specific release. Uncomment `ExecStartPre` in the unit to run it before every update.
+It pulls the image that `compose.yaml` runs, copies the deploy files from it, and keeps the host `compose.yaml`, writing the release copy as `compose.yaml.release`. Pass an image reference to take the files from a specific release. It does not update the units in `/etc/systemd/system`; re-run step 7 when a release changes them. Uncomment `ExecStartPre` in the unit to run it before every update, after reading the trust note in [`deploy/README.md`](../deploy/README.md).
 
 Manual upgrade:
 

@@ -21,9 +21,14 @@ export const FORBIDDEN = [
   { pattern: /(^|\/)\.env$/, reason: "dotenv file" },
   { pattern: /(^|\/)\.env\.(?!example$)/, reason: "dotenv file" },
   { pattern: /(^|\/)\.npmrc$/, reason: "npm config, may hold a token" },
-  { pattern: /\.(pem|key|cert|crt|p12|pfx)$/i, reason: "key or certificate" },
+  { pattern: /(^|\/)\.netrc$/, reason: "netrc file, may hold a password" },
+  { pattern: /\.(pem|key|cert|crt|p12|pfx|p8|jks|keystore)$/i, reason: "key or certificate" },
+  { pattern: /(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/, reason: "SSH private key" },
   { pattern: /\.(db|db-wal|db-shm|sqlite|sqlite3)$/i, reason: "database file" },
   { pattern: /(^|\/)application_default_credentials\.json$/i, reason: "Google ADC file" },
+  { pattern: /(^|\/)adc\.json$/i, reason: "Google ADC file" },
+  { pattern: /(^|\/)gcloud\//, reason: "file under a gcloud directory" },
+  { pattern: /(^|\/)[^/]*service[-_]?account[^/]*\.json$/i, reason: "service account key" },
   { pattern: /(^|\/)\.?credentials$/i, reason: "credentials file" },
   { pattern: new RegExp(`(^|/)[^/]*credentials[^/]*\\.(${DATA_EXTENSIONS})$`, "i"), reason: "credentials file" },
 ];
@@ -32,6 +37,10 @@ export const FORBIDDEN = [
 export function filesFromPackReport(report) {
   if (!Array.isArray(report) || report.length === 0 || !Array.isArray(report[0]?.files)) {
     throw new Error("the npm pack report has no file list");
+  }
+  // A real package always holds at least package.json, so an empty list means a broken report.
+  if (report[0].files.length === 0) {
+    throw new Error("the npm pack report lists no files");
   }
   return report[0].files.map((file) => file.path);
 }

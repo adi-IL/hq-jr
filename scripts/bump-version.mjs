@@ -329,6 +329,9 @@ export function main(argv, repoRoot) {
     throw new ReleaseError(`tag ${tag} already exists on origin. Publishing it again is not possible.`);
   }
 
+  // Build both files before the plan so --dry-run catches a bad lockfile too.
+  const updatedPackage = setPackageVersion(rawPackage, nextVersion);
+  const updatedLock = rawLock === null ? null : setLockfileVersion(rawLock, name, nextVersion);
   const files = rawLock === null ? ["package.json"] : ["package.json", "package-lock.json"];
   console.log("Release plan");
   console.log(`  package name:   ${name}`);
@@ -343,9 +346,6 @@ export function main(argv, repoRoot) {
     console.log("\nDry run: nothing was written, committed, or tagged.");
     return;
   }
-
-  const updatedPackage = setPackageVersion(rawPackage, nextVersion);
-  const updatedLock = rawLock === null ? null : setLockfileVersion(rawLock, name, nextVersion);
 
   const headBefore = git(["rev-parse", "HEAD"]).trim();
   writeFileSync(packageJsonPath, updatedPackage);

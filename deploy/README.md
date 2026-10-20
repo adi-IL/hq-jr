@@ -51,7 +51,11 @@ When a new release ships, refresh the deploy files from it:
 
 Without an argument the script pulls the image that `compose.yaml` runs, so a pinned version stays pinned. Pass an image reference such as `ghcr.io/adi-il/hq-jr:0.1.9` to take the files from a specific release. The host `compose.yaml` is never overwritten. The copy from the image is written next to it as `compose.yaml.release` so you can compare the two.
 
+The refresh does not touch `/etc/systemd/system`. When a release changes `hq-jr-update.service` or `hq-jr-update.timer`, repeat step 3 of [Credentials, start, and the update timer](#credentials-start-and-the-update-timer) to install the new units.
+
 To make that refresh automatic, uncomment the `ExecStartPre` line in `/etc/systemd/system/hq-jr-update.service` and run `sudo systemctl daemon-reload`. The refresh is non-fatal: when it fails, the unit still runs the updater already on disk.
+
+Automatic refresh runs scripts from the pulled image on the host as the deploy account, which has Docker access. That makes the image registry part of the host trust boundary. Enable it only if you trust the registry as much as the host, and pin `compose.yaml` to an image digest if you want to approve each change. Leave it off, or use mode 2, to keep the host updater independent of the image.
 
 ## Mode 2: host-copy
 
