@@ -37,4 +37,38 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(scrubbed).toContain("[REDACTED_SECRET]");
     expect(redactedCount).toBeGreaterThanOrEqual(1);
   });
+
+  it("does not redact environment or member expression references", () => {
+    const raw =
+      "const secret = process.env.SECRET_KEY;\n" +
+      "const client_secret = os.environ['CLIENT_SECRET'];\n" +
+      "const apiKey = config.apiKey;";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toContain("process.env.SECRET_KEY");
+    expect(scrubbed).toContain("os.environ['CLIENT_SECRET']");
+    expect(scrubbed).toContain("config.apiKey");
+    expect(redactedCount).toBe(0);
+  });
+
+  it("counts a redacted key once", () => {
+    const raw = "const apiKey = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789';";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).not.toContain("sk-ant-api03-");
+    expect(scrubbed).toContain("[REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("redacts a plain literal secret once", () => {
+    const { scrubbed, redactedCount } = scrubSecrets('const password = "hunter2hunter2";');
+    expect(scrubbed).toBe('const password = "[REDACTED_SECRET]";');
+    expect(redactedCount).toBe(1);
+  });
+
+  it("documents the length fragile limitation of the regex scrubber", () => {
+    // A fine grained token that is not exactly 82 characters is not redacted.
+    const shortPat = "github_pat_11A1234567890123456789012345678901234567890";
+    expect(scrubSecrets(shortPat).scrubbed).toContain(shortPat);
+  });
 });

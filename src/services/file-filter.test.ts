@@ -39,4 +39,21 @@ describe("File Filter & Noise Exclusion", () => {
     expect(testResult.category).toBe("TEST");
     expect(testResult.riskWeight).toBe(3);
   });
+
+  it("ignores TypeScript declaration files", () => {
+    const result = evaluateFile("src/types.d.ts");
+    expect(result.shouldIgnore).toBe(true);
+  });
+
+  it("does not classify files by arbitrary substring matches", () => {
+    expect(evaluateFile("src/AuthorProfile.tsx").category).toBe("FRONTEND");
+    expect(evaluateFile("src/hooks/useAuthor.ts").category).toBe("BACKEND");
+    expect(evaluateFile("src/server/reviewer.ts").category).toBe("BACKEND");
+  });
+
+  it("ignores documentation in any docs directory", () => {
+    const result = evaluateFile("src/docs/guide.ts");
+    expect(result.shouldIgnore).toBe(true);
+    expect(result.category).toBe("DOCUMENTATION");
+  });
 });

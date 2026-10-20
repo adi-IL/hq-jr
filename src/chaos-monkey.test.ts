@@ -67,13 +67,26 @@ index 0000000..1234567 100644
     });
 
     it("CHAOS 1.3: enforces strict 120,000 character token cap when flooded with 1,000,000 character diff", () => {
-      const massiveLines = Array.from({ length: 25000 }, (_, i) => `+const line_${i} = "data_${i}";\n`).join("");
-      const giantDiff = `diff --git a/massive.ts b/massive.ts\nindex 0000000..1234567 100644\n--- a/massive.ts\n+++ b/massive.ts\n@@ -1,1 +1,25000 @@\n${massiveLines}`;
+      const fileCount = 24;
+      const linesPerFile = 1200;
+      const massiveLines = Array.from(
+        { length: linesPerFile },
+        (_, i) => `+const line_${i} = "data_${i}";\n`
+      ).join("");
+      const giantDiff = Array.from(
+        { length: fileCount },
+        (_, file) => `diff --git a/massive_${file}.ts b/massive_${file}.ts
+index 0000000..1234567 100644
+--- a/massive_${file}.ts
++++ b/massive_${file}.ts
+@@ -1,1 +1,${linesPerFile} @@
+${massiveLines}`
+      ).join("\n");
 
       const parsed = parseUnifiedDiff(giantDiff);
       const pkg = packageReviewContext(parsed);
 
-      expect(pkg.promptPayload.length).toBeLessThanOrEqual(130000); // 120k + envelope
+      expect(pkg.promptPayload.length).toBeLessThanOrEqual(120000);
       expect(pkg.itemsToReview[0].isTruncated).toBe(true);
     });
 

@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import appFn, { REMEDIATE_COMMAND_RE, COMMIT_REPRO_COMMAND_RE, isSafeReproTestPath } from "./index.js";
 import { safeParseJson } from "./services/json-repair.js";
 import { executeRemediation } from "./services/remediation.js";
+import { parseUnifiedDiff, isLineInDiff } from "./services/diff-parser.js";
+import { packageReviewContext } from "./services/context-packager.js";
 import { ai } from "./services/ai.js";
 import * as discussionModule from "./services/discussion.js";
 
@@ -163,6 +165,27 @@ describe("Root Cause Bug Reproductions", () => {
     const hasExplicitMergeCommand = /\b(?:and\s+merge|auto-?merge)\b/i.test(commentBody);
     const autoMergeFixed = hasExplicitMergeCommand && !hasNegativeMerge;
     expect(autoMergeFixed).toBe(false);
+  });
+
+  it("REPRO 6: pre-model pipeline keeps review anchors and source text intact", () => {
+    const diff = `diff --git a/src/services/timeout.ts b/src/services/timeout.ts
+index 1111111..2222222 100644
+--- a/src/services/timeout.ts
++++ b/src/services/timeout.ts
+@@ -1,2 +1,3 @@
+ const secret = process.env.SECRET_KEY;
++const timeout = 160000;
+ const retry = 3;
+`;
+    const parsed = parseUnifiedDiff(diff);
+    const file = parsed.files[0];
+
+    expect(file.isSubmodule).toBe(false);
+    expect(isLineInDiff(file, 2, "RIGHT")).toBe(true);
+
+    const context = packageReviewContext(parsed);
+    expect(context.promptPayload).toContain("process.env.SECRET_KEY");
+    expect(context.promptPayload).toContain("const timeout = 160000;");
   });
 });
 

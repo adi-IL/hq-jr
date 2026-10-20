@@ -62,4 +62,20 @@ index 000..444 100644
     expect(context.itemsToReview.length).toBeGreaterThanOrEqual(1);
     expect(context.itemsToReview[0].isTruncated).toBe(true);
   });
+
+  it("enforces the character cap on the scrubbed payload", () => {
+    const secretLines = Array.from({ length: 200 }, () => '+const apiKey = "aaaaaaaaaa";\n').join("");
+    const diff = `diff --git a/src/config.ts b/src/config.ts
+index 1111111..2222222 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -1,1 +1,200 @@
+${secretLines}`;
+
+    const parsed = parseUnifiedDiff(diff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 1000 });
+
+    expect(context.promptPayload.length).toBeLessThanOrEqual(1000);
+    expect(context.itemsToReview[0].isTruncated).toBe(true);
+  });
 });

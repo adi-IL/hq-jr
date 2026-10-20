@@ -1,5 +1,10 @@
 /**
  * Patterns matching high-risk secrets and credentials.
+ *
+ * Known limitation: a regex only scrubber cannot tell a real credential from
+ * an arbitrary string of the same shape. Tokens with an unexpected length
+ * (ghp_ under 36 characters, github_pat_ that is not exactly 82, AIza that is
+ * not exactly 35, generic values under 8 characters) are not redacted.
  */
 const SECRET_PATTERNS = [
   // Private keys (RSA, EC, PGP, OPENSSH)
@@ -26,10 +31,53 @@ const SECRET_PATTERNS = [
 
   // OpenAI / Anthropic / Generic AI API tokens (including modern sk-proj-, sk-ant-api03-, sk-admin-)
   /\bsk-(?:proj-|admin-|ant-(?:api03|admin01)-)?[a-zA-Z0-9_-]{20,250}\b/g,
-
-  // Generic secret / password assignments in code, JSON, YAML, and .env
-  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*["'`]?([^"'`\r\n\s]{8,128})["'`]?/gi,
 ];
+
+const REDACTION_PLACEHOLDER = "[REDACTED_SECRET]";
+
+/**
+ * Generic secret / password assignments in code, JSON, YAML, and .env.
+ * The value may be quoted, unquoted, or a member expression.
+ */
+const GENERIC_ASSIGNMENT_REGEX =
+  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(["'`]?)([^"'`\r\n\s]{8,128})["'`]?/gi;
+
+const ENV_REFERENCE_REGEX =
+  /^(?:process|globalThis|global|Deno|Bun)\.env\b|^os\.environ\b|^(?:import\.meta\.)?env\b|^this\.env\b/;
+
+const MEMBER_EXPRESSION_REGEX =
+  /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]*\])+$/;
+
+const TRAILING_PUNCTUATION_REGEX = /[;,)\]}]+$/;
+
+/**
+ * Splits a captured value into the value itself and the punctuation that
+ * closes the statement it appears in. A bracketed value keeps its brackets.
+ */
+function splitTrailingPunctuation(value: string): { core: string; trailing: string } {
+  if (value.startsWith("[") && value.endsWith("]")) {
+    return { core: value, trailing: "" };
+  }
+  const trailing = TRAILING_PUNCTUATION_REGEX.exec(value)?.[0] ?? "";
+  return { core: value.slice(0, value.length - trailing.length), trailing };
+}
+
+/**
+ * A value that points at configuration instead of holding a credential, such
+ * as process.env.SECRET_KEY, is code the reviewer needs to see untouched.
+ */
+function isReferenceValue(value: string, quote: string): boolean {
+  if (!value) {
+    return true;
+  }
+  if (quote) {
+    return false;
+  }
+  if (ENV_REFERENCE_REGEX.test(value)) {
+    return true;
+  }
+  return MEMBER_EXPRESSION_REGEX.test(value);
+}
 
 /**
  * Scrubs credentials and secrets from text before transmission to AI models.
@@ -44,14 +92,35 @@ export function scrubSecrets(input: string): { scrubbed: string; redactedCount: 
 
   for (const pattern of SECRET_PATTERNS) {
     scrubbed = scrubbed.replace(pattern, (match, ...args) => {
-      redactedCount++;
       const captures = args.slice(0, -2);
-      if (captures.length > 0 && typeof captures[0] === "string" && captures[0].length > 0) {
-        return match.replace(captures[0], "[REDACTED_SECRET]");
+      const capture = captures.length > 0 && typeof captures[0] === "string" ? captures[0] : "";
+      const replacement =
+        capture.length > 0 ? match.replace(capture, REDACTION_PLACEHOLDER) : REDACTION_PLACEHOLDER;
+      if (replacement !== match) {
+        redactedCount++;
       }
-      return "[REDACTED_SECRET]";
+      return replacement;
     });
   }
+
+  scrubbed = scrubbed.replace(GENERIC_ASSIGNMENT_REGEX, (match, quote: string, value: string) => {
+    const { core, trailing } = splitTrailingPunctuation(value);
+    if (!core || isReferenceValue(core, quote)) {
+      return match;
+    }
+    const valueIndex = match.lastIndexOf(value);
+    const replacement =
+      valueIndex >= 0
+        ? match.slice(0, valueIndex) +
+          REDACTION_PLACEHOLDER +
+          trailing +
+          match.slice(valueIndex + value.length)
+        : match;
+    if (replacement !== match) {
+      redactedCount++;
+    }
+    return replacement;
+  });
 
   return { scrubbed, redactedCount };
 }
