@@ -108,7 +108,8 @@ jobs:
           retention-days: 7
 
   # This job holds id-token: write, so it runs no repository code and no
-  # dependency scripts. It only publishes the tarball that `verify` checked.
+  # dependency scripts. It checks out the tagged commit only so npm can build
+  # the provenance attestation, then publishes the tarball that `verify` checked.
   publish-npm:
     name: Publish to npm
     needs:
@@ -120,6 +121,16 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # npm builds the provenance attestation from the source repository, so the
+      # publishing job needs a git checkout of the tagged commit even though it
+      # runs nothing from the repository: there is no install, build or test
+      # step here, and the job token is not persisted into .git/config.
+      - name: Checkout tagged commit for provenance
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v7
         with:
@@ -165,7 +176,7 @@ jobs:
             dist_tag=backport
             echo "$VERSION is older than npm latest $current; publishing under the backport dist-tag"
           fi
-          npm publish "$TARBALL" --access public --provenance --tag "$dist_tag"
+          npm publish "$TARBALL" --access public --provenance --ignore-scripts --tag "$dist_tag"
 
   publish-image:
     name: Build and push GHCR image
