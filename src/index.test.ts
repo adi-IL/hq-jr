@@ -80,6 +80,12 @@ describe("hq-jr Event Handlers & Security Guards", () => {
       return `diff --git a/${oldPath} b/${newPath}\nsimilarity index 100%\nrename from ${oldPath}\nrename to ${newPath}\n`;
     }).join("");
 
+  const ignoredFileDiff = (count: number, path: (index: number) => string) =>
+    Array.from({ length: count }, (_, index) => {
+      const filePath = path(index);
+      return `diff --git a/${filePath} b/${filePath}\nindex 123..456 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,1 +1,2 @@\n+# generated\n`;
+    }).join("");
+
   it("does not reply to unmentioned human root review comments", async () => {
     const replySpy = vi.spyOn(discussionModule, "replyToDiscussion").mockResolvedValue("ack");
 
@@ -461,6 +467,59 @@ rename to src/new/auth.ts
     const summary = octokitMock.checks.update.mock.calls.at(-1)?.[0].output.summary as string;
     expect(summary.length).toBeLessThan(65535);
     expect(summary).toMatch(/Renamed files \(showing first \d+ of 312\):/);
+  });
+
+  it("caps the excluded file list in the excluded files only summary", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(2000, (index) => `docs/guide${index}.md`) });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 28,
+          state: "open",
+          title: "Regenerate every doc",
+          head: { sha: "sha-28", ref: "docs" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate.output.title).toBe("Triage Passed: Excluded Files Only");
+    const summary = finalUpdate.output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("Modified files were identified as non-reviewable artifacts");
+    expect(summary).toContain("Excluded files (showing first 50 of 2000):");
+  });
+
+  it("keeps the excluded files only summary under the check character limit with long paths", async () => {
+    const longPath = (index: number) => `docs/${"d".repeat(3000)}/page${index}.md`;
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(200, longPath) });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 29,
+          state: "open",
+          title: "Regenerate every doc",
+          head: { sha: "sha-29", ref: "docs" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const summary = octokitMock.checks.update.mock.calls.at(-1)?.[0].output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("...[truncated]");
+    expect(summary).toMatch(/Excluded files \(showing first \d+ of 200\):/);
   });
 
   it("still fails the check when the review itself errors", async () => {

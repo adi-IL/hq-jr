@@ -46,11 +46,44 @@ export function markdownCodeSpan(value: string): string {
 
 /** GitHub rejects a check summary longer than 65535 characters. */
 const MAX_CHECK_SUMMARY_CHARS = 60000;
-/** Renamed files listed in the no code changes summary. */
-const MAX_RENAMED_FILES_LISTED = 50;
-/** Longest path rendered in the renamed file list. One line always fits in the summary budget. */
-const MAX_RENAMED_PATH_CHARS = 2000;
+/** Files listed in a capped check summary list. */
+const MAX_SUMMARY_FILES_LISTED = 50;
+/** Longest path rendered in a capped check summary list. One line always fits in the summary budget. */
+const MAX_SUMMARY_PATH_CHARS = 2000;
 const SUMMARY_TRUNCATION_MARKER = "...[truncated]";
+
+/** Cuts a path that is too long to render and marks it as truncated. */
+function shortenSummaryPath(path: string): string {
+  return path.length > MAX_SUMMARY_PATH_CHARS
+    ? path.slice(0, MAX_SUMMARY_PATH_CHARS) + SUMMARY_TRUNCATION_MARKER
+    : path;
+}
+
+/**
+ * Renders a list of files into a check summary. The list is capped by count
+ * and by total length, so a pull request that touches a whole folder cannot
+ * push the summary past the character limit GitHub accepts. The header states
+ * the true total when the list is capped.
+ */
+function buildCappedFileListSummary<T>(params: {
+  base: string;
+  items: T[];
+  renderLine: (item: T) => string;
+  header: (shown: number, total: number) => string;
+}): string {
+  const { base, items, renderLine, header } = params;
+  const shown: string[] = [];
+  for (const item of items.slice(0, MAX_SUMMARY_FILES_LISTED)) {
+    const line = renderLine(item);
+    const candidate = [...shown, line];
+    const length =
+      base.length + 2 + header(candidate.length, items.length).length + 1 + candidate.join("\n").length;
+    if (length > MAX_CHECK_SUMMARY_CHARS) break;
+    shown.push(line);
+  }
+
+  return `${base}\n\n${header(shown.length, items.length)}\n${shown.join("\n")}`;
+}
 
 /**
  * Builds the check summary for a pull request without reviewable hunks. The
@@ -65,26 +98,37 @@ export function buildNoCodeChangesSummary(
     "Pull request contains no textual diff or code hunks to analyze (e.g. pure file mode changes or binary assets).";
   if (renamedFiles.length === 0) return base;
 
-  const header = (shown: number) =>
-    shown < renamedFiles.length
-      ? `Renamed files (showing first ${shown} of ${renamedFiles.length}):`
-      : `Renamed files (${renamedFiles.length}):`;
+  return buildCappedFileListSummary({
+    base,
+    items: renamedFiles,
+    renderLine: (file) =>
+      `- ${markdownCodeSpan(shortenSummaryPath(file.oldPath))} -> ${markdownCodeSpan(shortenSummaryPath(file.newPath))}`,
+    header: (shown, total) =>
+      shown < total ? `Renamed files (showing first ${shown} of ${total}):` : `Renamed files (${total}):`,
+  });
+}
 
-  const shorten = (path: string) =>
-    path.length > MAX_RENAMED_PATH_CHARS
-      ? path.slice(0, MAX_RENAMED_PATH_CHARS) + SUMMARY_TRUNCATION_MARKER
-      : path;
+/**
+ * Builds the check summary for a pull request where every modified file was
+ * excluded by the noise filters. The excluded file list is capped and the
+ * header states the true total, so a pull request that touches thousands of
+ * lockfiles or generated bundles cannot push the summary past the character
+ * limit GitHub accepts.
+ */
+export function buildExcludedFilesSummary(
+  ignoredItems: Array<{ path: string; reason: string }>
+): string {
+  const base =
+    "Modified files were identified as non-reviewable artifacts (lockfiles, documentation, generated bundles):";
+  if (ignoredItems.length === 0) return base;
 
-  const shown: string[] = [];
-  for (const file of renamedFiles.slice(0, MAX_RENAMED_FILES_LISTED)) {
-    const line = `- ${markdownCodeSpan(shorten(file.oldPath))} -> ${markdownCodeSpan(shorten(file.newPath))}`;
-    const candidate = [...shown, line];
-    const length = base.length + 2 + header(candidate.length).length + 1 + candidate.join("\n").length;
-    if (length > MAX_CHECK_SUMMARY_CHARS) break;
-    shown.push(line);
-  }
-
-  return `${base}\n\n${header(shown.length)}\n${shown.join("\n")}`;
+  return buildCappedFileListSummary({
+    base,
+    items: ignoredItems,
+    renderLine: (item) => `- ${markdownCodeSpan(shortenSummaryPath(item.path))}: ${item.reason}`,
+    header: (shown, total) =>
+      shown < total ? `Excluded files (showing first ${shown} of ${total}):` : `Excluded files (${total}):`,
+  });
 }
 
 export function buildReviewPrompt(params: {
@@ -437,7 +481,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             conclusion: "success",
             output: {
               title: "Triage Passed: Excluded Files Only",
-              summary: `Modified files were identified as non-reviewable artifacts (lockfiles, documentation, generated bundles):\n\n${contextPackage.ignoredItems.map((i: any) => `- ${markdownCodeSpan(i.path)}: ${i.reason}`).join("\n")}`,
+              summary: buildExcludedFilesSummary(contextPackage.ignoredItems),
             },
           });
         }
