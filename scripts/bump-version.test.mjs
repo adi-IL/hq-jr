@@ -682,6 +682,29 @@ describe("release workflow", () => {
     expect(publishStep.slice(distTag, npmPublish)).not.toContain("- name:");
   });
 
+  it("authenticates the tag listing of the latest decision", () => {
+    // The decision reads the tags of origin, so the read carries the token
+    // like every other read of a tag in this workflow.
+    const step = latestDecisionStep();
+    expect(step).toContain("GH_TOKEN: ${{ github.token }}");
+    expect(step).toContain("http.https://github.com/.extraheader=AUTHORIZATION: basic $auth");
+    expect(step).toContain("set -euo pipefail");
+  });
+
+  it.skipIf(process.platform === "win32")("fails when the tags of origin cannot be read", () => {
+    const run = runLatestDecision({ version: "0.2.0", tags: "", gitFails: true });
+    expect(run.status).not.toBe(0);
+    expect(run.stdout).toContain("Could not list the release tags on origin.");
+    expect(run.output).toBe("");
+  });
+
+  it.skipIf(process.platform === "win32")("fails when origin holds no release tag", () => {
+    const run = runLatestDecision({ version: "0.2.0", tags: "" });
+    expect(run.status).not.toBe(0);
+    expect(run.stdout).toContain("Could not list the release tags on origin.");
+    expect(run.output).toBe("");
+  });
+
   it.skipIf(process.platform === "win32")("leaves latest in place when a newer tag is already on origin", () => {
     const run = runLatestDecision({
       version: "0.1.9",
@@ -703,7 +726,24 @@ describe("release workflow", () => {
   });
 });
 
-function runLatestDecision({ version, tags }) {
+/**
+ * The step that decides whether this release is the latest, and nothing after
+ * it. The slice stops at the next step, so an assertion about this step cannot
+ * be satisfied by a later step of the same job.
+ */
+function latestDecisionStep() {
+  const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const imageJob = workflow.slice(
+    workflow.indexOf("  publish-image:"),
+    workflow.indexOf("  create-release:")
+  );
+  const start = imageJob.indexOf("- name: Decide whether this release is the latest");
+  const rest = imageJob.slice(start);
+  const next = rest.indexOf("\n      - name:");
+  return next < 0 ? rest : rest.slice(0, next);
+}
+
+function runLatestDecision({ version, tags, gitFails = false }) {
   const root = mkdtempSync(path.join(tmpdir(), "release-latest-"));
   const bin = path.join(root, "bin");
   const output = path.join(root, "github-output");
@@ -713,19 +753,25 @@ function runLatestDecision({ version, tags }) {
     path.join(bin, "git"),
     [
       "#!/bin/sh",
-      'if [ "$1" = "ls-remote" ] && [ "$2" = "--tags" ]; then',
-      '  printf "%s" "$TAGS"',
-      "  exit 0",
-      "fi",
+      "# The workflow passes the authorization header with -c, so the",
+      "# subcommand is not the first argument.",
+      'case " $* " in',
+      '  *ls-remote*--tags*)',
+      '    if [ "$GIT_READ_FAILS" = "1" ]; then',
+      '      echo "cannot read the remote" >&2',
+      "      exit 128",
+      "    fi",
+      '    printf "%s" "$TAGS"',
+      "    exit 0",
+      "    ;;",
+      "esac",
       'echo "unexpected git $*" >&2',
       "exit 1",
       "",
     ].join("\n")
   );
   chmodSync(path.join(bin, "git"), 0o755);
-  const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
-  const imageJob = workflow.slice(workflow.indexOf("  publish-image:"), workflow.indexOf("  create-release:"));
-  const step = imageJob.slice(imageJob.indexOf("- name: Decide whether this release is the latest"));
+  const step = latestDecisionStep();
   const lines = step.slice(step.indexOf("        run: |")).split("\n").slice(1);
   const scriptLines = [];
   for (const line of lines) {
@@ -743,6 +789,8 @@ function runLatestDecision({ version, tags }) {
         PATH: `${bin}${path.delimiter}${process.env.PATH}`,
         VERSION: version,
         GITHUB_OUTPUT: output,
+        GH_TOKEN: "test-token",
+        GIT_READ_FAILS: gitFails ? "1" : "0",
         TAGS: tags,
       },
     });
