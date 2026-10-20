@@ -2,7 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification } from "./services/ai.js";
+import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags } from "./services/ai.js";
 import { parseUnifiedDiff, isLineInDiff } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
 import { config } from "./config.js";
@@ -53,12 +53,23 @@ Usage:
 `);
 }
 
+function printModelRouting() {
+  console.log("Model routing:");
+  console.log(`  triage (Tier 1):      ${config.HQ_JR_MODEL_TIER1}`);
+  console.log(`  escalation:           ${config.HQ_JR_MODEL_ESCALATION}`);
+  console.log(`  deep review (Tier 2): ${config.HQ_JR_MODEL_TIER2}`);
+  console.log(`  discussion:           ${config.HQ_JR_MODEL_DISCUSSION}`);
+  console.log(`  remediation:          ${config.HQ_JR_MODEL_REMEDIATION}`);
+  console.log(`  health probe:         ${config.HQ_JR_MODEL_HEALTH}`);
+  console.log(`  escalation max output tokens: ${config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS}`);
+  console.log(`  escalation threshold: ${config.HQ_JR_ESCALATION_MIN_RISK}`);
+}
+
 async function handleHealth() {
   console.log("Checking Google Cloud Vertex AI ADC connectivity...");
   console.log(`Project:  ${config.GOOGLE_CLOUD_PROJECT}`);
   console.log(`Location: ${config.GOOGLE_CLOUD_LOCATION}`);
-  console.log(`Tier 1:   ${config.HQ_JR_MODEL_TIER1}`);
-  console.log(`Tier 2:   ${config.HQ_JR_MODEL_TIER2}`);
+  printModelRouting();
 
   try {
     const health = await checkAiHealth();
@@ -138,6 +149,7 @@ async function handleReview(args: string[]) {
   }
 
   // 3. Tier 1 Triage
+  printModelRouting();
   console.log(`\n--- Tier 1: Triage + High Thinking (${config.HQ_JR_MODEL_TIER1}) ---`);
   const triage = await runTriage(context.promptPayload);
   console.log(`Overall Risk: [${triage.overallRisk}]`);
@@ -154,15 +166,27 @@ async function handleReview(args: string[]) {
   }
 
   // 4. Tier 2 Deep Semantic Review
-  console.log(`\n--- Tier 2: Deep Semantic Review (${config.HQ_JR_MODEL_TIER2}) ---`);
+  const routing = resolveDeepReviewRouting(triage.overallRisk);
+  console.log(
+    `\nEscalation: ${routing.escalated ? "engaged" : "not engaged"} (overall risk ${triage.overallRisk}, threshold ${config.HQ_JR_ESCALATION_MIN_RISK})`
+  );
+  console.log(`\n--- Tier 2: Deep Semantic Review (${routing.model}) ---`);
   const reviewPrompt = `Local CLI Review Mode
 Files requiring deep review:
-${reviewables.map((f) => `- ${f.path} (Risk: ${f.risk}, Reason: ${f.reason})`).join("\n")}
+${reviewables.map((f) => `- ${escapeUntrustedTags(f.path)} (Risk: ${escapeUntrustedTags(f.risk)}, Reason: ${escapeUntrustedTags(f.reason)})`).join("\n")}
 
-${context.promptPayload}
+${escapeUntrustedTags(context.promptPayload)}
 `;
 
-  const review = await runDeepReview(reviewPrompt);
+  const deepReview = await runEscalatedDeepReview({
+    overallRisk: triage.overallRisk,
+    run: (model) => runDeepReview(reviewPrompt, { model }),
+    log: (payload, message) =>
+      console.warn(
+        `${message}: ${payload.err instanceof Error ? payload.err.message : String(payload.err)}`
+      ),
+  });
+  const review = deepReview.result;
   console.log(`\nVerdict: ${review.verdict}`);
   console.log(`Summary: ${review.summary}\n`);
 
