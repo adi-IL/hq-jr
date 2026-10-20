@@ -103,6 +103,6 @@ GitHub webhooks deliver at least once and can arrive out of order:
 
 ## Release and Deployment
 
-Releases are tag driven. `scripts/bump-version.mjs` computes the next patch version as `patch(max(package.json version, npm latest version))`, writes it into `package.json`, commits it, and creates the annotated tag `vX.Y.Z`. Pushing that tag runs `.github/workflows/release.yml`, which checks the tag against `package.json`, publishes to npm with provenance, builds the GHCR image from the tagged commit, and creates the GitHub Release. A push to `master` does not start a release.
+Releases are tag driven. `scripts/bump-version.mjs` computes the next patch version as `patch(max(package.json version, npm latest version))`, writes it into `package.json` and `package-lock.json`, commits them, and creates the annotated tag `vX.Y.Z`. Pushing that tag runs `.github/workflows/release.yml`, which checks the tag against `package.json`, publishes to npm with provenance, builds the GHCR image from the tagged commit, and creates the GitHub Release. A push to `master` does not start a release.
 
 The deployable artifact is the container image `ghcr.io/adi-il/hq-jr`. It carries the runtime, the production dependencies, and the deploy files at `/app/deploy`, so a host runs the image and needs no checkout of this repository. Deployment, upgrade, and rollback steps are in [Deployment and Operations](05-deployment-and-operations.md).
