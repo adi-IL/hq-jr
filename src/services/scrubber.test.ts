@@ -764,14 +764,17 @@ describe("scrubber literal chains", () => {
 
 describe("scrubber environment accessors", () => {
   it("redacts a fallback literal behind an environment accessor", () => {
+    // The accessor does not stand on its own as the whole value, so the value
+    // is not a pure reference. The whole value is replaced, which is the fail
+    // safe direction: a partial replacement can leave the literal behind.
     const fallback = scrubSecrets('apiKey = process.env.API_KEY || "hardcoded_secret"');
-    expect(fallback.scrubbed).not.toContain("hardcoded_secret");
+    expect(fallback.scrubbed).toBe("apiKey = [REDACTED_SECRET]");
     expect(fallback.redactedCount).toBe(1);
   });
 
   it("redacts a fallback literal behind a nullish coalesce", () => {
     const fallback = scrubSecrets('apiKey = process.env.API_KEY ?? "hardcoded_secret"');
-    expect(fallback.scrubbed).not.toContain("hardcoded_secret");
+    expect(fallback.scrubbed).toBe("apiKey = [REDACTED_SECRET]");
     expect(fallback.redactedCount).toBe(1);
   });
 
@@ -785,5 +788,37 @@ describe("scrubber environment accessors", () => {
     const accessor = scrubSecrets('apiKey = process.env["API_KEY"]');
     expect(accessor.scrubbed).toBe('apiKey = process.env["API_KEY"]');
     expect(accessor.redactedCount).toBe(0);
+  });
+
+  it("keeps an environment accessor with a non-null assertion", () => {
+    const accessor = scrubSecrets("apiKey = process.env.API_KEY!");
+    expect(accessor.scrubbed).toBe("apiKey = process.env.API_KEY!");
+    expect(accessor.redactedCount).toBe(0);
+  });
+
+  it("keeps an environment accessor with optional chaining", () => {
+    const accessor = scrubSecrets("apiKey = process.env?.API_KEY");
+    expect(accessor.scrubbed).toBe("apiKey = process.env?.API_KEY");
+    expect(accessor.redactedCount).toBe(0);
+  });
+});
+
+describe("scrubber known call shapes", () => {
+  it("keeps a known call with a trailing comment", () => {
+    const call = scrubSecrets('password = os.getenv("DB_PASSWORD")  # read from env');
+    expect(call.scrubbed).toBe('password = os.getenv("DB_PASSWORD")  # read from env');
+    expect(call.redactedCount).toBe(0);
+  });
+
+  it("keeps a known call with a chained call", () => {
+    const call = scrubSecrets('password = os.getenv("DB_PASSWORD").trim()');
+    expect(call.scrubbed).toBe('password = os.getenv("DB_PASSWORD").trim()');
+    expect(call.redactedCount).toBe(0);
+  });
+
+  it("keeps a known call that spans two lines", () => {
+    const call = scrubSecrets('password = os.getenv(\n  "DB_PASSWORD"\n)');
+    expect(call.scrubbed).toBe('password = os.getenv(\n  "DB_PASSWORD"\n)');
+    expect(call.redactedCount).toBe(0);
   });
 });

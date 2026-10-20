@@ -94,7 +94,7 @@ function redactsAtAnyLength(key: string): boolean {
  * such as env-abc12345, is not an accessor.
  */
 const ENV_ACCESSOR_REGEX =
-  /^(?:(?:process|globalThis|global|Deno|Bun|this)\.env|os\.environ|(?:import\.meta\.)?env)(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]*\])?$/;
+  /^(?:(?:process|globalThis|global|Deno|Bun|this)\.env|os\.environ|(?:import\.meta\.)?env)(?:(?:\?\.|\.)[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]*\])?!?$/;
 
 /** Shell and .env interpolation such as $DB_PASSWORD or ${DB_PASSWORD}. */
 const ENV_INTERPOLATION_REGEX = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/;
@@ -208,17 +208,21 @@ function isKnownCall(value: string): boolean {
   if (!CALL_ROOTS.has(root.toLowerCase()) && !isReferenceRoot(root)) {
     return false;
   }
-  // The call has to span the whole value. A fallback joined to it, such as
+  // The call keeps the value a reference when nothing but the call follows it.
+  // A trailing comment or a chained call holds no literal, so the value still
+  // reads a value from somewhere else. A fallback joined to the call, such as
   // os.getenv("DB_PASSWORD") || "literal", is a value of its own, so the span
   // is not a pure reference and the literal in it has to be redacted.
-  return callSpansWholeValue(value);
+  return !hasLiteralAfterCall(value);
 }
 
 /**
- * True when the call in the value spans the whole value. Anything after the
- * closing parenthesis, apart from spaces, is not part of the call.
+ * True when a quoted literal follows the call in the value. The arguments of
+ * the call are names, so only the text after the call counts. A call that the
+ * value does not close, such as one split over two lines, holds no literal
+ * after it either.
  */
-function callSpansWholeValue(value: string): boolean {
+function hasLiteralAfterCall(value: string): boolean {
   const open = value.indexOf("(");
   if (open < 0) {
     return false;
@@ -236,7 +240,7 @@ function callSpansWholeValue(value: string): boolean {
     } else if (char === ")") {
       depth--;
       if (depth === 0) {
-        return skipSpacesOnly(value, index + 1) === value.length;
+        return /["'`]/.test(value.slice(index + 1));
       }
     }
     index++;

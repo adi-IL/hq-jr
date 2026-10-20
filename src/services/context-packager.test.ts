@@ -490,12 +490,43 @@ index 111..222 100644
     }
   });
 
-  it("names a dropped file in the ignored list with the budget reason", () => {
-    const context = packageReviewContext(parseUnifiedDiff(multiFileDiff), { maxTotalChars: 400 });
-    expect(context.itemsToReview.map((item) => item.file.newPath)).toEqual(["src/auth/jwt.ts"]);
-    expect(context.ignoredItems).toContainEqual({
-      path: "src/controllers/items.ts",
-      reason: "Context window budget limit reached",
-    });
+  it("announces the cut when the diff content names the budget cut", () => {
+    // The diff of the kept file holds the words of the notice itself. The
+    // announcement has to come from the packager, so the bracketed notice is
+    // the marker: the diff text only carries the plain words.
+    const diff = `diff --git a/src/auth/jwt.ts b/src/auth/jwt.ts
+new file mode 100644
+index 111..222 100644
+--- /dev/null
++++ b/src/auth/jwt.ts
+@@ -0,0 +1,3 @@
++// this file was truncated to preserve context budget in an earlier run
++export function verifyToken(t: string) {
++  return t.length > 0;
+diff --git a/src/controllers/items.ts b/src/controllers/items.ts
+new file mode 100644
+index 111..222 100644
+--- /dev/null
++++ b/src/controllers/items.ts
+@@ -0,0 +1,3 @@
++export const items = ["a", "b", "c"];
++export const more = items.map((i) => i.toUpperCase());
++export default items;
+`;
+    let checked = 0;
+    for (let cap = 300; cap <= 700; cap++) {
+      const context = packageReviewContext(parseUnifiedDiff(diff), { maxTotalChars: cap });
+      const dropped = context.ignoredItems.filter((item) => item.reason.includes("budget"));
+      if (dropped.length === 0 || context.itemsToReview.length === 0) continue;
+      const kept = context.itemsToReview.find((item) => item.file.newPath === "src/auth/jwt.ts");
+      // The kept file has to hold the words and has to be whole, so the only
+      // notice in the payload can be the one the packager wrote.
+      if (kept === undefined || kept.isTruncated) continue;
+      if (!kept.formattedDiff.includes("truncated to preserve context budget")) continue;
+      checked++;
+      expect(context.promptPayload, `cap ${cap}`).toContain("[diff truncated to preserve context budget]");
+      expect(context.promptPayload.length, `cap ${cap}`).toBeLessThanOrEqual(cap);
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });
