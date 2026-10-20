@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
@@ -69,5 +69,130 @@ describe("check-doc-code-sanity project structure parsing", () => {
     const { output, code } = runCheck(readme);
     expect(code).toBe(1);
     expect(output).toContain("README project structure lists");
+  });
+
+  it("fails when the project structure block is missing", () => {
+    const readme = readFileSync(readmePath, "utf8").replace(
+      /## Project Structure[\s\S]*?```[\s\S]*?```/,
+      "## Project Structure\n\nThe tree was removed."
+    );
+    const { output, code } = runCheck(readme);
+    expect(code).toBe(1);
+    expect(output).toContain("no '## Project Structure' code block");
+  });
+
+  it("reports a new module whose filename already appears in the README", () => {
+    const extra = join(repoRoot, "src/services/index.ts");
+    writeFileSync(extra, "export const extra = 1;\n");
+    try {
+      const { output, code } = runCheck(readFileSync(readmePath, "utf8"));
+      expect(code).toBe(1);
+      expect(output).toContain("src/services/index.ts is not mentioned");
+    } finally {
+      unlinkSync(extra);
+    }
+  });
+
+  it("reports a code span under a directory that does not exist", () => {
+    const readme = readFileSync(readmePath, "utf8").replace(
+      "## Project Structure",
+      "`src/removed-directory/gone.ts`\n\n## Project Structure"
+    );
+    const { output, code } = runCheck(readme);
+    expect(code).toBe(1);
+    expect(output).toContain("src/removed-directory/gone.ts");
+  });
+
+  it("reports a code span for a file removed from a real directory", () => {
+    const readme = readFileSync(readmePath, "utf8").replace(
+      "## Project Structure",
+      "`src/services/gone.ts`\n\n## Project Structure"
+    );
+    const { output, code } = runCheck(readme);
+    expect(code).toBe(1);
+    expect(output).toContain("src/services/gone.ts");
+  });
+
+  it("does not require a test file to be named in the docs", () => {
+    const extra = join(repoRoot, "src/services/zz-doc-only.test.ts");
+    writeFileSync(extra, "export const t = 1;\n");
+    try {
+      const { output, code } = runCheck(readFileSync(readmePath, "utf8"));
+      expect(output).not.toContain("zz-doc-only.test.ts");
+      expect(code).toBe(0);
+    } finally {
+      unlinkSync(extra);
+    }
+  });
+});
+
+describe("unknown HQ_JR names", () => {
+  const docs05 = join(repoRoot, "docs/05-deployment-and-operations.md");
+
+  function withDocs05(next) {
+    const original = readFileSync(docs05, "utf8");
+    writeFileSync(docs05, next);
+    try {
+      return runCheck(readFileSync(readmePath, "utf8"));
+    } finally {
+      writeFileSync(docs05, original);
+    }
+  }
+
+  it("reports an unknown variable on the line above a --set-secrets example", () => {
+    const original = readFileSync(docs05, "utf8");
+    const { output, code } = withDocs05(
+      original.replace("  --set-secrets", "  HQ_JR_TYPO_NEAR=1\n  --set-secrets")
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("HQ_JR_TYPO_NEAR");
+  });
+
+  it("reports an unknown variable on the same line as --set-secrets", () => {
+    const original = readFileSync(docs05, "utf8");
+    const { output, code } = withDocs05(original.replace("--set-secrets", "--set-secrets HQ_JR_TYPO_SAME"));
+    expect(code).toBe(1);
+    expect(output).toContain("HQ_JR_TYPO_SAME");
+  });
+
+  it("still allows the external secret names on the --set-secrets line", () => {
+    const { code, output } = runCheck(readFileSync(readmePath, "utf8"));
+    expect(code).toBe(0);
+    expect(output).not.toContain("HQ_JR_APP_ID");
+  });
+});
+
+describe("not wired claims", () => {
+  const wire = join(repoRoot, "src/services/zz-wire.ts");
+
+  function withWire(source) {
+    writeFileSync(wire, source);
+    try {
+      return runCheck(readFileSync(readmePath, "utf8"));
+    } finally {
+      unlinkSync(wire);
+    }
+  }
+
+  it("fails when a bare specifier imports a module the docs call not wired", () => {
+    const { output, code } = withWire('import { cache } from "symbol-cache.js";\nexport const cache = 1;\n');
+    expect(code).toBe(1);
+    expect(output).toContain("not wired");
+    expect(output).toContain("zz-wire.ts");
+  });
+
+  it("fails when a dynamic import wires a module the docs call not wired", () => {
+    const { output, code } = withWire(
+      'export const loaded = import("./symbol-cache.js");\n'
+    );
+    expect(code).toBe(1);
+    expect(output).toContain("not wired");
+  });
+
+  it("does not treat an import of symbol-cache-utils as an import of symbol-cache", () => {
+    const { output } = withWire(
+      'import { cache } from "./symbol-cache-utils.js";\nexport const cache = 1;\n'
+    );
+    expect(output).not.toContain("not wired");
   });
 });

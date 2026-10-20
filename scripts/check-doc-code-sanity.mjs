@@ -7,7 +7,9 @@
  * checked mechanically:
  *
  *   1. Every source file the docs link to exists.
- *   2. Every source file the docs name in a code span exists.
+ *   2. Every source path the docs name in a code span exists. A path is an
+ *      example, and is not a claim about this repository, when the same line
+ *      also names a file type this repository does not ship.
  *   3. Every file the docs list as a project-structure entry exists.
  *   4. Every `HQ_JR_*` variable the docs name exists in src/config.ts.
  *   5. Every environment variable the docs name in a table has a row.
@@ -40,20 +42,66 @@ const DOC_FILES = [
 const problems = [];
 const note = (msg) => problems.push(msg);
 
+// Collected paths are compared with paths taken from the documents. Documents
+// use forward slashes, and Windows join() does not, so every collected path
+// is rewritten before it is stored or compared.
+function toPosix(p) {
+  return p.replace(/\\/g, "/");
+}
+
+// Extensions of files this repository ships. A code span with any other
+// extension is an example of some other project, not a claim about this one.
+const PROJECT_EXTENSIONS = new Set([
+  ".ts",
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".sh",
+  ".yml",
+  ".yaml",
+  ".json",
+  ".md",
+  ".service",
+  ".timer",
+]);
+
+function extensionOf(target) {
+  const base = target.split("/").pop() ?? "";
+  if (!base || base.startsWith(".")) return "";
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return "";
+  return base.slice(dot);
+}
+
+function lineAt(text, index) {
+  const start = text.lastIndexOf("\n", index) + 1;
+  let end = text.indexOf("\n", index);
+  if (end === -1) end = text.length;
+  return text.slice(start, end).replace(/\r$/, "");
+}
+
 const sourceFiles = [];
 function walk(dir, extensions) {
   for (const entry of readdirSync(join(repoRoot, dir), { withFileTypes: true })) {
-    // Paths are compared against paths that come from the documents, which
-    // always use forward slashes. Normalise here so the comparison holds on
-    // Windows, where join() would produce backslashes.
-    const rel = `${dir}/${entry.name}`;
+    const rel = toPosix(`${dir}/${entry.name}`);
     if (entry.isDirectory()) walk(rel, extensions);
-    else if (extensions.some((ext) => entry.name.endsWith(ext))) sourceFiles.push(rel);
+    else if (extensions.some((ext) => entry.name.endsWith(ext))) {
+      // A test is not a module the documentation has to name.
+      if (entry.name.endsWith(".test.ts") || entry.name.endsWith(".test.mjs")) continue;
+      sourceFiles.push(rel);
+    }
   }
 }
 walk("src", [".ts"]);
 walk("scripts", [".mjs", ".js"]);
 walk("deploy", [".sh"]);
+
+// Secret manager entries are names in an external store, not config keys.
+const EXTERNAL_SECRET_NAMES = new Set([
+  "HQ_JR_APP_ID",
+  "HQ_JR_PRIVATE_KEY",
+  "HQ_JR_WEBHOOK_SECRET",
+]);
 
 const configSource = read("src/config.ts");
 const configVars = new Set(
@@ -69,47 +117,54 @@ for (const doc of DOC_FILES) {
 
   // 1. Markdown links to a source path.
   for (const m of text.matchAll(/\]\((src\/[^)#]+?)\)/g)) {
-    const target = m[1];
+    const target = toPosix(m[1]);
     if (!existsSync(join(repoRoot, target))) {
       note(`${doc} links to ${target}, which does not exist`);
     }
   }
 
-  // 2. Source paths named in a code span. A path is a claim about this
-  // repository when it is written as a link, or when its first directory
-  // segment is one this repository owns and the file name matches a module
-  // of this repository. A path used as an example of another project's
-  // layout is prose, so it is skipped unless it names a module of this
-  // project.
-  const OWNED_ROOTS = new Set([
-    ...sourceFiles.map((f) => f.split("/")[0]),
-    "src",
-    "scripts",
-    "deploy",
-  ]);
+  // 2. Source paths named in a code span. A missing path is reported when it
+  // names a module that exists somewhere in the tree, or when its extension
+  // is one this repository ships. A line that also names a foreign file type
+  // is an example of another project, so its paths are not claims. A glob,
+  // a trailing-slash directory that exists, and an extensionless runtime
+  // name are not file claims of that kind.
+  const spans = [];
   for (const m of text.matchAll(/`((?:src|scripts|deploy)\/[^`\s]+?)`/g)) {
-    const target = m[1].replace(/[.,:;]$/, "");
+    const target = toPosix(m[1].replace(/[.,:;]$/, ""));
     if (target.includes("*")) continue;
-    const base = target.split("/").pop();
-    const isDocLink = text.includes(`(${target})`);
-    const nameMatches = sourceFiles.some((f) => f.split("/").pop() === base);
-    const root = target.split("/")[0];
-    if (!isDocLink && !nameMatches) continue;
-    if (!OWNED_ROOTS.has(root) && !isDocLink) continue;
-    if (!existsSync(join(repoRoot, target))) {
+    spans.push({ target, line: lineAt(text, m.index) });
+  }
+  const byLine = new Map();
+  for (const span of spans) {
+    const list = byLine.get(span.line) ?? [];
+    list.push(span.target);
+    byLine.set(span.line, list);
+  }
+  for (const targets of byLine.values()) {
+    const foreignExample = targets.some((target) => {
+      const ext = extensionOf(target);
+      return ext !== "" && !PROJECT_EXTENSIONS.has(ext);
+    });
+    for (const target of targets) {
+      if (existsSync(join(repoRoot, target))) continue;
+      if (target.endsWith("/")) {
+        note(`${doc} names ${target} in a code span, but that path does not exist`);
+        continue;
+      }
+      const base = target.split("/").pop();
+      const basenameMatches = sourceFiles.some((file) => file.split("/").pop() === base);
+      const ext = extensionOf(target);
+      if (!basenameMatches && (foreignExample || !PROJECT_EXTENSIONS.has(ext))) continue;
       note(`${doc} names ${target} in a code span, but that path does not exist`);
     }
   }
 
-  // 4. HQ_JR_* variables the docs name must exist in config.ts. The secret
-  // manager examples name entries that are not config keys, so a name is
-  // exempt only when the line it appears on is one of those examples.
+  // 4. HQ_JR_* variables the docs name must exist in config.ts. The only
+  // names that are not config keys are the external secret manager entries.
+  // Exempting a whole document, or any line near a command, would hide a typo.
   for (const m of text.matchAll(/\b(HQ_JR_[A-Z0-9_]+)\b/g)) {
-    if (configVars.has(m[1])) continue;
-    const line = text.slice(text.lastIndexOf("\n", m.index) + 1, m.index + m[0].length + 200);
-    const isSecretManagerExample =
-      line.includes("--set-secrets") || line.includes("secret manager");
-    if (isSecretManagerExample) continue;
+    if (configVars.has(m[1]) || EXTERNAL_SECRET_NAMES.has(m[1])) continue;
     note(`${doc} names ${m[1]}, but src/config.ts does not define it`);
   }
 
@@ -128,7 +183,7 @@ for (const doc of DOC_FILES) {
 // 5. Every config variable must have a row in the docs/05 table.
 const docs05 = read("docs/05-deployment-and-operations.md");
 const tableRows = new Set();
-for (const line of docs05.split("\n")) {
+for (const line of docs05.split(/\r?\n/)) {
   if (!line.startsWith("|")) continue;
   const cells = line.split("|").map((c) => c.trim());
   if (cells.length < 5) continue;
@@ -165,7 +220,7 @@ if (!structureBlock) {
       continue;
     }
     const prefix = stack.map((s) => s.dir).join("");
-    const path = prefix + cleaned;
+    const path = toPosix(prefix + cleaned);
     if (!/^[A-Za-z0-9._/-]+$/.test(path)) continue;
     treePaths.add(path);
     if (!existsSync(join(repoRoot, path))) {
@@ -225,15 +280,17 @@ for (const doc of DOC_FILES) {
       // path ends in .js because the code is ESM, so match the module name
       // without its extension.
       const moduleName = base.replace(/\.[^.]+$/, "");
-      const importedBy = sourceFiles.filter(
-        (f) =>
-          f !== file &&
-          !f.endsWith(".test.ts") &&
-          !f.endsWith(".test.mjs") &&
-          new RegExp(
-            `from\\s+["'][^"']*(?:^|[/\\\\])${moduleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\.js)?["']`
-          ).test(read(f))
-      );
+      // The name has to sit at the start of the specifier or immediately
+      // after a slash. `ai` must not match `ai-utils`, and a bare specifier
+      // such as "ai.js" has no slash in front of the name. Dynamic import()
+      // is a call site too.
+      const importedBy = sourceFiles.filter((f) => {
+        if (f === file || f.endsWith(".test.ts") || f.endsWith(".test.mjs")) return false;
+        const name = moduleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(
+          `(?:from\\s+|import\\s*\\(\\s*)["'](?:[^"']*[/\\\\])?${name}(?:\\.(?:js|ts))?["']`
+        ).test(read(f));
+      });
       if (importedBy.length > 0) {
         note(
           `${doc} says ${file} is not wired, but ${importedBy.join(", ")} imports it`
