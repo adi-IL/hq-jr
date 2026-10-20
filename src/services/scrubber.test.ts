@@ -195,4 +195,77 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(scrubbed).toBe("api_key: [REDACTED_SECRET];");
     expect(redactedCount).toBe(1);
   });
+
+  it("redacts a literal value that looks like a call", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password=abcde1234(secret)");
+
+    expect(scrubbed).toBe("password=[REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("redacts a call whose root is not a known accessor", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("client_secret = getSecret()");
+
+    expect(scrubbed).toBe("client_secret = [REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("keeps a call on a known accessor intact", () => {
+    const raw = 'password = os.getenv("DB_PASSWORD")\npassword = vault.read("secret")';
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
+  it("redacts a value that only starts with env", () => {
+    for (const value of ["env-abc12345", "env.abc12345", "env/abc12345", "env+abc12345"]) {
+      const { scrubbed, redactedCount } = scrubSecrets(`password=${value}`);
+
+      expect(scrubbed).toBe("password=[REDACTED_SECRET]");
+      expect(redactedCount).toBe(1);
+    }
+  });
+
+  it("keeps every environment accessor intact", () => {
+    const raw =
+      "password = process.env.SECRET_KEY;\n" +
+      "password = os.environ['CLIENT_SECRET'];\n" +
+      "password = env.SECRET_KEY;\n" +
+      "password = this.env.SECRET_KEY;\n" +
+      "password = globalThis.env.SECRET_KEY;\n" +
+      "password = Deno.env;\n" +
+      "password = Bun.env;";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
+  it("keeps a member read with a non-null assertion intact", () => {
+    const raw = "api_key = config.apiKey!";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
+  it("keeps a member read with optional chaining intact", () => {
+    const raw = "api_key = config?.apiKey";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
+  it("scans a value of closing brackets once", () => {
+    const raw = `password = ${"]".repeat(60000)}`;
+    const started = performance.now();
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+    const elapsed = performance.now() - started;
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+    expect(elapsed).toBeLessThan(500);
+  });
 });
