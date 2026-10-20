@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,24 @@ import { dirname, join } from "node:path";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const script = join(repoRoot, "scripts", "check-doc-code-sanity.mjs");
 const readmePath = join(repoRoot, "README.md");
+
+/**
+ * The files the tests below put in the tree. The check reads the whole tree,
+ * so a file left behind by an interrupted run makes every other test in this
+ * file fail. They are removed before and after every test.
+ */
+const tempFiles = [
+  join(repoRoot, "src/services/index.ts"),
+  join(repoRoot, "src/services/zz-doc-only.test.ts"),
+  join(repoRoot, "src/services/zz-wire.ts"),
+];
+
+beforeEach(() => {
+  for (const file of tempFiles) rmSync(file, { force: true });
+});
+afterEach(() => {
+  for (const file of tempFiles) rmSync(file, { force: true });
+});
 
 /**
  * Runs the sanity check against a README and returns its output and exit code.
