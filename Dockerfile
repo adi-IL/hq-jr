@@ -36,6 +36,8 @@ COPY --from=build --chown=hqjr:hqjr /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=hqjr:hqjr /app/node_modules ./node_modules
 COPY --from=build --chown=hqjr:hqjr /app/dist ./dist
 COPY --chown=hqjr:hqjr app.yml .env.example ./
+# The deploy files ship inside the release so the updater never has to be hand-copied to a host.
+COPY --chown=hqjr:hqjr deploy ./deploy
 
 USER hqjr
 EXPOSE 3000

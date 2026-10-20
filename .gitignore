@@ -35,3 +35,9 @@ scratch/
 
 # Deploy host state
 deploy/.last-failed-image
+
+# Google Application Default Credentials, staged on the deploy host
+gcloud/
+
+# Output of scripts/manual-honesty-check.mjs
+manual-test-output.txt

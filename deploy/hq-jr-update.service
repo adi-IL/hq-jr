@@ -5,8 +5,12 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# Change User/Group to the deploy account on other hosts. It must be able to use Docker.
+# Change User and Group to the deploy account on this host. It must be a member of the docker group.
 User=adi-IL
 Group=adi-IL
 SupplementaryGroups=docker
+# /opt/hq-jr/deploy is a plain directory that holds the deploy files from the released
+# image. It is not a git checkout and this unit never pulls from GitHub.
+# Uncomment the next line to refresh the deploy files from the image before every update.
+# ExecStartPre=-/bin/sh -c 'docker rm -f hqjr-deploy-refresh >/dev/null 2>&1; docker create --name hqjr-deploy-refresh ghcr.io/adi-il/hq-jr:latest >/dev/null && docker cp hqjr-deploy-refresh:/app/deploy/. /opt/hq-jr/deploy/; docker rm -f hqjr-deploy-refresh >/dev/null 2>&1'
 ExecStart=/opt/hq-jr/deploy/update.sh

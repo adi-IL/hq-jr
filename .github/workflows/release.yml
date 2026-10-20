@@ -2,34 +2,61 @@ name: Release
 
 on:
   push:
-    branches:
-      - master
-      - main
+    tags:
+      - 'v*'
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
-  release:
-    name: Version, npm, GitHub Release, Docker
-    if: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip release]') }}
+  prepare:
+    name: Verify tag and version
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      REGISTRY: ghcr.io
-      IMAGE_NAME: adi-il/hq-jr
-
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Checkout
+      - name: Checkout tagged commit
         uses: actions/checkout@v7
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.ref }}
+
+      - name: Resolve version from tag
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag '$tag' is not a vMAJOR.MINOR.PATCH tag. Release tags look like v0.1.9."
+            exit 1
+          fi
+          version="${tag#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$version" != "$pkg_version" ]; then
+            echo "::error::Tag '$tag' does not match the package.json version '$pkg_version'. The tag is the release version, so package.json must already carry $version before the tag is pushed."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version from $tag at ${GITHUB_SHA}"
+
+  publish-npm:
+    name: Publish to npm
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v7
@@ -42,7 +69,7 @@ jobs:
         run: npm ci
 
       - name: Typecheck
-        run: npm run lint
+        run: npm run typecheck
 
       - name: Test
         run: npm test
@@ -51,105 +78,42 @@ jobs:
           GOOGLE_CLOUD_PROJECT: test-gcp-project
           GOOGLE_CLOUD_LOCATION: global
 
-      - name: Configure git identity
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Bump patch version
-        id: version
-        run: |
-          PKG_NAME=$(node -p "require('./package.json').name")
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          if ! NPM_VERSION=$(npm view "$PKG_NAME" version 2>"$RUNNER_TEMP/npm-view.err"); then
-            if ! grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
-              cat "$RUNNER_TEMP/npm-view.err" >&2
-              exit 1
-            fi
-            NPM_VERSION="$PKG_VERSION"
-          fi
-          NEXT_VERSION=$(node -e '
-            const parse = (v) => {
-              const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(v);
-              if (!m) throw new Error("unsupported version " + JSON.stringify(v) + ", expected X.Y.Z");
-              return m.slice(1).map(Number);
-            };
-            const [pkg, npm] = process.argv.slice(1).map(parse);
-            const [major, minor, patch] = (pkg[0] - npm[0] || pkg[1] - npm[1] || pkg[2] - npm[2]) >= 0 ? pkg : npm;
-            console.log([major, minor, patch + 1].join("."));
-          ' "$PKG_VERSION" "$NPM_VERSION")
-          echo "package.json ${PKG_VERSION}, npm latest ${NPM_VERSION} -> releasing ${NEXT_VERSION}"
-          NEW_VERSION=$(npm version "$NEXT_VERSION" -m "chore: release %s [skip release]")
-          NEW_VERSION="${NEW_VERSION#v}"
-          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Bumped to ${NEW_VERSION}"
-
       - name: Build
         run: npm run build
         env:
           NODE_ENV: production
 
       - name: Publish to npm
-        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_ENV: production
-
-      # Push after publish so a failed npm publish does not leave the repo/tag ahead of the registry.
-      # The tag stays on the published commit. If merges landed during the run, only the branch
-      # gets the version commit rebased on top, and Docker still builds from the tag.
-      - name: Push version commit and tag
-        env:
-          BRANCH: ${{ github.ref_name }}
-          TAG: v${{ steps.version.outputs.version }}
         run: |
-          git format-patch -1 --stdout > "$RUNNER_TEMP/release.patch" || true
-          for attempt in 1 2 3 4; do
-            if git push origin "refs/tags/$TAG"; then
-              break
-            fi
-            if [ "$attempt" -eq 4 ]; then
-              RECOVERY_REF="refs/heads/release-recovery/$TAG"
-              if git push origin "HEAD:$RECOVERY_REF"; then
-                echo "::error::$TAG was published to npm but the tag push failed. The version commit is on $RECOVERY_REF and in artifact release-commit-$TAG; create $TAG from one of them. Do not republish."
-              else
-                echo "::error::$TAG was published to npm but the tag push failed. The version commit patch is in artifact release-commit-$TAG; create $TAG from it. Do not republish."
-              fi
-              exit 1
-            fi
-            sleep $((attempt * 5))
-          done
-          for attempt in 1 2 3 4 5; do
-            if git push origin "HEAD:$BRANCH" 2>"$RUNNER_TEMP/push.err"; then
-              break
-            fi
-            cat "$RUNNER_TEMP/push.err" >&2
-            if ! grep -Eq '\[rejected\].*\((fetch first|non-fast-forward)\)' "$RUNNER_TEMP/push.err"; then
-              echo "::error::$BRANCH refused the $TAG version commit for a reason other than new commits. $TAG is published and tagged. Bump package.json on $BRANCH by hand."
-              exit 1
-            fi
-            if [ "$attempt" -eq 5 ]; then
-              echo "::error::Could not push the $TAG version commit to $BRANCH after 5 attempts."
-              exit 1
-            fi
-            sleep $((attempt * 5))
-            git fetch origin "$BRANCH"
-            if ! git rebase FETCH_HEAD; then
-              git rebase --abort
-              echo "::error::The $TAG version commit conflicts with $BRANCH. $TAG is published and tagged. Bump package.json on $BRANCH by hand."
-              exit 1
-            fi
-          done
-          git checkout -q "$TAG"
+          name="$(node -p "require('./package.json').name")"
+          version="${{ needs.prepare.outputs.version }}"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on the npm registry; skipping publish"
+            exit 0
+          fi
+          npm publish --access public --provenance
 
-      - name: Save version commit patch
-        if: always()
-        uses: actions/upload-artifact@v4
+  publish-image:
+    name: Build and push GHCR image
+    needs:
+      - prepare
+      - publish-npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+      IMAGE_NAME: adi-il/hq-jr
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@v7
         with:
-          name: release-commit-${{ steps.version.outputs.version }}
-          path: ${{ runner.temp }}/release.patch
-          if-no-files-found: ignore
-          retention-days: 7
+          ref: ${{ github.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -161,55 +125,47 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=latest
-
-      - name: Build and load image locally
+      - name: Build and push image
         uses: docker/build-push-action@v7
         with:
           context: .
-          load: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          labels: |
+            org.opencontainers.image.title=hq-jr
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/adi-IL/hq-jr
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Push image tags to GHCR
-        run: |
-          docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
-          docker push "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-
-      - name: Save Docker image tarball for release asset
-        run: |
-          docker save "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}" \
-            | gzip > "hq-jr-${{ steps.version.outputs.version }}-linux-amd64.tar.gz"
-
+  create-release:
+    name: Create GitHub Release
+    needs:
+      - prepare
+      - publish-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: |
-            hq-jr-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
           body: |
-            ## hq-jr v${{ steps.version.outputs.version }}
+            ## hq-jr ${{ needs.prepare.outputs.version }}
 
             ### Install
             ```bash
-            npm install -g hq-jr@${{ steps.version.outputs.version }}
+            npm install -g hq-jr@${{ needs.prepare.outputs.version }}
             ```
 
             ### Docker
             ```bash
-            docker pull ghcr.io/adi-il/hq-jr:${{ steps.version.outputs.version }}
+            docker pull ghcr.io/adi-il/hq-jr:${{ needs.prepare.outputs.version }}
             ```
-
-            Image also attached as `hq-jr-${{ steps.version.outputs.version }}-linux-amd64.tar.gz`.
-

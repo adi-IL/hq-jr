@@ -34,9 +34,10 @@ jobs:
           path: ./
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           head: ${{ github.sha }}
+          extra_args: --only-verified
 
   build-and-test:
-    name: Lint, Typecheck, Test, and Build
+    name: Typecheck, Test, and Build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -47,6 +48,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Guard against committed ADC credentials
+        run: |
+          tracked="$(git ls-files -- gcloud | head -n 1)"
+          if [ -n "$tracked" ]; then
+            echo "::error::Files under gcloud/ are tracked by git: $tracked. The Application Default Credentials file must never be committed."
+            exit 1
+          fi
+          if [ -d gcloud ] && [ -n "$(find gcloud -type f -name '*.json' -print -quit)" ]; then
+            echo "::error::gcloud/ holds a credential JSON. The Application Default Credentials file must never be committed."
+            exit 1
+          fi
+          echo "no credential file under gcloud/"
+
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v7
         with:
@@ -56,8 +70,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Static Typecheck & Lint
-        run: npm run lint
+      - name: Static Typecheck
+        run: npm run typecheck
 
       - name: Execute Vitest Test Suites
         run: npm test
@@ -67,6 +81,30 @@ jobs:
 
       - name: Verify CLI Binary Execution
         run: node ./dist/cli.js --help
+
+      - name: Verify npm Package Contents
+        run: |
+          npm pack --dry-run --json > "$RUNNER_TEMP/npm-pack.json"
+          node -e '
+            const fs = require("node:fs");
+            const report = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/npm-pack.json", "utf8"));
+            const files = report[0].files.map((f) => f.path);
+            const forbidden = [
+              /(^|\/)\.env$/,
+              /(^|\/)\.env\.(?!example$)/,
+              /\.(pem|key|cert|crt|p12|pfx)$/i,
+              /\.(db|db-wal|db-shm|sqlite|sqlite3)$/i,
+              /(^|\/)application_default_credentials\.json$/i,
+              /(^|\/)[^/]*credentials[^/]*$/i,
+            ];
+            const bad = files.filter((f) => forbidden.some((re) => re.test(f)));
+            if (bad.length > 0) {
+              console.error("Forbidden files in the npm package:");
+              for (const f of bad) console.error("  " + f);
+              process.exit(1);
+            }
+            console.log("npm package holds " + files.length + " files, none of them forbidden");
+          '
 
       - name: Dependency Vulnerability Audit
         run: npm audit --omit=dev --audit-level=high

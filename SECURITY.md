@@ -49,3 +49,10 @@ We aim to acknowledge within 7 days and ship a fix or mitigation for confirmed i
 - Never commit `.env`, `.npmrc`, `*.pem`, service-account JSON, or live tokens.
 - Use `.env.example` as the template only.
 - If you accidentally push a secret, rotate it and contact the maintainer before force-pushing history.
+
+## Recommended repository settings
+
+- **Enable secret scanning.** GitHub secret scanning finds credentials that land in the repository and alerts on them.
+- **Enable secret scanning push protection.** Push protection blocks a push that contains a known secret shape, so a credential never reaches the history in the first place.
+- **Never commit the Application Default Credentials file.** The ADC JSON lives in a `gcloud/` directory on the deploy host. That directory is gitignored in this repository, excluded from the Docker build context, and CI fails when a credential JSON appears under it.
+- **Mount the ADC directory read-only.** The container gets `/gcloud` as a read-only mount that holds only `application_default_credentials.json`, owned by uid `1001`. Never mount the whole home directory or the wide `~/.config/gcloud` directory into the container.
