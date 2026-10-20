@@ -97,7 +97,7 @@ The system splits operational responsibilities according to capabilities: direct
   - It does **not** support manual generation parameters (`temperature`, `top_p`, `max_output_tokens`).
   - Budget must be governed via `agent_config.max_total_tokens`.
 - **Tasks:**
-  - Clone the target repository into `/workspace/repo` (the dispatch uses `environment: "remote"` and sends no source bundle).
+  - Clone the target repository into `/workspace/repo` (the dispatch sends no source bundle, and the environment is `remote` with a github.com allowlist when an installation token is available).
   - Detect and execute baseline test suites (`cargo test`, `go test ./...`, `pytest`, `npm test`).
   - Synthesize **new adversarial reproduction tests** targeting Tier 2 findings using 4 archetypes: Unit Assertions, Property-Based Tests (PBT), Subprocess Boundary Probes, and Fault-Injection Scripts.
   - Execute dual-commit trials: prove unpatched code reproduces the failure (red), apply suggested patches, and confirm the fix passes with zero regressions (green).
@@ -290,7 +290,22 @@ ${params.instructions}`,
       type: "antigravity",
       max_total_tokens: "150000",
     },
-    environment: "remote",
+    // "remote" on its own when there is no installation token. With a token the
+    // environment carries a network allowlist that restricts the sandbox to
+    // github.com and injects the token as a Basic authorization header.
+    environment: base64AuthToken
+      ? {
+          type: "remote",
+          network: {
+            allowlist: [
+              {
+                domain: "github.com",
+                transform: { Authorization: `Basic ${base64AuthToken}` },
+              },
+            ],
+          },
+        }
+      : "remote",
     background: true,
   });
 
@@ -298,4 +313,4 @@ ${params.instructions}`,
 }
 ```
 
-The real implementation in `src/services/ai.ts` also injects probe instructions and the full verdict contract. It does not attach a source bundle or a network allowlist; the agent clones the repository itself. `pollSandboxInteraction` then polls the interaction with backoff and a 180-second default cap.
+The real implementation in `src/services/ai.ts` also injects probe instructions and the full verdict contract. It does not attach a source bundle, so the agent clones the repository itself. When an installation token is available it does attach a network allowlist that restricts the sandbox to `github.com` and injects the token as a `Basic` authorization header, so a private repository can be cloned. Without a token the request carries no allowlist and no credentials. `pollSandboxInteraction` then polls the interaction with backoff and a 180-second default cap.
