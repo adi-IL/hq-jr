@@ -1,28 +1,41 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-const repoRoot = new URL("..", import.meta.url).pathname;
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const script = join(repoRoot, "scripts", "check-doc-code-sanity.mjs");
 const readmePath = join(repoRoot, "README.md");
 
 /**
  * Runs the sanity check against a README and returns its output and exit code.
- * The README is restored afterwards, whatever happens.
+ * The README is written to a copy inside the repository and the tracked file
+ * is never touched, so an interrupted run cannot leave the repository
+ * modified. The copy is removed whatever happens.
  */
-function runCheck(readme) {
-  const original = readFileSync(readmePath, "utf8");
-  writeFileSync(readmePath, readme);
+function runCheck(readme, overrides = {}) {
+  const dir = mkdtempSync(join(repoRoot, ".doc-sanity-"));
+  const readmeCopy = join(dir, "README.md");
+  const args = [];
   try {
-    const output = execFileSync("node", [script], { cwd: repoRoot, encoding: "utf8" });
-    return { output, code: 0 };
-  } catch (error) {
-    const err = error;
-    // The script reports problems on stderr and exits with 1.
-    return { output: `${err.stdout ?? ""}${err.stderr ?? ""}`, code: err.status ?? 1 };
+    writeFileSync(readmeCopy, readme);
+    args.push(`README.md=${readmeCopy}`);
+    for (const [doc, text] of Object.entries(overrides)) {
+      const copy = join(dir, doc.replace(/[\\/]/g, "_"));
+      writeFileSync(copy, text);
+      args.push(`${doc}=${copy}`);
+    }
+    try {
+      const output = execFileSync("node", [script, ...args], { cwd: repoRoot, encoding: "utf8" });
+      return { output, code: 0 };
+    } catch (error) {
+      const err = error;
+      // The script reports problems on stderr and exits with 1.
+      return { output: `${err.stdout ?? ""}${err.stderr ?? ""}`, code: err.status ?? 1 };
+    }
   } finally {
-    writeFileSync(readmePath, original);
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -130,13 +143,9 @@ describe("unknown HQ_JR names", () => {
   const docs05 = join(repoRoot, "docs/05-deployment-and-operations.md");
 
   function withDocs05(next) {
-    const original = readFileSync(docs05, "utf8");
-    writeFileSync(docs05, next);
-    try {
-      return runCheck(readFileSync(readmePath, "utf8"));
-    } finally {
-      writeFileSync(docs05, original);
-    }
+    return runCheck(readFileSync(readmePath, "utf8"), {
+      "docs/05-deployment-and-operations.md": next,
+    });
   }
 
   it("reports an unknown variable on the line above a --set-secrets example", () => {

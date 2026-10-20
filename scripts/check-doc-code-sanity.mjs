@@ -26,6 +26,23 @@ import { dirname, join } from "node:path";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(repoRoot, p), "utf8");
 
+// A document path can be overridden so a test can run the check against a
+// copy without modifying the tracked file. The override is
+// "<document path>=<file path>". The overridden document is read from the
+// given path everywhere the document list is used.
+const overrides = new Map(
+  process.argv
+    .slice(2)
+    .map((arg) => arg.split("="))
+    .filter((pair) => pair.length === 2)
+    .map(([doc, file]) => [doc, file])
+);
+const readDoc = (doc) => {
+  const override = overrides.get(doc);
+  if (!override) return read(doc);
+  return readFileSync(override, "utf8");
+};
+
 const DOC_FILES = [
   "README.md",
   "SECURITY.md",
@@ -39,8 +56,7 @@ const DOC_FILES = [
   "docs/README.md",
 ];
 
-const problems = [];
-const note = (msg) => problems.push(msg);
+const problems = [];const note = (msg) => problems.push(msg);
 
 // Collected paths are compared with paths taken from the documents. Documents
 // use forward slashes, and Windows join() does not, so every collected path
@@ -113,7 +129,7 @@ for (const doc of DOC_FILES) {
     note(`${doc} is listed in DOC_FILES but does not exist`);
     continue;
   }
-  const text = read(doc);
+  const text = readDoc(doc);
 
   // 1. Markdown links to a source path.
   for (const m of text.matchAll(/\]\((src\/[^)#]+?)\)/g)) {
@@ -200,8 +216,8 @@ for (const name of configVars) {
 // rows draw their branches with box characters, so the branch glyphs are
 // stripped before the path is read. The directory prefix comes from the
 // nearest ancestor row that ends in a slash.
-const readme = read("README.md");
-const structureBlock = readme.match(/## Project Structure\r?\n[\s\S]*?```\r?\n([\s\S]*?)```/);
+
+const structureBlock = readDoc("README.md").match(/## Project Structure\r?\n[\s\S]*?```\r?\n([\s\S]*?)```/);
 if (!structureBlock) {
   note("README has no '## Project Structure' code block, so the tree check cannot run");
 } else {
@@ -232,7 +248,7 @@ if (!structureBlock) {
   // so a new module cannot land undocumented. The README project structure
   // tree counts, and so does a mention by name in any document. A test file is
   // covered by its module.
-  const documentText = DOC_FILES.map((doc) => read(doc)).join("\n");
+  const documentText = DOC_FILES.map((doc) => readDoc(doc)).join("\n");
   for (const file of sourceFiles) {
     if (file.endsWith(".test.ts") || file.endsWith(".test.mjs")) continue;
     if (documentText.includes(file)) continue;
@@ -246,7 +262,7 @@ if (!structureBlock) {
 // The claim appears in prose, in a heading, and in a project tree comment, so
 // the search is by module name and the claim is looked for near it.
 for (const doc of DOC_FILES) {
-  const text = read(doc);
+  const text = readDoc(doc);
   for (const file of sourceFiles) {
     if (file.endsWith(".test.ts") || file.endsWith(".test.mjs")) continue;
     const base = file.split("/").pop();
