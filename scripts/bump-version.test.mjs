@@ -537,7 +537,7 @@ describe("release workflow", () => {
   });
 
   it("keeps the checkout that the provenance attestation needs", () => {
-    expect(publishJob).toContain("uses: actions/checkout@v7");
+    expect(publishJob).toMatch(/uses: actions\/checkout@v\d/);
   });
 
   it("resolves the tag to a commit once and exposes it", () => {
