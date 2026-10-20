@@ -113,6 +113,15 @@ function isDataExtension(ext: string): boolean {
   return DATA_EXTENSIONS.has(ext);
 }
 
+/**
+ * True for a manifest that configures a build, wherever it sits. A copy of
+ * package.json under a docs directory is still configuration, so it is
+ * reviewed as configuration rather than dropped as documentation.
+ */
+function isConfigManifest(filename: string): boolean {
+  return filename === "package.json" || filename === "tsconfig.json";
+}
+
 function isDocumentationPath(lowerFilename: string, ext: string, inDocsDirectory: boolean): boolean {
   if (ext === ".md" || ext === ".markdown" || ext === ".txt") {
     return true;
@@ -229,9 +238,14 @@ export function evaluateFile(filePath: string): FilterResult {
   const prose = isProseExtension(ext);
   const data = isDataExtension(ext);
 
-  // 5. Security-critical source. Prose and data keep their documentation class,
-  // including a markdown file whose name contains a security root.
-  if (!prose && !data && pathTokens.some((token) => isSecurityToken(token))) {
+  // A data file under a docs directory is prose for review purposes. A data
+  // file elsewhere is not, so it keeps the security check below.
+  const docsData = isDocsDirectory && data;
+
+  // 5. Security-critical source. Prose keeps its documentation class, including
+  // a markdown file whose name contains a security root. Data outside a docs
+  // directory is checked too, so config/secrets.json stays security code.
+  if (!prose && !docsData && pathTokens.some((token) => isSecurityToken(token))) {
     return {
       shouldIgnore: false,
       category: "SECURITY",
@@ -239,8 +253,13 @@ export function evaluateFile(filePath: string): FilterResult {
     };
   }
 
-  // 6. Documentation. A docs directory does not drop source files.
-  if (isDocumentationPath(lowerFilename, ext, isDocsDirectory) || (isDocsDirectory && data)) {
+  // 6. Documentation. A docs directory does not drop source files. A config
+  // manifest is configuration wherever it sits, so docs/package.json is not
+  // dropped as documentation.
+  if (
+    isDocumentationPath(lowerFilename, ext, isDocsDirectory) ||
+    (docsData && !isConfigManifest(filename))
+  ) {
     return {
       shouldIgnore: true,
       reason: "Documentation / markdown content",
@@ -266,8 +285,7 @@ export function evaluateFile(filePath: string): FilterResult {
 
   // 8. Configuration
   if (
-    filename === "package.json" ||
-    filename === "tsconfig.json" ||
+    isConfigManifest(filename) ||
     filename.startsWith("Dockerfile") ||
     ext === ".yaml" ||
     ext === ".yml" ||

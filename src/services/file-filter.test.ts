@@ -101,11 +101,11 @@ describe("File Filter & Noise Exclusion", () => {
   it("reviews source files in a docs directory", () => {
     const helper = evaluateFile("src/docs/helper.ts");
     expect(helper.shouldIgnore).toBe(false);
-    expect(helper.category).not.toBe("DOCUMENTATION");
+    expect(helper.category).toBe("BACKEND");
 
     const script = evaluateFile("docs/setup.js");
     expect(script.shouldIgnore).toBe(false);
-    expect(script.category).not.toBe("DOCUMENTATION");
+    expect(script.category).toBe("BACKEND");
   });
 
   it("finds security roots inside compound words", () => {
@@ -154,5 +154,32 @@ describe("File Filter & Noise Exclusion", () => {
     const authSource = evaluateFile("docs/auth.ts");
     expect(authSource.category).toBe("SECURITY");
     expect(authSource.shouldIgnore).toBe(false);
+  });
+});
+
+describe("file filter security and docs rules", () => {
+  it("keeps a security named data file outside a docs directory as security", () => {
+    for (const path of ["config/secrets.json", "src/security/rbac.xml", "data/credentials.csv"]) {
+      const result = evaluateFile(path);
+      expect(result.category, path).toBe("SECURITY");
+      expect(result.riskWeight, path).toBe(10);
+      expect(result.shouldIgnore, path).toBe(false);
+    }
+  });
+
+  it("keeps a data file under a docs directory as documentation", () => {
+    for (const path of ["docs/api.json", "docs/data.csv"]) {
+      const result = evaluateFile(path);
+      expect(result.category, path).toBe("DOCUMENTATION");
+      expect(result.shouldIgnore, path).toBe(true);
+    }
+  });
+
+  it("keeps a config manifest under a docs directory as configuration", () => {
+    for (const path of ["docs/package.json", "docs/tsconfig.json"]) {
+      const result = evaluateFile(path);
+      expect(result.category, path).toBe("CONFIG");
+      expect(result.shouldIgnore, path).toBe(false);
+    }
   });
 });

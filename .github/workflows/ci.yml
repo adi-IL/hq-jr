@@ -39,7 +39,7 @@ jobs:
           head: ${{ github.sha }}
           # Skip the two fixture files. Unverified secrets everywhere else,
           # including private keys, still fail this step.
-          extra_args: --exclude-paths=.github/trufflehog-exclude-paths.txt
+          extra_args: --exclude-paths=.github/trufflehog-fixture-paths.txt
 
       - name: TruffleHog verified scan of fixture paths
         uses: trufflesecurity/trufflehog@v3.88.5
@@ -50,7 +50,7 @@ jobs:
           head: ${{ github.sha }}
           # Scan only those fixture paths, and only secrets that verify.
           # The fake fixtures stay quiet. A live credential there fails the job.
-          extra_args: --include-paths=.github/trufflehog-exclude-paths.txt --only-verified
+          extra_args: --include-paths=.github/trufflehog-fixture-paths.txt --only-verified
 
   build-and-test:
     name: Typecheck, Test, and Build

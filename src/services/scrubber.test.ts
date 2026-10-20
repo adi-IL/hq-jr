@@ -614,4 +614,130 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     );
     expect(redactedCount).toBe(1);
   });
+
+  it("leaves comparisons, arrows, and non-secret operators intact", () => {
+    const samples = [
+      "if (password === confirmPassword) { check(); }",
+      "if (token == validToken) { check(); }",
+      "if (password !== confirmPassword) { check(); }",
+      "if (password != confirmPassword) { check(); }",
+      "if (password >= confirmPassword) { check(); }",
+      "if (password <= confirmPassword) { check(); }",
+      "const f = token => process(token);",
+      "const f = (token) => process(token);",
+      "function checkPassword(token) {",
+      'count += "secretvalue"',
+      'name := "secretvalue"',
+    ];
+    for (const sample of samples) {
+      const { scrubbed, redactedCount } = scrubSecrets(sample);
+      expect(scrubbed, sample).toBe(sample);
+      expect(redactedCount, sample).toBe(0);
+    }
+  });
+
+  it("redacts a real assignment without eating the operator", () => {
+    const cases: Array<[string, string]> = [
+      ['password = "secretvalue"', 'password = "[REDACTED_SECRET]"'],
+      ["DB_PASSWORD=hunter2hunter2", "DB_PASSWORD=[REDACTED_SECRET]"],
+      ['const apiKey = "secretvalue"', 'const apiKey = "[REDACTED_SECRET]"'],
+      ["api_key: secretvalue", "api_key: [REDACTED_SECRET]"],
+      ['api_key: "secretvalue"', 'api_key: "[REDACTED_SECRET]"'],
+      ['secret_key: "value"', 'secret_key: "[REDACTED_SECRET]"'],
+      ['password += "secretvalue"', 'password += "[REDACTED_SECRET]"'],
+      ['password -= "secretvalue"', 'password -= "[REDACTED_SECRET]"'],
+      ['password *= "secretvalue"', 'password *= "[REDACTED_SECRET]"'],
+      ['password /= "secretvalue"', 'password /= "[REDACTED_SECRET]"'],
+      ['password %= "secretvalue"', 'password %= "[REDACTED_SECRET]"'],
+      ['password &= "secretvalue"', 'password &= "[REDACTED_SECRET]"'],
+      ['password |= "secretvalue"', 'password |= "[REDACTED_SECRET]"'],
+      ['password ^= "secretvalue"', 'password ^= "[REDACTED_SECRET]"'],
+      ['password <<= "secretvalue"', 'password <<= "[REDACTED_SECRET]"'],
+      ['password >>= "secretvalue"', 'password >>= "[REDACTED_SECRET]"'],
+      ['password >>>= "secretvalue"', 'password >>>= "[REDACTED_SECRET]"'],
+      ['password **= "secretvalue"', 'password **= "[REDACTED_SECRET]"'],
+      ['password &&= "secretvalue"', 'password &&= "[REDACTED_SECRET]"'],
+      ['password ||= "secretvalue"', 'password ||= "[REDACTED_SECRET]"'],
+      ['password ??= "secretvalue"', 'password ??= "[REDACTED_SECRET]"'],
+      ['password := "secretvalue"', 'password := "[REDACTED_SECRET]"'],
+    ];
+    for (const [raw, expected] of cases) {
+      const { scrubbed, redactedCount } = scrubSecrets(raw);
+      expect(scrubbed, raw).toBe(expected);
+      expect(redactedCount, raw).toBe(1);
+    }
+  });
+
+  it("does not count a value that is already the placeholder", () => {
+    const raw = "password = [REDACTED_SECRET]";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+});
+
+describe("scrubber assignment operators", () => {
+  it("leaves a comparison alone", () => {
+    const strict = scrubSecrets("if (password === confirmPassword) { check(); }");
+    expect(strict.scrubbed).toBe("if (password === confirmPassword) { check(); }");
+    expect(strict.redactedCount).toBe(0);
+
+    const loose = scrubSecrets("if (token == validToken) { check(); }");
+    expect(loose.scrubbed).toBe("if (token == validToken) { check(); }");
+    expect(loose.redactedCount).toBe(0);
+  });
+
+  it("leaves an arrow function alone", () => {
+    const arrow = scrubSecrets("const f = token => process(token);");
+    expect(arrow.scrubbed).toBe("const f = token => process(token);");
+    expect(arrow.redactedCount).toBe(0);
+  });
+
+  it("redacts the value of a Go short declaration", () => {
+    const go = scrubSecrets('password := "secretvalue"');
+    expect(go.scrubbed).toBe('password := "[REDACTED_SECRET]"');
+    expect(go.redactedCount).toBe(1);
+  });
+
+  it("still redacts a real assignment", () => {
+    const plain = scrubSecrets('password = "hunter2hunter2"');
+    expect(plain.scrubbed).toBe('password = "[REDACTED_SECRET]"');
+    expect(plain.redactedCount).toBe(1);
+
+    const env = scrubSecrets("DB_PASSWORD=hunter2hunter2");
+    expect(env.scrubbed).toBe("DB_PASSWORD=[REDACTED_SECRET]");
+    expect(env.redactedCount).toBe(1);
+  });
+
+  it("does not count an already redacted placeholder", () => {
+    const already = scrubSecrets("apiKey = [REDACTED_SECRET]");
+    expect(already.redactedCount).toBe(0);
+    expect(already.scrubbed).toBe("apiKey = [REDACTED_SECRET]");
+  });
+});
+
+describe("scrubber literal chains", () => {
+  it("redacts a chain whose parts are each too short on their own", () => {
+    const chain = scrubSecrets('password = "pass" + "word123"');
+    expect(chain.scrubbed).toBe('password = "[REDACTED_SECRET]" + "[REDACTED_SECRET]"');
+    expect(chain.redactedCount).toBe(1);
+  });
+
+  it("redacts a chain whose secret is in the last fragment", () => {
+    const chain = scrubSecrets('password = "prefix" + "hunter2hunter2"');
+    expect(chain.scrubbed).not.toContain("hunter2hunter2");
+    expect(chain.redactedCount).toBe(1);
+  });
+
+  it("keeps a chain that is too short to be a credential", () => {
+    const chain = scrubSecrets('password = "a" + "b"');
+    expect(chain.scrubbed).toBe('password = "a" + "b"');
+    expect(chain.redactedCount).toBe(0);
+  });
+
+  it("keeps a chain that is not all literals", () => {
+    const chain = scrubSecrets("password = \"hunter2\" + suffix");
+    expect(chain.scrubbed).toBe("password = \"hunter2\" + suffix");
+    expect(chain.redactedCount).toBe(0);
+  });
 });

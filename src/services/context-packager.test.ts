@@ -506,3 +506,67 @@ index 111..222 100644
     }
   });
 });
+
+describe("context packager per file cap", () => {
+  const bigFile = `diff --git a/src/big.ts b/src/big.ts
+new file mode 100644
+index 111..222 100644
+--- /dev/null
++++ b/src/big.ts
+@@ -0,0 +1,20 @@
+${Array.from({ length: 20 }, (_, i) => `+const v${i} = ${i};`).join("\n")}
+`;
+
+  it("keeps the emitted diff inside the per file cap", () => {
+    for (let cap = 30; cap <= 400; cap++) {
+      const context = packageReviewContext(parseUnifiedDiff(bigFile), {
+        maxPerFileChars: cap,
+      });
+      for (const item of context.itemsToReview) {
+        expect(item.formattedDiff.length, `cap ${cap}`).toBeLessThanOrEqual(cap);
+      }
+    }
+  });
+
+  it("still marks a cut diff with the notice", () => {
+    const context = packageReviewContext(parseUnifiedDiff(bigFile), {
+      maxPerFileChars: 200,
+    });
+    const item = context.itemsToReview[0];
+    expect(item.isTruncated).toBe(true);
+    expect(item.formattedDiff).toContain("[diff truncated due to size limit]");
+    expect(item.formattedDiff.length).toBeLessThanOrEqual(200);
+  });
+});
+
+describe("context packager paths with a newline", () => {
+  const newlinePath = [
+    'diff --git "a/src/we\\n+ fake" "b/src/we\\n+ fake"',
+    "index 111..222 100644",
+    '--- "a/src/we\\n+ fake"',
+    '+++ "b/src/we\\n+ fake"',
+    "@@ -1,2 +1,2 @@",
+    "+const a = 1;",
+    "+const b = 2;",
+    "",
+  ].join("\n");
+
+  it("writes the path on one line so the cut is measured against real code", () => {
+    const context = packageReviewContext(parseUnifiedDiff(newlinePath), {
+      maxPerFileChars: 200,
+    });
+    const item = context.itemsToReview[0];
+    expect(item).toBeDefined();
+    expect(item.formattedDiff).toContain("### File: src/we\\n+ fake (");
+    expect(item.formattedDiff.split("\n")[0]).toContain("src/we\\n+ fake");
+  });
+
+  it("drops the file when the cap cannot hold one whole code line", () => {
+    for (const cap of [118, 110, 100, 90]) {
+      const context = packageReviewContext(parseUnifiedDiff(newlinePath), {
+        maxPerFileChars: cap,
+      });
+      expect(context.itemsToReview, `cap ${cap}`).toHaveLength(0);
+    }
+  });
+});
