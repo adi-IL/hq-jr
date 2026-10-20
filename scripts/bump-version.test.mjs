@@ -40,6 +40,12 @@ describe("pickNpmLatest", () => {
     expect(pickNpmLatest("0.1.8\n")).toBe("0.1.8");
     expect(pickNpmLatest("0.1.10\n0.1.9\n")).toBe("0.1.10");
   });
+
+  it("reads a version the registry printed inside quotes", () => {
+    expect(pickNpmLatest("'0.1.9'\n")).toBe("0.1.9");
+    expect(pickNpmLatest('"0.1.9"\n')).toBe("0.1.9");
+    expect(pickNpmLatest("`0.1.9`\n")).toBe("0.1.9");
+  });
 });
 
 describe("pickLastLine", () => {
