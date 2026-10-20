@@ -615,3 +615,43 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(redactedCount).toBe(1);
   });
 });
+
+describe("scrubber assignment operators", () => {
+  it("leaves a comparison alone", () => {
+    const strict = scrubSecrets("if (password === confirmPassword) { check(); }");
+    expect(strict.scrubbed).toBe("if (password === confirmPassword) { check(); }");
+    expect(strict.redactedCount).toBe(0);
+
+    const loose = scrubSecrets("if (token == validToken) { check(); }");
+    expect(loose.scrubbed).toBe("if (token == validToken) { check(); }");
+    expect(loose.redactedCount).toBe(0);
+  });
+
+  it("leaves an arrow function alone", () => {
+    const arrow = scrubSecrets("const f = token => process(token);");
+    expect(arrow.scrubbed).toBe("const f = token => process(token);");
+    expect(arrow.redactedCount).toBe(0);
+  });
+
+  it("redacts the value of a Go short declaration", () => {
+    const go = scrubSecrets('password := "secretvalue"');
+    expect(go.scrubbed).not.toContain("secretvalue");
+    expect(go.redactedCount).toBe(1);
+  });
+
+  it("still redacts a real assignment", () => {
+    const plain = scrubSecrets('password = "hunter2hunter2"');
+    expect(plain.scrubbed).toBe('password = "[REDACTED_SECRET]"');
+    expect(plain.redactedCount).toBe(1);
+
+    const env = scrubSecrets("DB_PASSWORD=hunter2hunter2");
+    expect(env.scrubbed).toBe("DB_PASSWORD=[REDACTED_SECRET]");
+    expect(env.redactedCount).toBe(1);
+  });
+
+  it("does not count an already redacted placeholder", () => {
+    const already = scrubSecrets("apiKey = [REDACTED_SECRET]");
+    expect(already.redactedCount).toBe(0);
+    expect(already.scrubbed).toBe("apiKey = [REDACTED_SECRET]");
+  });
+});

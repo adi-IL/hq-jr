@@ -459,11 +459,38 @@ function matchAssignmentAt(text: string, index: number, limit: number = text.len
     return null;
   }
   cursor = skipSpacesOnly(text, cursor, limit);
-  if (cursor >= limit || (text[cursor] !== ":" && text[cursor] !== "=")) {
+  if (cursor >= limit || !isAssignmentOperator(text, cursor, limit)) {
     return null;
   }
-  const resumeAt = cursor + 1;
+  const resumeAt = cursor + operatorLength(text, cursor);
   return { key, valueStart: skipSpacesOnly(text, resumeAt, limit), resumeAt };
+}
+
+/**
+ * True when the text at index starts an assignment.
+ *
+ * A bare equals sign is an assignment. A comparison is not: `==` and `===` are
+ * comparisons, and an arrow function `=>` is not an assignment either. A colon
+ * is an assignment only when it is a YAML key separator, so `:=` is a Go short
+ * variable declaration and not an assignment.
+ */
+function operatorLength(text: string, index: number): number {
+  return text[index] === ":" && text[index + 1] === "=" ? 2 : 1;
+}
+
+function isAssignmentOperator(text: string, index: number, limit: number): boolean {
+  const char = text[index];
+  if (char === "=") {
+    const next = text[index + 1];
+    if (next === "=" || next === ">") return false;
+    return true;
+  }
+  if (char === ":") {
+    // A Go short variable declaration assigns, so its value is still a value.
+    // A bare colon is a YAML key separator, which also introduces a value.
+    return true;
+  }
+  return false;
 }
 
 /**
