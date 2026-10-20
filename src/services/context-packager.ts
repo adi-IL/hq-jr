@@ -108,7 +108,11 @@ export function packageReviewContext(
     const minimumLength = firstCodeLineEnd(text);
     let isTruncated = false;
     if (text.length > maxPerFileChars) {
-      const prefix = prefixThroughWholeLines(text, maxPerFileChars, minimumLength);
+      // The notice is part of the text that is sent, so its room is taken off
+      // the cap before the cut. The cut then fits the cap with the notice
+      // attached.
+      const room = maxPerFileChars - PER_FILE_TRUNCATION_NOTICE.length;
+      const prefix = prefixThroughWholeLines(text, room, minimumLength);
       if (prefix === null) {
         perFileDrops.push({ path, reason: PER_FILE_DROP_REASON });
         continue;
