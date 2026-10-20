@@ -14,6 +14,7 @@ import {
   resetAiHealthCache,
   runTriage,
   runDeepReview,
+  dispatchSandboxVerification,
   pollSandboxInteraction,
   extractSandboxVerdict,
   ai,
@@ -687,6 +688,116 @@ describe("escalated deep review policy", () => {
 
     expect(models).toEqual([config.HQ_JR_MODEL_TIER2]);
     expect(outcome.escalated).toBe(false);
+  });
+});
+
+describe("sandbox dispatch network configuration", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const sandboxParams = {
+    repoUrl: "https://github.com/adi-IL/hq-jr",
+    branch: "feat/x",
+    testCommand: "npm test",
+    instructions: "reproduce the flagged defect",
+  };
+
+  it("lets the agent reach github.com with the installation token and nothing else", async () => {
+    const spy = vi
+      .spyOn(ai.interactions, "create")
+      .mockResolvedValue({ id: "ix-net-1" } as never);
+
+    await dispatchSandboxVerification({
+      ...sandboxParams,
+      base64AuthToken: "eC1hY2Nlc3MtdG9rZW46dG9rZW4=",
+    });
+
+    expect(spy.mock.calls[0][0].environment).toEqual({
+      type: "remote",
+      network: {
+        allowlist: [
+          {
+            domain: "github.com",
+            transform: { Authorization: "Basic eC1hY2Nlc3MtdG9rZW46dG9rZW4=" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("sends no allowlist and no credentials when there is no installation token", async () => {
+    const spy = vi
+      .spyOn(ai.interactions, "create")
+      .mockResolvedValue({ id: "ix-net-2" } as never);
+
+    await dispatchSandboxVerification(sandboxParams);
+
+    const request = spy.mock.calls[0][0];
+    expect(request.environment).toBe("remote");
+    expect(JSON.stringify(request)).not.toContain("Authorization");
+  });
+});
+
+describe("deep review output cap scoping", () => {
+  const sharedModel = "gemini-4-argon-shared";
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  /** Loads the module with both tiers pointing at the same model id. */
+  async function loadSharedModelModule() {
+    vi.stubEnv("HQ_JR_MODEL_TIER2", sharedModel);
+    vi.stubEnv("HQ_JR_MODEL_ESCALATION", sharedModel);
+    vi.resetModules();
+    return await import("./ai.js");
+  }
+
+  it("does not cap a below-threshold Tier 2 review when both tiers share one model id", async () => {
+    const fresh = await loadSharedModelModule();
+    const spy = vi.spyOn(fresh.ai.models, "generateContent").mockResolvedValue({
+      text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+    } as never);
+
+    const outcome = await fresh.runEscalatedDeepReview({
+      overallRisk: "MEDIUM",
+      minRisk: "HIGH",
+      run: (model, role) => fresh.runDeepReview("context", { model, role }),
+    });
+
+    expect(outcome.escalated).toBe(false);
+    expect(spy.mock.calls[0][0].model).toBe(sharedModel);
+    expect(spy.mock.calls[0][0].config?.maxOutputTokens).toBeUndefined();
+  });
+
+  it("caps the escalated call and its fallback when both tiers share one model id", async () => {
+    const fresh = await loadSharedModelModule();
+    const spy = vi
+      .spyOn(fresh.ai.models, "generateContent")
+      .mockResolvedValueOnce({
+        text: '{"summary":"s","verdict":"APPROVE","comments":[]',
+        candidates: [{ finishReason: "MAX_TOKENS" }],
+      } as never)
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+      } as never);
+
+    const outcome = await fresh.runEscalatedDeepReview({
+      overallRisk: "HIGH",
+      minRisk: "HIGH",
+      run: (model, role) => fresh.runDeepReview("context", { model, role }),
+    });
+
+    expect(outcome.escalated).toBe(true);
+    expect(outcome.fellBack).toBe(true);
+    expect(spy.mock.calls[0][0].config?.maxOutputTokens).toBe(
+      config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS
+    );
+    expect(spy.mock.calls[1][0].config?.maxOutputTokens).toBe(
+      config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS
+    );
   });
 });
 

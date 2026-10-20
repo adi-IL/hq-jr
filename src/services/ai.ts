@@ -400,7 +400,13 @@ export async function runEscalatedDeepReview(
       },
       "Escalated deep review failed, retrying deep review on the Tier 2 model"
     );
-    const result = await params.run(config.HQ_JR_MODEL_TIER2, "tier2");
+    // The fallback is the Tier 2 model. It carries the escalation budget only
+    // when both tiers point at the same model, so one review is never billed
+    // twice on the escalation model. On a different model the fallback stays
+    // uncapped, so a truncated escalated answer can still be retried in full.
+    const fallbackRole: DeepReviewRole =
+      config.HQ_JR_MODEL_TIER2 === config.HQ_JR_MODEL_ESCALATION ? "escalation" : "tier2";
+    const result = await params.run(config.HQ_JR_MODEL_TIER2, fallbackRole);
     return {
       result,
       model: config.HQ_JR_MODEL_TIER2,
@@ -510,6 +516,11 @@ export async function dispatchSandboxVerification(params: DispatchSandboxParams)
         ],
       }
     : undefined;
+  // The network rules travel with the environment, so the agent reaches
+  // github.com with the installation token and nothing else.
+  const environment = networkConfig
+    ? { type: "remote" as const, network: networkConfig }
+    : "remote";
 
   let probeDetails = "";
   if (params.probes && params.probes.length > 0) {
@@ -557,7 +568,7 @@ Execution Contract:
       type: "antigravity",
       max_total_tokens: "150000",
     },
-    environment: "remote",
+    environment,
     background: true,
   });
 
