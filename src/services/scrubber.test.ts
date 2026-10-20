@@ -148,13 +148,44 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
 
   it("scans a value with unterminated brackets once", () => {
     const raw = `password = ${"[".repeat(60000)}`;
-    const started = Date.now();
+    const started = performance.now();
     const { scrubbed, redactedCount } = scrubSecrets(raw);
-    const elapsed = Date.now() - started;
+    const elapsed = performance.now() - started;
 
     expect(scrubbed).toBe("password = [REDACTED_SECRET]");
     expect(redactedCount).toBe(1);
     expect(elapsed).toBeLessThan(500);
+  });
+
+  it("scans a line of malformed bracket values in linear time", () => {
+    const raw = "password = [abcdefgh ".repeat(12000);
+    const started = performance.now();
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+    const elapsed = performance.now() - started;
+
+    expect(scrubbed).toBe("password = [REDACTED_SECRET] ".repeat(12000));
+    expect(redactedCount).toBe(12000);
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("keeps bracket reads of every shape intact", () => {
+    const raw =
+      'password = configuration["secretKey"];\n' +
+      "password = configuration[secretKey];\n" +
+      "password = arr[0];\n" +
+      "password = config['a']['b'];\n" +
+      "password = config[ key ];";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
+  it("redacts a nested bracket read that is not a member expression", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password = config[a[b]]");
+
+    expect(scrubbed).toBe("password = [REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
   });
 
   it("keeps the semicolon after a key the first pass already redacted", () => {
