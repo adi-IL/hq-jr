@@ -100,7 +100,7 @@ Defaults match [`src/config.ts`](src/config.ts). Tier 1 and Tier 2 use `gemini-3
    - When the triage **overall risk** reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), the deep review runs on `gemini-4-argon` instead (`HQ_JR_MODEL_ESCALATION`).
    - Argon costs roughly 2.7x Flash per token, so the gate keeps it off low-risk changes.
    - If the escalation call fails, the review retries once on `HQ_JR_MODEL_TIER2` and logs the fallback. A model-access or quota failure never fails the review.
-   - The escalation model runs with an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). The cap is keyed on the escalation model id, so it applies to whichever deep review call runs on `HQ_JR_MODEL_ESCALATION`.
+   - The escalated deep review runs with an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). The cap is keyed on the role of the call, not on the model id, so pointing both tiers at the same model does not change what is capped.
 5. **Tier 3: Sandbox Verification (experimental)** (CLI & runner):
    - Antigravity agent (`HQ_JR_AGENT_TIER3`, default `antigravity-preview-05-2026`) for empirical reproduction in isolated containers via `src/cli.ts` / [`src/services/sandbox-runner.ts`](src/services/sandbox-runner.ts).
    - After dispatch the Check Run stays `in_progress` while `pollSandboxInteraction` waits for a verdict; conclusion is success/failure/neutral from that result (not success-on-dispatch).

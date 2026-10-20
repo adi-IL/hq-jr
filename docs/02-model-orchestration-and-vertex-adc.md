@@ -97,7 +97,7 @@ The system splits operational responsibilities according to capabilities: direct
   - It does **not** support manual generation parameters (`temperature`, `top_p`, `max_output_tokens`).
   - Budget must be governed via `agent_config.max_total_tokens`.
 - **Tasks:**
-  - Clone the target repository into `/workspace/repo` (the dispatch sends no source bundle, and the environment is `remote` with a github.com allowlist when an installation token is available).
+  - Clone the target repository into `/workspace/repo` (the dispatch sends no source bundle, and the environment is `remote` with a network allowlist when an installation token is available).
   - Detect and execute baseline test suites (`cargo test`, `go test ./...`, `pytest`, `npm test`).
   - Synthesize **new adversarial reproduction tests** targeting Tier 2 findings using 4 archetypes: Unit Assertions, Property-Based Tests (PBT), Subprocess Boundary Probes, and Fault-Injection Scripts.
   - Execute dual-commit trials: prove unpatched code reproduces the failure (red), apply suggested patches, and confirm the fix passes with zero regressions (green).
@@ -120,9 +120,9 @@ The system splits operational responsibilities according to capabilities: direct
 | `HQ_JR_MODEL_DISCUSSION` | `gemini-3.8-flash` | Replies in review discussion threads. |
 | `HQ_JR_MODEL_REMEDIATION` | `gemini-3.8-flash` | Autonomous remediation synthesis. |
 | `HQ_JR_MODEL_HEALTH` | `gemini-3.8-flash` | Health probe (`/healthz`, `hq-jr health`). |
-| `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | `32768` | Output token cap sent on a call that runs on `HQ_JR_MODEL_ESCALATION`. |
+| `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | `32768` | Output token cap sent on the escalated deep review call. |
 
-- **Output cap.** `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on the escalation model call only. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice. The cap is keyed on the escalation model id, so it applies to whichever deep review call runs on `HQ_JR_MODEL_ESCALATION`. Triage, the discussion replies, the remediation synthesis and the health probe never send a cap, and the Tier 2 deep review stays uncapped while it runs on `HQ_JR_MODEL_TIER2`.
+- **Output cap.** `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on the escalated deep review call only. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice. The cap is keyed on the role of the call, not on the model id, so pointing both tiers at the same model does not change what is capped. The fallback from an escalated review to the Tier 2 model is a Tier 2 review, so it is uncapped and a truncated escalated answer can be retried in full. Triage, the discussion replies, the remediation synthesis and the health probe never send a cap.
 - **Visibility.** `hq-jr health` and `hq-jr review` print the resolved model for every tier, so a local run shows which model actually served each stage. The app logs the resolved deep review model when a review starts.
 - **Compatibility.** `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` keep their names and defaults, but `HQ_JR_MODEL_TIER1` no longer drives the discussion, remediation and health calls. A deployment that set `HQ_JR_MODEL_TIER1` to anything other than `gemini-3.8-flash` sees those three call sites move to `gemini-3.8-flash` after this change. To keep the previous behavior, set `HQ_JR_MODEL_DISCUSSION`, `HQ_JR_MODEL_REMEDIATION` and `HQ_JR_MODEL_HEALTH` to the same value that `HQ_JR_MODEL_TIER1` used to hold. `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is new in this release and caps the escalation model only, so no existing call gains a cap.
 
@@ -252,14 +252,18 @@ export async function runTriage(diffText: string) {
   return res.text;
 }
 
-export async function runDeepReview(contextPrompt: string, options?: { model?: string }) {
+export async function runDeepReview(
+  contextPrompt: string,
+  options?: { model?: string; role?: "tier2" | "escalation" }
+) {
   const res = await ai.models.generateContent({
     model: options?.model ?? config.HQ_JR_MODEL_TIER2,
     contents: contextPrompt,
     config: {
       responseMimeType: "application/json",
-      // Only the escalation model is capped.
-      ...(options?.model === config.HQ_JR_MODEL_ESCALATION
+      // Only the escalated call is capped. The cap follows the role of the
+      // call, not the model id.
+      ...(options?.role === "escalation"
         ? { maxOutputTokens: config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS }
         : {}),
       responseSchema: { /* deep review schema */ },
@@ -291,16 +295,20 @@ ${params.instructions}`,
       max_total_tokens: "150000",
     },
     // "remote" on its own when there is no installation token. With a token the
-    // environment carries a network allowlist that restricts the sandbox to
-    // github.com and injects the token as a Basic authorization header.
+    // environment carries a network allowlist. The wildcard entry keeps every
+    // domain reachable, so the agent can install a toolchain and download
+    // packages. Only the github.com entry injects the token, as a Basic
+    // authorization header, which is what lets the agent clone a private
+    // repository.
     environment: base64AuthToken
       ? {
           type: "remote",
           network: {
             allowlist: [
+              { domain: "*" },
               {
                 domain: "github.com",
-                transform: { Authorization: `Basic ${base64AuthToken}` },
+                transform: [{ Authorization: `Basic ${base64AuthToken}` }],
               },
             ],
           },
@@ -313,4 +321,4 @@ ${params.instructions}`,
 }
 ```
 
-The real implementation in `src/services/ai.ts` also injects probe instructions and the full verdict contract. It does not attach a source bundle, so the agent clones the repository itself. When an installation token is available it does attach a network allowlist that restricts the sandbox to `github.com` and injects the token as a `Basic` authorization header, so a private repository can be cloned. Without a token the request carries no allowlist and no credentials. `pollSandboxInteraction` then polls the interaction with backoff and a 180-second default cap.
+The real implementation in `src/services/ai.ts` also injects probe instructions and the full verdict contract. It does not attach a source bundle, so the agent clones the repository itself. When an installation token is available it does attach a network allowlist with two entries. The wildcard entry keeps every domain reachable, because the agent runs a test command that downloads dependencies from the language package registries. The `github.com` entry injects the token as a `Basic` authorization header, so a private repository can be cloned, and no other domain receives the credential. Without a token the request carries no allowlist and no credentials. `pollSandboxInteraction` then polls the interaction with backoff and a 180-second default cap.
