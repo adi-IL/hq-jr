@@ -66,6 +66,7 @@ The system splits operational responsibilities according to capabilities: direct
 - **Role.** Deep semantic review, security audit, prior-finding verification, and invariant analysis. Configurable to `gemini-3.1-pro-preview` via `HQ_JR_MODEL_TIER2`.
 - **Thinking.** Synchronous reasoning with `thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }`.
 - **Finding severity.** Each finding uses `CRITICAL` | `WARNING` | `SUGGESTION`. Do not confuse this with Tier 1 overall risk.
+- **Effective verdict.** The published verdict is resolved from the final findings, not taken from the model. A finding blocks when its severity is not `SUGGESTION`, or when an unresolved prior issue remains, and a blocking finding always yields `REQUEST_CHANGES`. A `REQUEST_CHANGES` with nothing blocking is a contradiction and becomes `COMMENT`; `APPROVE` and `COMMENT` with only suggestions are kept. `resolveVerdict` in `src/services/ai.ts` applies this once, after the missing-action-ref findings have been dropped, and the CLI uses the same rule.
 - **Context Window.** Up to 1,000,000 tokens.
 - **Output.** Strict JSON Schema conforming to GitHub review comment specifications.
 - **Tasks:**
