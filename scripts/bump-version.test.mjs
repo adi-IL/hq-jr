@@ -392,6 +392,78 @@ describe("release workflow", () => {
     workflow.indexOf("  publish-npm:"),
     workflow.indexOf("  publish-image:")
   );
+  const dirs = [];
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** The shell script of the publish step, taken from the workflow file. */
+  function publishScript() {
+    const lines = publishJob.slice(publishJob.indexOf("        run: |")).split("\n").slice(1);
+    const script = [];
+    for (const line of lines) {
+      if (line.trim() && !line.startsWith("          ")) break;
+      script.push(line.slice(10));
+    }
+    return script.join("\n");
+  }
+
+  /** Runs the publish step against a fake npm and reports what it published. */
+  function runPublishStep({ published, latest }) {
+    const root = mkdtempSync(path.join(tmpdir(), "release-publish-"));
+    dirs.push(root);
+    const bin = path.join(root, "bin");
+    const runnerTemp = path.join(root, "runner");
+    const log = path.join(root, "published.log");
+    mkdirSync(bin);
+    mkdirSync(runnerTemp);
+    writeFileSync(log, "");
+    writeFileSync(
+      path.join(bin, "npm"),
+      [
+        "#!/bin/sh",
+        `if [ "$1" = publish ]; then echo "$@" >> "${log}"; exit 0; fi`,
+        'if [ "$1" != view ]; then echo "unexpected npm $*" >&2; exit 1; fi',
+        'case "$3" in',
+        "  version)",
+        '    if [ "$2" != "$NAME@$VERSION" ]; then echo "unexpected npm $*" >&2; exit 1; fi',
+        '    if [ -n "$PUBLISHED" ]; then printf "%s\\n" "$PUBLISHED"; else echo "npm error code E404" >&2; exit 1; fi',
+        "    ;;",
+        "  dist-tags.latest)",
+        '    if [ "$2" != "$NAME" ]; then echo "unexpected npm $*" >&2; exit 1; fi',
+        '    printf "%s\\n" "$LATEST"',
+        "    ;;",
+        '  *) echo "unexpected npm $*" >&2; exit 1 ;;',
+        "esac",
+        "",
+      ].join("\n")
+    );
+    chmodSync(path.join(bin, "npm"), 0o755);
+    const script = path.join(root, "publish.sh");
+    writeFileSync(script, publishScript());
+    const result = spawnSync("bash", ["-e", script], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        RUNNER_TEMP: runnerTemp,
+        NAME: "hq-jr",
+        VERSION: "0.1.9",
+        TARBALL: path.join(root, "hq-jr-0.1.9.tgz"),
+        PUBLISHED: published ?? "",
+        LATEST: latest,
+      },
+    });
+    const calls = readFileSync(log, "utf8").trim();
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      published: calls === "" ? [] : calls.split("\n"),
+    };
+  }
 
   it("downloads the npm artifact outside the git checkout", () => {
     expect(publishJob).toContain("path: ${{ runner.temp }}/npm-package");
@@ -404,5 +476,20 @@ describe("release workflow", () => {
 
   it("keeps the checkout that the provenance attestation needs", () => {
     expect(publishJob).toContain("uses: actions/checkout@v7");
+  });
+
+  // The publish step is a shell script, so it runs against a fake npm.
+  it.skipIf(process.platform === "win32")("skips the publish when npm prints the version in quotes", () => {
+    const run = runPublishStep({ published: "'0.1.9'", latest: "'0.1.5'" });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toMatch(/already on the npm registry; skipping publish/);
+    expect(run.published).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps latest when npm prints the latest dist-tag in quotes", () => {
+    const run = runPublishStep({ published: null, latest: "'0.1.5'" });
+    expect(run.status).toBe(0);
+    expect(run.published).toHaveLength(1);
+    expect(run.published[0]).toMatch(/--tag latest$/);
   });
 });

@@ -151,7 +151,17 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           TARBALL: ${{ runner.temp }}/npm-package/${{ needs.verify.outputs.tarball }}
         run: |
+          # npm can print a scalar value inside quotes, so a matching pair is stripped
+          # before the value is compared with the version.
+          unquote() {
+            local value="$1"
+            case "$value" in
+              \'*\' | \"*\" | \`*\`) value="${value:1:${#value}-2}" ;;
+            esac
+            printf '%s' "$value"
+          }
           if published="$(npm view "$NAME@$VERSION" version 2>"$RUNNER_TEMP/npm-view.err")"; then
+            published="$(unquote "$published")"
             if [ "$published" = "$VERSION" ]; then
               echo "$NAME@$VERSION is already on the npm registry; skipping publish"
               exit 0
@@ -164,7 +174,7 @@ jobs:
           # npm moves the latest dist-tag on every publish. A release older than the
           # current latest goes out under the backport dist-tag so latest never moves back.
           if current="$(npm view "$NAME" dist-tags.latest 2>"$RUNNER_TEMP/npm-view.err")"; then
-            :
+            current="$(unquote "$current")"
           elif grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
             current=""
           else
