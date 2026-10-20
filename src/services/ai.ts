@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, ThinkingLevel, Schema } from "@google/genai";
+import { GoogleGenAI, Type, ThinkingLevel, Schema, type Interactions } from "@google/genai";
 import { config, riskAtLeast, RiskLevel } from "../config.js";
 import {
   TriageResult,
@@ -509,17 +509,15 @@ export async function dispatchSandboxVerification(params: DispatchSandboxParams)
         allowlist: [
           {
             domain: "github.com",
-            transform: {
-              Authorization: `Basic ${params.base64AuthToken}`,
-            },
+            transform: [{ Authorization: `Basic ${params.base64AuthToken}` }],
           },
         ],
       }
     : undefined;
   // The network rules travel with the environment, so the agent reaches
   // github.com with the installation token and nothing else.
-  const environment = networkConfig
-    ? { type: "remote" as const, network: networkConfig }
+  const environment: Interactions.Environment | "remote" = networkConfig
+    ? { type: "remote", network: networkConfig }
     : "remote";
 
   let probeDetails = "";

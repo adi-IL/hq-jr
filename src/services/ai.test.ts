@@ -719,7 +719,7 @@ describe("sandbox dispatch network configuration", () => {
         allowlist: [
           {
             domain: "github.com",
-            transform: { Authorization: "Basic eC1hY2Nlc3MtdG9rZW46dG9rZW4=" },
+            transform: [{ Authorization: "Basic eC1hY2Nlc3MtdG9rZW46dG9rZW4=" }],
           },
         ],
       },
@@ -735,6 +735,7 @@ describe("sandbox dispatch network configuration", () => {
 
     const request = spy.mock.calls[0][0];
     expect(request.environment).toBe("remote");
+    expect(JSON.stringify(request)).not.toContain("allowlist");
     expect(JSON.stringify(request)).not.toContain("Authorization");
   });
 });
