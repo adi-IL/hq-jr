@@ -28,9 +28,10 @@ npm test
 4. `node scripts/check-package-contents.mjs`
 5. `node scripts/check-doc-drift.mjs`
 6. `node scripts/check-doc-code-sanity.mjs`
-7. No secrets in the diff (no `.env`, keys, tokens, or personal ADC files)
-8. Prefer one concern per PR
-9. Update docs when behavior or env vars change
+7. `node scripts/check-agents-files.mjs`
+8. No secrets in the diff (no `.env`, keys, tokens, or personal ADC files)
+9. Prefer one concern per PR
+10. Update docs when behavior or env vars change
 
 ## Code style
 
