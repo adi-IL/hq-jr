@@ -117,8 +117,10 @@ function stripPathPrefix(value: string, prefix: string): string {
 
 /**
  * Splits the two path tokens of a "diff --git" header. A quoted path is one
- * token, an unquoted path may contain spaces, so the two sides are separated
- * on the b/ prefix and the split that yields the same path on both sides wins.
+ * token. An unquoted path may contain spaces or a literal quote, so the two
+ * sides are separated on the b/ prefix and the split that yields the same
+ * path on both sides wins. A quoted second path is used only when that
+ * separator is absent.
  */
 function splitGitHeaderPaths(rest: string): [string, string] | null {
   const trimmed = rest.trim();
@@ -143,23 +145,11 @@ function splitGitHeaderPaths(rest: string): [string, string] | null {
     return [first, remainder.slice(0, secondEnd + 1)];
   }
 
-  const quotedStart = trimmed.indexOf('"');
-  if (quotedStart > 0) {
-    const head = trimmed.slice(0, quotedStart).trim();
-    const tail = trimmed.slice(quotedStart);
-    if (head && tail) {
-      return [head, tail];
-    }
-  }
-
   const candidates: number[] = [];
   for (let i = 0; i < trimmed.length; i++) {
     if (trimmed[i] === " " && trimmed.startsWith("b/", i + 1)) {
       candidates.push(i);
     }
-  }
-  if (candidates.length === 0) {
-    return null;
   }
   for (const index of candidates) {
     const left = stripPathPrefix(trimmed.slice(0, index), "a/");
@@ -167,6 +157,19 @@ function splitGitHeaderPaths(rest: string): [string, string] | null {
     if (left === right) {
       return [trimmed.slice(0, index), trimmed.slice(index + 1)];
     }
+  }
+  if (candidates.length === 0) {
+    for (let i = 1; i < trimmed.length; i++) {
+      if (trimmed[i] === '"' && /\s/.test(trimmed[i - 1])) {
+        const head = trimmed.slice(0, i).trim();
+        const tail = trimmed.slice(i).trim();
+        if (head && tail) {
+          return [head, tail];
+        }
+        break;
+      }
+    }
+    return null;
   }
   const index = candidates[0];
   return [trimmed.slice(0, index), trimmed.slice(index + 1)];
@@ -295,6 +298,16 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
       currentFile.isRenamed = true;
       continue;
     }
+    if (line.startsWith("copy from ")) {
+      currentFile.oldPath = parseGitPath(line.slice("copy from ".length), "");
+      currentFile.isRenamed = false;
+      continue;
+    }
+    if (line.startsWith("copy to ")) {
+      currentFile.newPath = parseGitPath(line.slice("copy to ".length), "");
+      currentFile.isRenamed = false;
+      continue;
+    }
     const indexMatch = line.match(GIT_INDEX_REGEX);
     if (indexMatch) {
       if (indexMatch[1] === SUBMODULE_MODE) {
@@ -394,8 +407,6 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
       // Ignore git marker
       continue;
     }
-    // A zero length body line is not a valid context line: unified diffs
-    // always prefix context lines with a space, so this is diff noise.
   }
 
   if (currentHunk && currentFile) {

@@ -360,4 +360,113 @@ index 1111111..2222222 100644
     expect(file.oldPath).toBe("dir b/x.ts");
     expect(file.newPath).toBe("dir b/x.ts");
   });
+
+  it("uses copy from and copy to when the path contains a space", () => {
+    const diff = `diff --git a/src/orig.ts b/src/orig.ts
+similarity index 95%
+copy from src/deep b/nested/orig.ts
+copy to src/deep b/nested/orig.ts
+index 111..222 100644
+--- a/src/deep b/nested/orig.ts
++++ b/src/deep b/nested/orig.ts
+@@ -1,1 +1,1 @@
+-old
++new
+`;
+    const file = parseUnifiedDiff(diff).files[0];
+
+    expect(file.oldPath).toBe("src/deep b/nested/orig.ts");
+    expect(file.newPath).toBe("src/deep b/nested/orig.ts");
+    expect(file.similarityIndex).toBe(95);
+    expect(file.isRenamed).toBe(false);
+    expect(file.hunks[0].lines.map((line) => line.type)).toEqual(["delete", "add"]);
+  });
+
+  it("records a copy with different paths without marking it as a rename", () => {
+    const diff = `diff --git a/src/orig.ts b/src/copy.ts
+similarity index 100%
+copy from src/orig.ts
+copy to src/nested/copy.ts
+index 111..222 100644
+--- a/src/orig.ts
++++ b/src/nested/copy.ts
+@@ -1 +1 @@
+ const value = 1;
+`;
+    const file = parseUnifiedDiff(diff).files[0];
+
+    expect(file.oldPath).toBe("src/orig.ts");
+    expect(file.newPath).toBe("src/nested/copy.ts");
+    expect(file.isRenamed).toBe(false);
+    expect(file.similarityIndex).toBe(100);
+  });
+
+  it("decodes quoted copy from and copy to paths", () => {
+    const diff = `diff --git a/src/orig.ts b/src/orig.ts
+similarity index 90%
+copy from "src/my \\"file.ts"
+copy to "src/my \\"file.ts"
+index 111..222 100644
+--- "a/src/my \\"file.ts"
++++ "b/src/my \\"file.ts"
+@@ -1,1 +1,1 @@
+-old
++new
+`;
+    const file = parseUnifiedDiff(diff).files[0];
+
+    expect(file.oldPath).toBe('src/my "file.ts');
+    expect(file.newPath).toBe('src/my "file.ts');
+    expect(file.isRenamed).toBe(false);
+  });
+
+  it("keeps a literal quote inside an unquoted path", () => {
+    const diff = `diff --git a/src/we"ird.ts b/src/we"ird.ts
+index 1111111..2222222 100644
+--- a/src/we"ird.ts
++++ b/src/we"ird.ts
+@@ -1,1 +1,1 @@
+-old
++new
+`;
+    const file = parseUnifiedDiff(diff).files[0];
+
+    expect(file.oldPath).toBe('src/we"ird.ts');
+    expect(file.newPath).toBe('src/we"ird.ts');
+    expect(file.isRenamed).toBe(false);
+    expect(file.deletedLinesCount).toBe(1);
+    expect(file.addedLinesCount).toBe(1);
+  });
+
+  it("keeps a literal quote and a space inside an unquoted path", () => {
+    const diff = `diff --git a/src/my "file.ts b/src/my "file.ts
+index 1111111..2222222 100644
+--- a/src/my "file.ts
++++ b/src/my "file.ts
+@@ -1,1 +1,1 @@
+-old
++new
+`;
+    const file = parseUnifiedDiff(diff).files[0];
+
+    expect(file.oldPath).toBe('src/my "file.ts');
+    expect(file.newPath).toBe('src/my "file.ts');
+    expect(file.isRenamed).toBe(false);
+  });
+
+  it("splits an unquoted path from a following quoted path", () => {
+    const diff = `diff --git a/src/plain.ts "b/src/my file.ts"
+index 1111111..2222222 100644
+--- a/src/plain.ts
++++ "b/src/my file.ts"
+@@ -1,1 +1,1 @@
+-old
++new
+`;
+    const file = parseUnifiedDiff(diff).files[0];
+
+    expect(file.oldPath).toBe("src/plain.ts");
+    expect(file.newPath).toBe("src/my file.ts");
+    expect(file.isRenamed).toBe(true);
+  });
 });
