@@ -156,6 +156,30 @@ describe("action ref verification edge cases", () => {
     expect(out.summary).toContain("Otherwise the change is fine.");
   });
 
+  it("keeps a blocking finding that shares a comment with a false ref claim", async () => {
+    const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
+    const review = {
+      verdict: "REQUEST_CHANGES" as const,
+      summary: "s",
+      comments: [
+        comment({
+          severity: "CRITICAL" as const,
+          category: "SECURITY" as const,
+          title: "SQL injection",
+          body: "The query concatenates user input.\nactions/checkout@v7 does not exist.",
+        }),
+      ],
+    };
+
+    const out = await verifyReviewActionRefs(octokit, review);
+
+    expect(out.comments).toHaveLength(1);
+    expect(out.comments[0].title).toBe("SQL injection");
+    expect(out.comments[0].body).toContain("The query concatenates user input.");
+    expect(out.comments[0].body).not.toContain("does not exist");
+    expect(resolveVerdict(out)).toBe("REQUEST_CHANGES");
+  });
+
   it("keeps REQUEST_CHANGES when a blocking finding remains", async () => {
     const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
     const out = await verifyReviewActionRefs(octokit, {
