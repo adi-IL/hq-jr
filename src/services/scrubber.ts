@@ -4,7 +4,9 @@
  * Known limitation: a regex only scrubber cannot tell a real credential from
  * an arbitrary string of the same shape. Tokens with an unexpected length
  * (ghp_ under 36 characters, github_pat_ that is not exactly 82, AIza that is
- * not exactly 35, generic values under 8 characters) are not redacted.
+ * not exactly 35, generic values under 8 characters) are not redacted. An
+ * unquoted generic value is kept when it reads configuration (process.env.X,
+ * config.X, getSecret(...)); any other unquoted value is redacted.
  */
 const SECRET_PATTERNS = [
   // Private keys (RSA, EC, PGP, OPENSSH)
@@ -35,88 +37,158 @@ const SECRET_PATTERNS = [
 
 const REDACTION_PLACEHOLDER = "[REDACTED_SECRET]";
 
+/** Values shorter than this are too short to be a credential worth hiding. */
+const MIN_GENERIC_SECRET_LENGTH = 8;
+
 /**
  * Generic secret / password assignments in code, JSON, YAML, and .env.
- * The value may be quoted, unquoted, a member expression, or a bracket access.
+ * Groups 1 and 2 are the quote and body of a quoted value; the body runs to
+ * the matching close quote, so it may contain spaces. Group 3 is an unquoted
+ * value, which may contain bracket access with quoted keys such as
+ * credentials['api_key'].
  */
 const GENERIC_ASSIGNMENT_REGEX =
-  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(["'`]?)((?:[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\[(?:["'][^"'\r\n]*["']|[A-Za-z_$][A-Za-z0-9_$]*)\])|(?:[^"'`\r\n\s]{8,128}))["'`]?/gi;
+  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(?:(["'`])((?:\\.|(?!\1)[^\\\r\n])*)\1?|((?:\[[^\]\r\n]*\]|[^"'`\s])+))/dgi;
 
 const ENV_REFERENCE_REGEX =
   /^(?:process|globalThis|global|Deno|Bun)\.env\b|^os\.environ\b|^(?:import\.meta\.)?env\b|^this\.env\b/;
 
+/** Shell and .env interpolation such as $DB_PASSWORD or ${DB_PASSWORD}. */
+const ENV_INTERPOLATION_REGEX = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/;
+
 const MEMBER_EXPRESSION_REGEX =
-  /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]*\])+$/;
+  /^([A-Za-z_$][A-Za-z0-9_$]*)(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]*\])+$/;
 
-const TRAILING_PUNCTUATION_REGEX = /[;,)\]}]+$/;
+/** A call such as getSecret( or vault.read( is code, never a literal. */
+const CALL_EXPRESSION_REGEX = /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\(/;
 
 /**
- * Roots that name a configuration lookup. A value that starts with one of
- * them points at configuration instead of holding a credential.
+ * Roots of member expressions that read configuration. A root counts when it
+ * is one of these words or ends with one (applicationConfig, dbSettings,
+ * user_credentials). Any other dotted value, such as hunter2.abc, can be a
+ * credential, so it is redacted.
  */
-const CODE_REFERENCE_ROOTS = [
-  "process.env",
-  "os.environ",
-  "import.meta.env",
-  "globalThis.env",
-  "this.env",
-  "Deno.env",
-  "Bun.env",
-  "env",
+const REFERENCE_ROOTS = new Set([
+  "app",
+  "args",
+  "cfg",
+  "conf",
   "config",
+  "configuration",
+  "context",
+  "creds",
+  "credentials",
+  "ctx",
+  "env",
+  "environment",
+  "options",
+  "opts",
+  "params",
+  "props",
+  "req",
+  "request",
+  "secrets",
+  "self",
   "settings",
-];
+  "this",
+  "vault",
+]);
 
-/**
- * A bracket access reads a property, so it is code and not a literal.
- */
-const BRACKET_PROPERTY_READ_REGEX =
-  /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\[(?:["'][^"'\r\n]*["']|[A-Za-z_$][A-Za-z0-9_$]*)\]$/;
+const CLOSING_TO_OPENING: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 
-const BRACKET_ACCESS_SUFFIX_REGEX = /\[[^\]\r\n]*\]$/;
-
-/**
- * Splits a captured value into the value itself and the punctuation that
- * closes the statement it appears in. A bracketed value keeps its brackets.
- */
-function splitTrailingPunctuation(value: string): { core: string; trailing: string } {
-  if (value.startsWith(REDACTION_PLACEHOLDER)) {
-    return { core: REDACTION_PLACEHOLDER, trailing: value.slice(REDACTION_PLACEHOLDER.length) };
+function countChar(text: string, char: string): number {
+  let count = 0;
+  for (const c of text) {
+    if (c === char) {
+      count++;
+    }
   }
-  if (value.startsWith("[") && value.endsWith("]")) {
-    return { core: value, trailing: "" };
-  }
-  if (BRACKET_ACCESS_SUFFIX_REGEX.test(value)) {
-    return { core: value, trailing: "" };
-  }
-  const trailing = TRAILING_PUNCTUATION_REGEX.exec(value)?.[0] ?? "";
-  return { core: value.slice(0, value.length - trailing.length), trailing };
+  return count;
 }
 
 /**
- * A value that points at configuration instead of holding a credential, such
- * as process.env.SECRET_KEY, is code the reviewer needs to see untouched. A
- * bare word that merely contains a dot is not a reference.
+ * Length of the punctuation that closes the statement around an unquoted
+ * value, such as the ";" in "apiKey = abc12345;". A closing bracket only
+ * counts when it has no opening partner inside the value, so the "]" of
+ * [REDACTED_SECRET] or of config["key"] stays part of the value.
  */
-function isReferenceValue(value: string, quote: string): boolean {
-  if (!value) {
+function trailingPunctuationLength(value: string): number {
+  let end = value.length;
+  while (end > 0) {
+    const char = value[end - 1];
+    if (char === ";" || char === ",") {
+      end--;
+      continue;
+    }
+    const opening = CLOSING_TO_OPENING[char];
+    const head = value.slice(0, end);
+    if (opening && countChar(head, char) > countChar(head, opening)) {
+      end--;
+      continue;
+    }
+    break;
+  }
+  return value.length - end;
+}
+
+/**
+ * An unquoted value that points at configuration instead of holding a
+ * credential, such as process.env.SECRET_KEY or config.apiKey, is code the
+ * reviewer needs to see untouched.
+ */
+function isReferenceValue(value: string): boolean {
+  if (ENV_REFERENCE_REGEX.test(value) || ENV_INTERPOLATION_REGEX.test(value)) {
     return true;
   }
-  if (quote) {
-    return false;
-  }
-  if (ENV_REFERENCE_REGEX.test(value)) {
+  if (CALL_EXPRESSION_REGEX.test(value)) {
     return true;
   }
-  if (BRACKET_PROPERTY_READ_REGEX.test(value)) {
+  const member = MEMBER_EXPRESSION_REGEX.exec(value);
+  return member !== null && isReferenceRoot(member[1]);
+}
+
+function isReferenceRoot(root: string): boolean {
+  if (REFERENCE_ROOTS.has(root.toLowerCase())) {
     return true;
   }
-  if (!MEMBER_EXPRESSION_REGEX.test(value)) {
-    return false;
+  const words = root.split(/[_$]+|(?<=[a-z0-9])(?=[A-Z])/).filter((word) => word.length > 0);
+  return words.length > 1 && REFERENCE_ROOTS.has(words[words.length - 1].toLowerCase());
+}
+
+/**
+ * Replaces the value of each generic secret assignment with the placeholder.
+ * A value that an earlier pattern already replaced is left as is, so each
+ * secret is counted once.
+ */
+function redactGenericAssignments(input: string): { text: string; count: number } {
+  let text = "";
+  let lastIndex = 0;
+  let count = 0;
+
+  for (const match of input.matchAll(GENERIC_ASSIGNMENT_REGEX)) {
+    const quoted = match[1] !== undefined;
+    const group = quoted ? 2 : 3;
+    const value = match[group] ?? "";
+    const span = match.indices?.[group];
+    if (!span) {
+      continue;
+    }
+    const core = quoted ? value : value.slice(0, value.length - trailingPunctuationLength(value));
+    if (
+      core.length < MIN_GENERIC_SECRET_LENGTH ||
+      core === REDACTION_PLACEHOLDER ||
+      (!quoted && isReferenceValue(core))
+    ) {
+      continue;
+    }
+    const [start] = span;
+    text += input.slice(lastIndex, start) + REDACTION_PLACEHOLDER;
+    lastIndex = start + core.length;
+    count++;
   }
-  return CODE_REFERENCE_ROOTS.some(
-    (root) => value === root || value.startsWith(`${root}.`) || value.startsWith(`${root}[`)
-  );
+
+  text += input.slice(lastIndex);
+  return { text, count };
 }
 
 /**
@@ -143,24 +215,9 @@ export function scrubSecrets(input: string): { scrubbed: string; redactedCount: 
     });
   }
 
-  scrubbed = scrubbed.replace(GENERIC_ASSIGNMENT_REGEX, (match, quote: string, value: string) => {
-    const { core, trailing } = splitTrailingPunctuation(value);
-    if (!core || isReferenceValue(core, quote)) {
-      return match;
-    }
-    const valueIndex = match.lastIndexOf(value);
-    const replacement =
-      valueIndex >= 0
-        ? match.slice(0, valueIndex) +
-          REDACTION_PLACEHOLDER +
-          trailing +
-          match.slice(valueIndex + value.length)
-        : match;
-    if (replacement !== match) {
-      redactedCount++;
-    }
-    return replacement;
-  });
+  const generic = redactGenericAssignments(scrubbed);
+  scrubbed = generic.text;
+  redactedCount += generic.count;
 
   return { scrubbed, redactedCount };
 }
