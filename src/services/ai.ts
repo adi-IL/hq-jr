@@ -120,17 +120,20 @@ export async function checkAiHealth(): Promise<{ status: "ok" | "error"; message
   }
 }
 
+/** Wrapper tag names hq-jr puts around untrusted input. */
+export const UNTRUSTED_TAGS = ["untrusted_pr_metadata", "untrusted_context", "untrusted_diff"] as const;
+
 /**
  * Neutralizes the untrusted wrapper tags so untrusted text cannot open or close
  * a wrapper and move the rest of the payload outside the untrusted region.
- * Only the tag name is rewritten, so attributes, the closing angle bracket and
- * any text after the tag name survive untouched.
+ * A backslash is inserted right after the `<`, and any whitespace, including
+ * line breaks, between `<`, `/` and the tag name is kept. Attributes, the
+ * closing angle bracket and any text after the tag name survive untouched.
  */
-export function escapeUntrustedTags(value: string): string {
-  return value.replace(
-    /<[ \t]*(\/?)[ \t]*(untrusted_pr_metadata|untrusted_context|untrusted_diff)\b/gi,
-    "<\\$1$2"
-  );
+export function escapeUntrustedTags(value: string, tags: readonly string[] = UNTRUSTED_TAGS): string {
+  const names = tags.map((tag) => tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const pattern = new RegExp(`<(\\s*)(\\/?)(\\s*)(${names})\\b`, "gi");
+  return value.replace(pattern, "<\\$1$2$3$4");
 }
 
 /**
@@ -307,10 +310,9 @@ export function resolveDeepReviewRouting(
   overallRisk: RiskLevel,
   minRisk: RiskLevel = config.HQ_JR_ESCALATION_MIN_RISK
 ): DeepReviewRouting {
-  const escalated = shouldEscalate(overallRisk, minRisk);
   return {
-    model: escalated ? config.HQ_JR_MODEL_ESCALATION : config.HQ_JR_MODEL_TIER2,
-    escalated,
+    model: resolveDeepReviewModel(overallRisk, minRisk),
+    escalated: shouldEscalate(overallRisk, minRisk),
   };
 }
 
