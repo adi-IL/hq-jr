@@ -39,6 +39,10 @@ docker cp "$container:/app/deploy/." "$staging/"
 
 # The staging directory is on the same filesystem, so each mv is an atomic
 # rename and a running copy of this script or update.sh is never truncated.
+# The default glob skips names that start with a dot, and an empty directory
+# expands to the literal pattern. Match hidden files, and expand nothing
+# when the directory is empty.
+shopt -s dotglob nullglob
 for file in "$staging"/*; do
   [ -f "$file" ] || continue
   name="$(basename "$file")"

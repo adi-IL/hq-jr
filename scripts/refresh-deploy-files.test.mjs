@@ -7,6 +7,40 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "deploy", "refresh-deploy-files.sh");
 
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+// The install loop is the part that moves staging into place. Run that text
+// from the script so a hidden name or an empty directory is judged by the
+// script itself.
+function installLoopProgram() {
+  const lines = readFileSync(script, "utf8").split("\n");
+  const forAt = lines.findIndex((line) => line.startsWith('for file in "$staging"/*'));
+  if (forAt < 0) throw new Error("install loop not found");
+  const end = lines.findIndex((line, index) => index > forAt && line.startsWith('echo "deploy files refreshed'));
+  if (end < 0) throw new Error("end of install loop not found");
+  const shopts = lines.slice(0, forAt).filter((line) => /^\s*shopt\s/.test(line));
+  return [...shopts, ...lines.slice(forAt, end)].join("\n");
+}
+
+function runInstallLoop(staging, deployDir, { countVisits = false } = {}) {
+  const parts = [
+    "set -euo pipefail",
+    `staging=${shellQuote(staging)}`,
+    `deploy_dir=${shellQuote(deployDir)}`,
+  ];
+  if (countVisits) {
+    parts.push(
+      "visits=0",
+      "trap 'case \"\$BASH_COMMAND\" in \"[ -f \"*) visits=\$((visits + 1)) ;; esac' DEBUG",
+    );
+  }
+  parts.push(installLoopProgram());
+  if (countVisits) parts.push('printf "%s\\n" "$visits"');
+  return spawnSync("bash", ["-c", parts.join("\n")], { encoding: "utf8" });
+}
+
 // The script under test and the fake docker are shell scripts, so skip on Windows.
 describe.skipIf(process.platform === "win32")("deploy/refresh-deploy-files.sh", () => {
   const dirs = [];
@@ -106,5 +140,44 @@ describe.skipIf(process.platform === "win32")("deploy/refresh-deploy-files.sh", 
     expect(result.status).not.toBe(0);
     expect(readFileSync(path.join(deployDir, "update.sh"), "utf8")).toMatch(/old updater/);
     expect(calls().some((call) => call.startsWith("create"))).toBe(false);
+  });
+
+  function loopDirs() {
+    const root = mkdtempSync(path.join(tmpdir(), "refresh-deploy-loop-"));
+    dirs.push(root);
+    const staging = path.join(root, "staging");
+    const deployDir = path.join(root, "deploy");
+    mkdirSync(staging);
+    mkdirSync(deployDir);
+    return { staging, deployDir };
+  }
+
+  it("moves a hidden file out of staging", () => {
+    const { staging, deployDir } = loopDirs();
+    writeFileSync(path.join(staging, ".env"), "SECRET=1\n");
+    writeFileSync(path.join(staging, "compose.yaml"), "services: {}\n");
+    writeFileSync(path.join(staging, "update.sh"), "#!/bin/sh\necho new updater\n");
+
+    const result = runInstallLoop(staging, deployDir);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(readFileSync(path.join(deployDir, ".env"), "utf8")).toBe("SECRET=1\n");
+    expect(readFileSync(path.join(deployDir, "compose.yaml.release"), "utf8")).toBe("services: {}\n");
+    expect(readFileSync(path.join(deployDir, "update.sh"), "utf8")).toMatch(/new updater/);
+    expect(existsSync(path.join(deployDir, "compose.yaml"))).toBe(false);
+    expect(readdirSync(staging)).toEqual([]);
+  });
+
+  it("leaves the deploy directory unchanged when staging is empty", () => {
+    const { staging, deployDir } = loopDirs();
+    writeFileSync(path.join(deployDir, "update.sh"), "#!/bin/sh\necho old updater\n");
+
+    const result = runInstallLoop(staging, deployDir, { countVisits: true });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout.trim()).toBe("0");
+    expect(readFileSync(path.join(deployDir, "update.sh"), "utf8")).toMatch(/old updater/);
+    expect(readdirSync(deployDir)).toEqual(["update.sh"]);
+    expect(readdirSync(staging)).toEqual([]);
   });
 });
