@@ -73,6 +73,13 @@ describe("hq-jr Event Handlers & Security Guards", () => {
     },
   });
 
+  const renameDiff = (count: number, path: (index: number) => string) =>
+    Array.from({ length: count }, (_, index) => {
+      const oldPath = path(index);
+      const newPath = oldPath.replace("src/", "moved/");
+      return `diff --git a/${oldPath} b/${newPath}\nsimilarity index 100%\nrename from ${oldPath}\nrename to ${newPath}\n`;
+    }).join("");
+
   it("does not reply to unmentioned human root review comments", async () => {
     const replySpy = vi.spyOn(discussionModule, "replyToDiscussion").mockResolvedValue("ack");
 
@@ -405,6 +412,55 @@ rename to src/new/auth.ts
     const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
     expect(finalUpdate.output.summary).toContain("- ``src/old`x.ts`` -> ``src/new`x.ts``");
     expect(finalUpdate.output.summary).not.toContain("&#96;");
+  });
+
+  it("caps the renamed file list in the no code changes summary", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: renameDiff(312, (index) => `src/old/file${index}.ts`) });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 26,
+          state: "open",
+          title: "Move the whole folder",
+          head: { sha: "sha-26", ref: "rename" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const summary = octokitMock.checks.update.mock.calls.at(-1)?.[0].output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("Renamed files (showing first 50 of 312):");
+  });
+
+  it("keeps the no code changes summary under the check character limit with long paths", async () => {
+    const longPath = (index: number) => `src/${"d".repeat(3000)}/file${index}.ts`;
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: renameDiff(312, longPath) });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 27,
+          state: "open",
+          title: "Move the whole folder",
+          head: { sha: "sha-27", ref: "rename" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const summary = octokitMock.checks.update.mock.calls.at(-1)?.[0].output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toMatch(/Renamed files \(showing first \d+ of 312\):/);
   });
 
   it("still fails the check when the review itself errors", async () => {

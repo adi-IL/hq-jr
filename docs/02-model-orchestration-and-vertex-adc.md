@@ -223,6 +223,8 @@ The JSON `responseSchema` sent to the model lives in `src/services/ai.ts` (`TRIA
 
 Untrusted input is wrapped in `<untrusted_diff>` for triage and in `<untrusted_context>` for the deep review. `escapeUntrustedTags` in `src/services/ai.ts` neutralizes those tag names, plus `untrusted_pr_metadata`, in every untrusted field: the triage diff, the PR metadata block, the reviewed file list and reasons, the deep review prompt payload, and the discussion diff hunk, thread history and developer query. Discussion replies also neutralize `developer_query`, the tag that wraps the query. It inserts a backslash after the `<` and leaves everything else in place, including whitespace or line breaks before the tag name, attributes, the closing angle bracket and the rest of the payload. A pull request therefore cannot close a wrapper and push the rest of the payload outside the untrusted region.
 
+The pattern matches the whitespace in front of the tag name with a single group, so a long run of whitespace in a comment cannot make the match backtrack quadratically. Discussion replies also cut the diff hunk, the conversation section and the developer query to a fixed character budget and mark the cut with `...[truncated]`, so a long comment cannot inflate the prompt.
+
 ## Implementation Snippets
 
 ### Node.js / TypeScript (`@google/genai` >= 2.3.0)

@@ -44,6 +44,49 @@ export function markdownCodeSpan(value: string): string {
   return `${fence}${pad}${text}${pad}${fence}`;
 }
 
+/** GitHub rejects a check summary longer than 65535 characters. */
+const MAX_CHECK_SUMMARY_CHARS = 60000;
+/** Renamed files listed in the no code changes summary. */
+const MAX_RENAMED_FILES_LISTED = 50;
+/** Longest path rendered in the renamed file list. One line always fits in the summary budget. */
+const MAX_RENAMED_PATH_CHARS = 2000;
+const SUMMARY_TRUNCATION_MARKER = "...[truncated]";
+
+/**
+ * Builds the check summary for a pull request without reviewable hunks. The
+ * renamed file list is capped and the header states the true total, so a pull
+ * request that renames a whole folder cannot push the summary past the
+ * character limit GitHub accepts.
+ */
+export function buildNoCodeChangesSummary(
+  renamedFiles: Array<{ oldPath: string; newPath: string }>
+): string {
+  const base =
+    "Pull request contains no textual diff or code hunks to analyze (e.g. pure file mode changes or binary assets).";
+  if (renamedFiles.length === 0) return base;
+
+  const header = (shown: number) =>
+    shown < renamedFiles.length
+      ? `Renamed files (showing first ${shown} of ${renamedFiles.length}):`
+      : `Renamed files (${renamedFiles.length}):`;
+
+  const shorten = (path: string) =>
+    path.length > MAX_RENAMED_PATH_CHARS
+      ? path.slice(0, MAX_RENAMED_PATH_CHARS) + SUMMARY_TRUNCATION_MARKER
+      : path;
+
+  const shown: string[] = [];
+  for (const file of renamedFiles.slice(0, MAX_RENAMED_FILES_LISTED)) {
+    const line = `- ${markdownCodeSpan(shorten(file.oldPath))} -> ${markdownCodeSpan(shorten(file.newPath))}`;
+    const candidate = [...shown, line];
+    const length = base.length + 2 + header(candidate.length).length + 1 + candidate.join("\n").length;
+    if (length > MAX_CHECK_SUMMARY_CHARS) break;
+    shown.push(line);
+  }
+
+  return `${base}\n\n${header(shown.length)}\n${shown.join("\n")}`;
+}
+
 export function buildReviewPrompt(params: {
   pullNumber: number;
   title: string;
@@ -375,16 +418,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             conclusion: "neutral",
             output: {
               title: "No Code Changes Detected",
-              summary:
-                "Pull request contains no textual diff or code hunks to analyze (e.g. pure file mode changes or binary assets)." +
-                (renamedFiles.length > 0
-                  ? `\n\nRenamed files (${renamedFiles.length}):\n${renamedFiles
-                      .map(
-                        (f) =>
-                          `- ${markdownCodeSpan(f.oldPath)} -> ${markdownCodeSpan(f.newPath)}`
-                      )
-                      .join("\n")}`
-                  : ""),
+              summary: buildNoCodeChangesSummary(renamedFiles),
             },
           });
         }

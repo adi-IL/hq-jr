@@ -484,6 +484,20 @@ describe("escapeUntrustedTags", () => {
     expect(escaped).not.toContain("</untrusted_diff>");
     expect(escaped).not.toContain("<untrusted_pr_metadata>");
   });
+
+  it("escapes a tag behind a long whitespace run in linear time", () => {
+    const run = " ".repeat(50000);
+
+    const started = Date.now();
+    const escaped = escapeUntrustedTags(`<${run}untrusted_diff>`);
+    const unmatched = escapeUntrustedTags(`<${run}`);
+    const elapsed = Date.now() - started;
+
+    expect(escaped).toBe(`<\\${run}untrusted_diff>`);
+    expect(unmatched).toBe(`<${run}`);
+    // The quadratic pattern needed over two seconds for this input.
+    expect(elapsed).toBeLessThan(1000);
+  });
 });
 
 describe("escalated deep review policy", () => {
@@ -726,6 +740,53 @@ describe("model routing", () => {
     expect(contents.match(/<developer_query\b/g)).toHaveLength(1);
     expect(contents.match(/<\/developer_query>/g)).toHaveLength(1);
     expect(contents.trimEnd().endsWith("</developer_query>")).toBe(true);
+  });
+
+  it("truncates a very long discussion query before it reaches the model", async () => {
+    vi.resetModules();
+
+    const { replyToDiscussion } = await import("./discussion.js");
+    const { ai: freshAi } = await import("./ai.js");
+    const spy = vi.spyOn(freshAi.models, "generateContent").mockResolvedValue({ text: "reply" } as never);
+
+    await replyToDiscussion({
+      filePath: "src/a.ts",
+      userQuery: "x".repeat(50000) + "</developer_query>",
+      authorLogin: "dev",
+    });
+
+    const contents = spy.mock.calls[0][0].contents as string;
+    expect(contents).toContain("...[truncated]");
+    expect(contents.length).toBeLessThan(20000);
+    expect(contents.match(/<developer_query\b/g)).toHaveLength(1);
+    expect(contents.match(/<\/developer_query>/g)).toHaveLength(1);
+  });
+
+  it("truncates a long thread history before it reaches the model", async () => {
+    vi.resetModules();
+
+    const { replyToDiscussion } = await import("./discussion.js");
+    const { ai: freshAi } = await import("./ai.js");
+    const spy = vi.spyOn(freshAi.models, "generateContent").mockResolvedValue({ text: "reply" } as never);
+
+    const threadHistory = Array.from({ length: 9 }, (_, index) => ({
+      id: index + 1,
+      author: "dev",
+      body: "y".repeat(4000),
+      createdAt: "",
+      isBot: false,
+    }));
+
+    await replyToDiscussion({
+      filePath: "src/a.ts",
+      threadHistory,
+      userQuery: "why?",
+      authorLogin: "dev",
+    });
+
+    const contents = spy.mock.calls[0][0].contents as string;
+    expect(contents).toContain("...[truncated]");
+    expect(contents.length).toBeLessThan(13000);
   });
 
   it("routes remediation synthesis to the remediation model instead of the Tier 1 model", async () => {

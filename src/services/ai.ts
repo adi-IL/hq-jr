@@ -129,11 +129,13 @@ export const UNTRUSTED_TAGS = ["untrusted_pr_metadata", "untrusted_context", "un
  * A backslash is inserted right after the `<`, and any whitespace, including
  * line breaks, between `<`, `/` and the tag name is kept. Attributes, the
  * closing angle bracket and any text after the tag name survive untouched.
+ * The whitespace run is matched by one group, so a long run of whitespace
+ * cannot make the pattern backtrack quadratically.
  */
 export function escapeUntrustedTags(value: string, tags: readonly string[] = UNTRUSTED_TAGS): string {
   const names = tags.map((tag) => tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const pattern = new RegExp(`<(\\s*)(\\/?)(\\s*)(${names})\\b`, "gi");
-  return value.replace(pattern, "<\\$1$2$3$4");
+  const pattern = new RegExp(`<((?:\\s*\\/)?\\s*)(${names})\\b`, "gi");
+  return value.replace(pattern, "<\\$1$2");
 }
 
 /**
