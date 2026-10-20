@@ -4,6 +4,7 @@ import { addRemediationCommit, acquireRunLock, releaseRunLock } from "./services
 import * as aiModule from "./services/ai.js";
 import * as sandboxRunnerModule from "./services/sandbox-runner.js";
 import * as discussionModule from "./services/discussion.js";
+import { config } from "./config.js";
 
 describe("hq-jr Event Handlers & Security Guards", () => {
   let handlers: Map<string, Function>;
@@ -125,7 +126,7 @@ describe("hq-jr Event Handlers & Security Guards", () => {
       overallRisk: "HIGH",
       files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
     });
-    vi.spyOn(aiModule, "runDeepReview").mockRejectedValueOnce(new TypeError("fetch failed"));
+    vi.spyOn(aiModule, "runDeepReview").mockRejectedValue(new TypeError("fetch failed"));
     octokitMock.pulls.get.mockResolvedValueOnce({
       data: `diff --git a/src/auth.ts b/src/auth.ts
 index 123..456 100644
@@ -190,6 +191,174 @@ index 123..456 100644
     });
 
     expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({ status: "completed", conclusion: "failure" });
+  });
+
+  it("escalates the deep review to the escalation model on high risk pull requests", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth rewrite",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    const deepSpy = vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "ok",
+      verdict: "COMMENT",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 21, state: "open", head: { sha: "sha-21", ref: "risk" }, title: "Auth rewrite" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    const deepOptions = deepSpy.mock.calls[0][1] as { model?: string } | undefined;
+    expect(deepOptions?.model).toBeTruthy();
+    expect(deepOptions?.model).toBe(config.HQ_JR_MODEL_ESCALATION);
+    expect(deepOptions?.model).not.toBe(config.HQ_JR_MODEL_TIER2);
+  });
+
+  it("keeps the deep review on the Tier 2 model below the escalation threshold", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Docs tweak",
+      overallRisk: "MEDIUM",
+      files: [{ path: "src/auth.ts", risk: "MEDIUM", reason: "Docs", shouldReview: true }],
+    });
+    const deepSpy = vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "ok",
+      verdict: "COMMENT",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 22, state: "open", head: { sha: "sha-22", ref: "calm" }, title: "Docs tweak" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(deepSpy.mock.calls[0][1]?.model).toBe(config.HQ_JR_MODEL_TIER2);
+  });
+
+  it("retries the deep review on the Tier 2 model when the escalation model fails", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth rewrite",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    const deepSpy = vi
+      .spyOn(aiModule, "runDeepReview")
+      .mockRejectedValueOnce(new Error("model gemini-4-argon is not accessible in this project"))
+      .mockResolvedValueOnce({
+        summary: "ok",
+        verdict: "COMMENT",
+        resolvedPriorIssues: [],
+        unresolvedPriorIssues: [],
+        comments: [],
+        requiresSandboxVerification: false,
+        sandboxProbes: [],
+      });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 23, state: "open", head: { sha: "sha-23", ref: "fallback" }, title: "Auth rewrite" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(deepSpy).toHaveBeenCalledTimes(2);
+    expect(deepSpy.mock.calls[0][1]?.model).toBeTruthy();
+    expect(deepSpy.mock.calls[0][1]?.model).toBe(config.HQ_JR_MODEL_ESCALATION);
+    expect(deepSpy.mock.calls[1][1]?.model).toBe(config.HQ_JR_MODEL_TIER2);
+    expect(mockApp.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        escalationModel: config.HQ_JR_MODEL_ESCALATION,
+        fallbackModel: config.HQ_JR_MODEL_TIER2,
+      }),
+      expect.stringContaining("retrying deep review on the Tier 2 model")
+    );
+    expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({
+      status: "completed",
+      conclusion: "neutral",
+    });
+  });
+
+  it("surfaces renamed files in the no code changes summary", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/old/auth.ts b/src/new/auth.ts
+similarity index 100%
+rename from src/old/auth.ts
+rename to src/new/auth.ts
+`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 24,
+          state: "open",
+          title: "Move auth module",
+          head: { sha: "sha-24", ref: "rename" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    expect(finalUpdate.output.summary).toContain("src/old/auth.ts");
+    expect(finalUpdate.output.summary).toContain("src/new/auth.ts");
   });
 
   it("still fails the check when the review itself errors", async () => {

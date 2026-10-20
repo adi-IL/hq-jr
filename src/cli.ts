@@ -2,10 +2,11 @@
 
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification } from "./services/ai.js";
+import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, resolveDeepReviewModel, shouldEscalate } from "./services/ai.js";
 import { parseUnifiedDiff, isLineInDiff } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
 import { config } from "./config.js";
+import type { DeepReviewResult } from "./schemas/review.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -53,12 +54,23 @@ Usage:
 `);
 }
 
+function printModelRouting() {
+  console.log("Model routing:");
+  console.log(`  triage (Tier 1):      ${config.HQ_JR_MODEL_TIER1}`);
+  console.log(`  escalation:           ${config.HQ_JR_MODEL_ESCALATION}`);
+  console.log(`  deep review (Tier 2): ${config.HQ_JR_MODEL_TIER2}`);
+  console.log(`  discussion:           ${config.HQ_JR_MODEL_DISCUSSION}`);
+  console.log(`  remediation:          ${config.HQ_JR_MODEL_REMEDIATION}`);
+  console.log(`  health probe:         ${config.HQ_JR_MODEL_HEALTH}`);
+  console.log(`  max output tokens:    ${config.HQ_JR_MAX_OUTPUT_TOKENS}`);
+  console.log(`  escalation threshold: ${config.HQ_JR_ESCALATION_MIN_RISK}`);
+}
+
 async function handleHealth() {
   console.log("Checking Google Cloud Vertex AI ADC connectivity...");
   console.log(`Project:  ${config.GOOGLE_CLOUD_PROJECT}`);
   console.log(`Location: ${config.GOOGLE_CLOUD_LOCATION}`);
-  console.log(`Tier 1:   ${config.HQ_JR_MODEL_TIER1}`);
-  console.log(`Tier 2:   ${config.HQ_JR_MODEL_TIER2}`);
+  printModelRouting();
 
   try {
     const health = await checkAiHealth();
@@ -138,6 +150,7 @@ async function handleReview(args: string[]) {
   }
 
   // 3. Tier 1 Triage
+  printModelRouting();
   console.log(`\n--- Tier 1: Triage + High Thinking (${config.HQ_JR_MODEL_TIER1}) ---`);
   const triage = await runTriage(context.promptPayload);
   console.log(`Overall Risk: [${triage.overallRisk}]`);
@@ -154,7 +167,12 @@ async function handleReview(args: string[]) {
   }
 
   // 4. Tier 2 Deep Semantic Review
-  console.log(`\n--- Tier 2: Deep Semantic Review (${config.HQ_JR_MODEL_TIER2}) ---`);
+  const escalate = shouldEscalate(triage.overallRisk);
+  const deepReviewModel = resolveDeepReviewModel(triage.overallRisk);
+  console.log(
+    `\nEscalation: ${escalate ? "engaged" : "not engaged"} (overall risk ${triage.overallRisk}, threshold ${config.HQ_JR_ESCALATION_MIN_RISK})`
+  );
+  console.log(`\n--- Tier 2: Deep Semantic Review (${deepReviewModel}) ---`);
   const reviewPrompt = `Local CLI Review Mode
 Files requiring deep review:
 ${reviewables.map((f) => `- ${f.path} (Risk: ${f.risk}, Reason: ${f.reason})`).join("\n")}
@@ -162,7 +180,16 @@ ${reviewables.map((f) => `- ${f.path} (Risk: ${f.risk}, Reason: ${f.reason})`).j
 ${context.promptPayload}
 `;
 
-  const review = await runDeepReview(reviewPrompt);
+  let review: DeepReviewResult;
+  try {
+    review = await runDeepReview(reviewPrompt, { model: deepReviewModel });
+  } catch (escalationErr: unknown) {
+    if (!escalate) throw escalationErr;
+    console.warn(
+      `Escalated deep review failed (${escalationErr instanceof Error ? escalationErr.message : String(escalationErr)}), retrying on ${config.HQ_JR_MODEL_TIER2}`
+    );
+    review = await runDeepReview(reviewPrompt, { model: config.HQ_JR_MODEL_TIER2 });
+  }
   console.log(`\nVerdict: ${review.verdict}`);
   console.log(`Summary: ${review.summary}\n`);
 

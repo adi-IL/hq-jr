@@ -89,7 +89,7 @@ ${cleanUserQuery}
 
   const res = await withRetry(() =>
     ai.models.generateContent({
-      model: config.HQ_JR_MODEL_TIER1,
+      model: config.HQ_JR_MODEL_DISCUSSION,
       contents,
       config: {
         systemInstruction,
