@@ -452,16 +452,16 @@ describe("release workflow", () => {
     workflow.indexOf("  publish-image:"),
     workflow.indexOf("  create-release:")
   );
+  const releaseJob = workflow.slice(workflow.indexOf("  create-release:"));
   const dirs = [];
 
   afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  /** The shell script of the publish step, taken from the workflow file. */
-  function publishScript() {
-    // The publish step is not the first step of the job, so start at its name.
-    const step = publishJob.slice(publishJob.indexOf("- name: Publish to npm"));
+  /** The shell script of one named step, taken from a job in the workflow file. */
+  function stepScript(job, stepName) {
+    const step = job.slice(job.indexOf(`- name: ${stepName}`));
     const lines = step.slice(step.indexOf("        run: |")).split("\n").slice(1);
     const script = [];
     for (const line of lines) {
@@ -469,6 +469,11 @@ describe("release workflow", () => {
       script.push(line.slice(10));
     }
     return script.join("\n");
+  }
+
+  /** The shell script of the publish step, taken from the workflow file. */
+  function publishScript() {
+    return stepScript(publishJob, "Publish to npm");
   }
 
   /** Runs the publish step against a fake npm and reports what it published. */
@@ -546,9 +551,9 @@ describe("release workflow", () => {
     expect(prepareJob).toContain('echo "sha=$sha" >> "$GITHUB_OUTPUT"');
   });
 
-  it("checks out the resolved commit in every job that builds or publishes", () => {
+  it("checks out the resolved commit in every job that builds, publishes, or releases", () => {
     expect(laterJobs).not.toContain("ref: ${{ github.ref }}");
-    expect(laterJobs.match(/ref: \$\{\{ needs\.prepare\.outputs\.sha \}\}/g)).toHaveLength(3);
+    expect(laterJobs.match(/ref: \$\{\{ needs\.prepare\.outputs\.sha \}\}/g)).toHaveLength(4);
   });
 
   it("checks the version against the package.json of the resolved commit", () => {
@@ -557,11 +562,16 @@ describe("release workflow", () => {
   });
 
   it("stops the release when the tag no longer names the released commit", () => {
-    for (const job of [publishJob, imageJob]) {
-      expect(job).toContain("Verify the tag still names the released commit");
-      expect(job).toContain('ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}"');
-      expect(job).toContain('if [ "$current" != "$SHA" ]; then');
+    const expected = stepScript(publishJob, "Verify the tag still names the released commit");
+    expect(expected).toContain('ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}"');
+    expect(expected).toContain('if [ "$current" != "$SHA" ]; then');
+    for (const job of [imageJob, releaseJob]) {
+      expect(stepScript(job, "Verify the tag still names the released commit")).toBe(expected);
     }
+    const releaseSteps = releaseJob.slice(releaseJob.indexOf("    steps:"));
+    expect(releaseSteps.indexOf("Verify the tag still names the released commit")).toBeLessThan(
+      releaseSteps.indexOf("- name: Create GitHub Release")
+    );
   });
 
   // The publish step is a shell script, so it runs against a fake npm.
@@ -578,4 +588,132 @@ describe("release workflow", () => {
     expect(run.published).toHaveLength(1);
     expect(run.published[0]).toMatch(/--tag latest$/);
   });
+
+  it("states the published version on the GitHub Release", () => {
+    const releaseStep = releaseJob.slice(releaseJob.indexOf("- name: Create GitHub Release"));
+    expect(releaseStep).toContain("tag_name: ${{ github.ref_name }}");
+    expect(releaseStep).toContain("name: hq-jr ${{ needs.prepare.outputs.version }}");
+    const body = releaseStep.slice(releaseStep.indexOf("body: |"));
+    expect(body).toContain("## hq-jr ${{ needs.prepare.outputs.version }}");
+    expect(body).toContain("npm install -g hq-jr@${{ needs.prepare.outputs.version }}");
+    expect(body).toContain("docker pull ghcr.io/adi-il/hq-jr:${{ needs.prepare.outputs.version }}");
+    expect(body).not.toContain("github.ref");
+  });
+
+  it("keeps same-tag runs apart and publishes on one channel", () => {
+    const header = workflow.slice(0, workflow.indexOf("jobs:"));
+    expect(header).toMatch(/concurrency:\n {2}group: release-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: false\n/);
+    expect(header).not.toMatch(/group: release-version-channel/);
+    const channel = [
+      "    concurrency:",
+      "      group: release-version-channel",
+      "      cancel-in-progress: false",
+      "      queue: max",
+    ].join("\n");
+    expect(publishJob).toContain(channel);
+    expect(imageJob).toContain(channel);
+    expect(releaseJob).not.toContain("release-version-channel");
+    const prepareAndVerify = workflow.slice(workflow.indexOf("  prepare:"), workflow.indexOf("  publish-npm:"));
+    expect(prepareAndVerify).not.toMatch(/group: release-version-channel/);
+  });
+
+  it("pushes the versioned image before it decides whether to move latest", () => {
+    const built = imageJob.indexOf("- name: Build and push image");
+    const decide = imageJob.indexOf("- name: Decide whether this release is the latest");
+    const move = imageJob.indexOf("- name: Move the latest tag");
+    expect(built).toBeGreaterThan(-1);
+    expect(decide).toBeGreaterThan(built);
+    expect(move).toBeGreaterThan(decide);
+    expect(imageJob.slice(decide, move)).not.toMatch(/\n {6}- name:/);
+    const metadata = imageJob.slice(
+      imageJob.indexOf("- name: Extract Docker metadata"),
+      built
+    );
+    expect(metadata).toContain("latest=false");
+    expect(metadata).not.toContain("value=latest");
+    const moveStep = imageJob.slice(move);
+    expect(moveStep).toContain("if: steps.latest.outputs.latest == 'true'");
+    expect(moveStep).toContain('docker buildx imagetools create');
+    expect(moveStep).toContain('"$REGISTRY/$IMAGE_NAME:$VERSION"');
+    const publishStep = publishJob.slice(publishJob.indexOf("- name: Publish to npm"));
+    const distTag = publishStep.indexOf("dist_tag=latest");
+    const npmPublish = publishStep.indexOf("npm publish");
+    expect(distTag).toBeGreaterThan(-1);
+    expect(npmPublish).toBeGreaterThan(distTag);
+    expect(publishStep.slice(distTag, npmPublish)).not.toContain("- name:");
+  });
+
+  it.skipIf(process.platform === "win32")("leaves latest in place when a newer tag is already on origin", () => {
+    const run = runLatestDecision({
+      version: "0.1.9",
+      tags: "aaa refs/tags/v0.1.9\nbbb refs/tags/v0.2.0\n",
+    });
+    expect(run.status).toBe(0);
+    expect(run.output).toBe("latest=false\n");
+    expect(run.stdout).toMatch(/0\.1\.9 is older than 0\.2\.0/);
+  });
+
+  it.skipIf(process.platform === "win32")("moves latest when this version is the highest tag", () => {
+    const run = runLatestDecision({
+      version: "0.2.0",
+      tags: "aaa refs/tags/v0.1.9\nbbb refs/tags/v0.2.0\n",
+    });
+    expect(run.status).toBe(0);
+    expect(run.output).toBe("latest=true\n");
+    expect(run.stdout).toMatch(/0\.2\.0 is the highest release tag/);
+  });
 });
+
+function runLatestDecision({ version, tags }) {
+  const root = mkdtempSync(path.join(tmpdir(), "release-latest-"));
+  const bin = path.join(root, "bin");
+  const output = path.join(root, "github-output");
+  mkdirSync(bin);
+  writeFileSync(output, "");
+  writeFileSync(
+    path.join(bin, "git"),
+    [
+      "#!/bin/sh",
+      'if [ "$1" = "ls-remote" ] && [ "$2" = "--tags" ]; then',
+      '  printf "%s" "$TAGS"',
+      "  exit 0",
+      "fi",
+      'echo "unexpected git $*" >&2',
+      "exit 1",
+      "",
+    ].join("\n")
+  );
+  chmodSync(path.join(bin, "git"), 0o755);
+  const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const imageJob = workflow.slice(workflow.indexOf("  publish-image:"), workflow.indexOf("  create-release:"));
+  const step = imageJob.slice(imageJob.indexOf("- name: Decide whether this release is the latest"));
+  const lines = step.slice(step.indexOf("        run: |")).split("\n").slice(1);
+  const scriptLines = [];
+  for (const line of lines) {
+    if (line.trim() && !line.startsWith("          ")) break;
+    scriptLines.push(line.slice(10));
+  }
+  const script = path.join(root, "latest.sh");
+  writeFileSync(script, scriptLines.join("\n"));
+  try {
+    const result = spawnSync("bash", [script], {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        VERSION: version,
+        GITHUB_OUTPUT: output,
+        TAGS: tags,
+      },
+    });
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      output: readFileSync(output, "utf8"),
+    };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
