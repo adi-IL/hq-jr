@@ -83,28 +83,7 @@ jobs:
         run: node ./dist/cli.js --help
 
       - name: Verify npm Package Contents
-        run: |
-          npm pack --dry-run --json > "$RUNNER_TEMP/npm-pack.json"
-          node -e '
-            const fs = require("node:fs");
-            const report = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/npm-pack.json", "utf8"));
-            const files = report[0].files.map((f) => f.path);
-            const forbidden = [
-              /(^|\/)\.env$/,
-              /(^|\/)\.env\.(?!example$)/,
-              /\.(pem|key|cert|crt|p12|pfx)$/i,
-              /\.(db|db-wal|db-shm|sqlite|sqlite3)$/i,
-              /(^|\/)application_default_credentials\.json$/i,
-              /(^|\/)[^/]*credentials[^/]*$/i,
-            ];
-            const bad = files.filter((f) => forbidden.some((re) => re.test(f)));
-            if (bad.length > 0) {
-              console.error("Forbidden files in the npm package:");
-              for (const f of bad) console.error("  " + f);
-              process.exit(1);
-            }
-            console.log("npm package holds " + files.length + " files, none of them forbidden");
-          '
+        run: node scripts/check-package-contents.mjs
 
       - name: Dependency Vulnerability Audit
         run: npm audit --omit=dev --audit-level=high

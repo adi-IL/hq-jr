@@ -44,14 +44,16 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Releasing $version from $tag at ${GITHUB_SHA}"
 
-  publish-npm:
-    name: Publish to npm
+  verify:
+    name: Test and pack
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      name: ${{ steps.pack.outputs.name }}
+      tarball: ${{ steps.pack.outputs.tarball }}
     steps:
       - name: Checkout tagged commit
         uses: actions/checkout@v7
@@ -63,7 +65,6 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-          registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: npm ci
@@ -83,18 +84,66 @@ jobs:
         env:
           NODE_ENV: production
 
+      - name: Pack
+        id: pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-package"
+          npm pack --json --pack-destination "$RUNNER_TEMP/npm-package" > "$RUNNER_TEMP/npm-pack.json"
+          report="$RUNNER_TEMP/npm-pack.json"
+          name="$(node -p "require(process.argv[1])[0].name" "$report")"
+          tarball="$(node -p "require(process.argv[1])[0].filename" "$report")"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "packed $tarball"
+
+      - name: Verify npm package contents
+        run: node scripts/check-package-contents.mjs "$RUNNER_TEMP/npm-pack.json"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/npm-package/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # This job holds id-token: write, so it runs no repository code and no
+  # dependency scripts. It only publishes the tarball that `verify` checked.
+  publish-npm:
+    name: Publish to npm
+    needs:
+      - prepare
+      - verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          registry-url: https://registry.npmjs.org
+
+      - name: Download package
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: npm-package
+
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NODE_ENV: production
+          NAME: ${{ needs.verify.outputs.name }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARBALL: npm-package/${{ needs.verify.outputs.tarball }}
         run: |
-          name="$(node -p "require('./package.json').name")"
-          version="${{ needs.prepare.outputs.version }}"
-          if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "$name@$version is already on the npm registry; skipping publish"
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION is already on the npm registry; skipping publish"
             exit 0
           fi
-          npm publish --access public --provenance
+          npm publish "$TARBALL" --access public --provenance
 
   publish-image:
     name: Build and push GHCR image
@@ -115,6 +164,44 @@ jobs:
         with:
           ref: ${{ github.ref }}
 
+      # Only the highest release tag moves `latest`, so re-running or delaying an
+      # older tag never points `latest` back at an older image. The check runs in
+      # this job, not in prepare, so a tag pushed while npm was publishing counts.
+      - name: Decide whether this release is the latest
+        id: latest
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -o pipefail
+          tags="$(git ls-remote --tags --refs origin 'refs/tags/v*')"
+          highest="$(printf '%s\n' "$tags" \
+            | sed -n 's#^.*refs/tags/v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$#\1#p' \
+            | sort -V | tail -n 1)"
+          if [ -z "$highest" ]; then
+            echo "::error::Could not list the release tags on origin."
+            exit 1
+          fi
+          if [ "$highest" = "$VERSION" ]; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+            echo "$VERSION is the highest release tag; latest moves to it"
+          else
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+            echo "$VERSION is older than $highest; latest stays where it is"
+          fi
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=${{ needs.prepare.outputs.version }}
+            type=raw,value=latest,enable=${{ steps.latest.outputs.latest == 'true' }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -130,14 +217,8 @@ jobs:
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.prepare.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          labels: |
-            org.opencontainers.image.title=hq-jr
-            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=https://github.com/adi-IL/hq-jr
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
