@@ -346,4 +346,18 @@ index 1111111..2222222 100644
     expect(hunk.lines).toHaveLength(3);
     expect(hunk.lines.filter((line) => line.type === "context")).toHaveLength(1);
   });
+
+  it("splits unquoted paths with spaces on the b/ boundary even when a segment repeats it", () => {
+    const diff = `diff --git a/dir b/x.ts b/dir b/x.ts
+index 1111111..2222222 100644
+--- a/dir b/x.ts
++++ b/dir b/x.ts
+@@ -1,1 +1,1 @@
+ const value = 1;
+`;
+    const file = parseUnifiedDiff(diff).files[0];
+
+    expect(file.oldPath).toBe("dir b/x.ts");
+    expect(file.newPath).toBe("dir b/x.ts");
+  });
 });
