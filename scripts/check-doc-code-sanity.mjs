@@ -33,8 +33,11 @@ const read = (p) => readFileSync(join(repoRoot, p), "utf8");
 const overrides = new Map(
   process.argv
     .slice(2)
-    .map((arg) => arg.split("="))
-    .filter((pair) => pair.length === 2)
+    .map((arg) => {
+      const at = arg.indexOf("=");
+      return at < 0 ? null : [arg.slice(0, at), arg.slice(at + 1)];
+    })
+    .filter((pair) => pair !== null)
     .map(([doc, file]) => [doc, file])
 );
 const readDoc = (doc) => {
@@ -197,7 +200,7 @@ for (const doc of DOC_FILES) {
 }
 
 // 5. Every config variable must have a row in the docs/05 table.
-const docs05 = read("docs/05-deployment-and-operations.md");
+const docs05 = readDoc("docs/05-deployment-and-operations.md");
 const tableRows = new Set();
 for (const line of docs05.split(/\r?\n/)) {
   if (!line.startsWith("|")) continue;

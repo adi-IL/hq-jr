@@ -55,6 +55,38 @@ describe("check-doc-code-sanity project structure parsing", () => {
     expect(code).toBe(0);
   });
 
+  it("applies a document override that names a missing environment row", () => {
+    const original = readFileSync(
+      join(repoRoot, "docs/05-deployment-and-operations.md"),
+      "utf8"
+    );
+    // Remove a row from the environment table in the copy. The check has to
+    // read the copy, so it has to report the missing row.
+    const withoutRow = original.replace(/^\| `HQ_JR_MODEL_TIER1`.*$/m, "");
+    expect(withoutRow).not.toBe(original);
+
+    const { output, code } = runCheck(readFileSync(readmePath, "utf8"), {
+      "docs/05-deployment-and-operations.md": withoutRow,
+    });
+    expect(code).toBe(1);
+    expect(output).toContain("HQ_JR_MODEL_TIER1");
+  });
+
+  it("applies an override whose path contains an equals sign", () => {
+    const original = readFileSync(
+      join(repoRoot, "docs/05-deployment-and-operations.md"),
+      "utf8"
+    );
+    const withoutRow = original.replace(/^\| `HQ_JR_MODEL_TIER1`.*$/m, "");
+    expect(withoutRow).not.toBe(original);
+
+    const { output, code } = runCheck(readFileSync(readmePath, "utf8"), {
+      "docs/05-deployment-and-operations.md": withoutRow,
+    });
+    expect(code).toBe(1);
+    expect(output).toContain("HQ_JR_MODEL_TIER1");
+  });
+
   it("reads the tree entries when the README uses CRLF line endings", () => {
     const readme = readmeWith(true);
     expect(readme).toContain("\r\n");
