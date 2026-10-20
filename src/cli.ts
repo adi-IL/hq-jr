@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags } from "./services/ai.js";
+import type { DeepReviewResult } from "./schemas/review.js";
 import { parseUnifiedDiff, isLineInDiff } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
-import { config } from "./config.js";
+import { config, type RiskLevel } from "./config.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -63,6 +65,33 @@ function printModelRouting() {
   console.log(`  health probe:         ${config.HQ_JR_MODEL_HEALTH}`);
   console.log(`  escalation max output tokens: ${config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS}`);
   console.log(`  escalation threshold: ${config.HQ_JR_ESCALATION_MIN_RISK}`);
+}
+
+/**
+ * Header for the deep review stage. It names the model that produced the
+ * verdict, which is the Tier 2 model when the escalation model failed.
+ */
+export function formatDeepReviewHeader(outcome: { model: string; fellBack: boolean }): string {
+  const suffix = outcome.fellBack ? " after the escalation fallback" : "";
+  return `\n--- Tier 2: Deep Semantic Review (${outcome.model}${suffix}) ---`;
+}
+
+/**
+ * Runs the deep review for the CLI and returns the header that names the
+ * model that produced the verdict.
+ */
+export async function runCliDeepReview(params: {
+  overallRisk: RiskLevel;
+  reviewPrompt: string;
+  log?: (payload: Record<string, unknown>, message: string) => void;
+}): Promise<{ header: string; result: DeepReviewResult }> {
+  const deepReview = await runEscalatedDeepReview({
+    overallRisk: params.overallRisk,
+    run: (model, role) => runDeepReview(params.reviewPrompt, { model, role }),
+    log: params.log,
+  });
+
+  return { header: formatDeepReviewHeader(deepReview), result: deepReview.result };
 }
 
 async function handleHealth() {
@@ -170,7 +199,6 @@ async function handleReview(args: string[]) {
   console.log(
     `\nEscalation: ${routing.escalated ? "engaged" : "not engaged"} (overall risk ${triage.overallRisk}, threshold ${config.HQ_JR_ESCALATION_MIN_RISK})`
   );
-  console.log(`\n--- Tier 2: Deep Semantic Review (${routing.model}) ---`);
   const reviewPrompt = `Local CLI Review Mode
 Files requiring deep review:
 ${reviewables.map((f) => `- ${escapeUntrustedTags(f.path)} (Risk: ${escapeUntrustedTags(f.risk)}, Reason: ${escapeUntrustedTags(f.reason)})`).join("\n")}
@@ -178,15 +206,15 @@ ${reviewables.map((f) => `- ${escapeUntrustedTags(f.path)} (Risk: ${escapeUntrus
 ${escapeUntrustedTags(context.promptPayload)}
 `;
 
-  const deepReview = await runEscalatedDeepReview({
+  const { header, result: review } = await runCliDeepReview({
     overallRisk: triage.overallRisk,
-    run: (model) => runDeepReview(reviewPrompt, { model }),
+    reviewPrompt,
     log: (payload, message) =>
       console.warn(
         `${message}: ${payload.err instanceof Error ? payload.err.message : String(payload.err)}`
       ),
   });
-  const review = deepReview.result;
+  console.log(header);
   console.log(`\nVerdict: ${review.verdict}`);
   console.log(`Summary: ${review.summary}\n`);
 
@@ -238,7 +266,20 @@ async function handleSandboxTest(args: string[]) {
   console.log(JSON.stringify(result, null, 2));
 }
 
-main().catch((err) => {
-  console.error("Unhandled CLI error:", err);
-  process.exit(1);
-});
+/** True when this module is the process entry point, so importing it does not run the CLI. */
+function isCliEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return true;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return true;
+  }
+}
+
+if (isCliEntryPoint()) {
+  main().catch((err) => {
+    console.error("Unhandled CLI error:", err);
+    process.exit(1);
+  });
+}

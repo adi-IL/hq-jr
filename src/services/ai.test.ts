@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { Type } from "@google/genai";
@@ -11,6 +11,7 @@ import {
 } from "../schemas/review.js";
 import {
   checkAiHealth,
+  resetAiHealthCache,
   runTriage,
   runDeepReview,
   pollSandboxInteraction,
@@ -24,7 +25,8 @@ import {
   resolveDeepReviewRouting,
   shouldEscalate,
 } from "./ai.js";
-import { config, riskRank, riskAtLeast, type RiskLevel } from "../config.js";
+import { config, parseEnv, riskRank, riskAtLeast, type RiskLevel } from "../config.js";
+import { runCliDeepReview } from "../cli.js";
 
 describe("Review Schemas", () => {
   it("validates a well-formed triage payload", () => {
@@ -270,9 +272,8 @@ type JsonSchema = {
 };
 
 function zodEnumValues(schema: z.ZodTypeAny): string[] | null {
-  const def = (schema as any)._def;
+  const def = (unwrapZod(schema) as any)._def;
   if (def?.typeName === "ZodEnum") return [...(def.values as string[])];
-  if (def?.typeName === "ZodDefault") return zodEnumValues(def.innerType);
   return null;
 }
 
@@ -446,6 +447,32 @@ describe("response schema parity", () => {
     expect(comments.required).toContain("line");
     expect(comments.required).toContain("side");
   });
+
+  it("catches an enum that drifted away from the Zod enum", () => {
+    const drifted = JSON.parse(JSON.stringify(DEEP_REVIEW_RESPONSE_SCHEMA)) as JsonSchema;
+    drifted.properties!.verdict.enum = ["APPROVE"];
+
+    expect(() => assertSchemaParity(drifted, DeepReviewResultSchema, "deepReview")).toThrow();
+  });
+
+  it("catches an enum that is wrapped in an optional or a nullable", () => {
+    const wrapped = z.object({
+      verdict: z.enum(["APPROVE", "COMMENT"]).optional(),
+      severity: z.enum(["LOW", "HIGH"]).nullable().optional(),
+    });
+    const jsonSchema: JsonSchema = {
+      type: "OBJECT",
+      properties: {
+        verdict: { type: "STRING" },
+        severity: { type: "STRING" },
+      },
+      required: [],
+    };
+
+    expect(zodEnumValues(wrapped.shape.verdict)).toEqual(["APPROVE", "COMMENT"]);
+    expect(zodEnumValues(wrapped.shape.severity)).toEqual(["LOW", "HIGH"]);
+    expect(() => assertSchemaParity(jsonSchema, wrapped, "wrapped")).toThrow();
+  });
 });
 
 describe("escapeUntrustedTags", () => {
@@ -500,6 +527,49 @@ describe("escapeUntrustedTags", () => {
   });
 });
 
+describe("model id validation", () => {
+  const modelVariables = [
+    "HQ_JR_MODEL_TIER1",
+    "HQ_JR_MODEL_TIER2",
+    "HQ_JR_MODEL_ESCALATION",
+    "HQ_JR_MODEL_DISCUSSION",
+    "HQ_JR_MODEL_REMEDIATION",
+    "HQ_JR_MODEL_HEALTH",
+  ];
+
+  it("rejects an empty model id at startup and names the variable", () => {
+    expect(() => parseEnv({ HQ_JR_MODEL_ESCALATION: "" })).toThrow(
+      /HQ_JR_MODEL_ESCALATION must not be empty/
+    );
+    expect(() => parseEnv({ HQ_JR_MODEL_ESCALATION: "   " })).toThrow(
+      /HQ_JR_MODEL_ESCALATION must not be empty/
+    );
+  });
+
+  it("rejects an empty model id for every model variable", () => {
+    for (const name of modelVariables) {
+      expect(() => parseEnv({ [name]: "" }), name).toThrow(new RegExp(name));
+    }
+  });
+
+  it("keeps the documented defaults when no model variable is set", () => {
+    const parsed = parseEnv({});
+
+    expect(parsed.HQ_JR_MODEL_TIER1).toBe("gemini-3.8-flash");
+    expect(parsed.HQ_JR_MODEL_TIER2).toBe("gemini-3.8-flash");
+    expect(parsed.HQ_JR_MODEL_ESCALATION).toBe("gemini-4-argon");
+    expect(parsed.HQ_JR_MODEL_DISCUSSION).toBe("gemini-3.8-flash");
+    expect(parsed.HQ_JR_MODEL_REMEDIATION).toBe("gemini-3.8-flash");
+    expect(parsed.HQ_JR_MODEL_HEALTH).toBe("gemini-3.8-flash");
+  });
+
+  it("trims a model id instead of routing to a padded name", () => {
+    const parsed = parseEnv({ HQ_JR_MODEL_ESCALATION: "  gemini-4-argon  " });
+
+    expect(parsed.HQ_JR_MODEL_ESCALATION).toBe("gemini-4-argon");
+  });
+});
+
 describe("escalated deep review policy", () => {
   it("falls back to the Tier 2 model once when the escalation model fails", async () => {
     const models: string[] = [];
@@ -507,6 +577,7 @@ describe("escalated deep review policy", () => {
 
     const outcome = await runEscalatedDeepReview({
       overallRisk: "HIGH",
+      minRisk: "HIGH",
       run: async (model) => {
         models.push(model);
         if (model === config.HQ_JR_MODEL_ESCALATION) throw new Error("argon unavailable");
@@ -531,6 +602,7 @@ describe("escalated deep review policy", () => {
     await expect(
       runEscalatedDeepReview({
         overallRisk: "MEDIUM",
+        minRisk: "HIGH",
         run: async (model) => {
           models.push(model);
           throw new Error("tier 2 unavailable");
@@ -539,6 +611,39 @@ describe("escalated deep review policy", () => {
     ).rejects.toThrow("tier 2 unavailable");
 
     expect(models).toEqual([config.HQ_JR_MODEL_TIER2]);
+  });
+
+  it("passes the role of the call to the deep review instead of the model id", async () => {
+    const calls: Array<{ model: string; role: string }> = [];
+
+    await runEscalatedDeepReview({
+      overallRisk: "HIGH",
+      minRisk: "HIGH",
+      run: async (model, role) => {
+        calls.push({ model, role });
+        return { summary: "s", verdict: "APPROVE", comments: [] } as never;
+      },
+    });
+
+    expect(calls).toEqual([{ model: config.HQ_JR_MODEL_ESCALATION, role: "escalation" }]);
+  });
+
+  it("names the model that produced the verdict in the deep review header", async () => {
+    const spy = vi
+      .spyOn(ai.models, "generateContent")
+      .mockRejectedValueOnce(new Error("argon unavailable"))
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+      } as never);
+
+    const { header } = await runCliDeepReview({
+      overallRisk: "HIGH",
+      reviewPrompt: "context",
+    });
+
+    expect(spy.mock.calls[0][0].model).toBe(config.HQ_JR_MODEL_ESCALATION);
+    expect(spy.mock.calls[1][0].model).toBe(config.HQ_JR_MODEL_TIER2);
+    expect(header).toContain(config.HQ_JR_MODEL_TIER2);
   });
 
   it("routes through resolveDeepReviewModel for every risk and threshold", () => {
@@ -612,6 +717,10 @@ describe("model orchestration documentation", () => {
 });
 
 describe("model routing", () => {
+  beforeEach(() => {
+    resetAiHealthCache();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
@@ -641,7 +750,7 @@ describe("model routing", () => {
     expect(spy.mock.calls[1][0].model).toBe(config.HQ_JR_MODEL_ESCALATION);
   });
 
-  it("caps the output only on the escalation model", async () => {
+  it("caps the output only on the escalated call", async () => {
     const spy = vi
       .spyOn(ai.models, "generateContent")
       .mockResolvedValueOnce({
@@ -656,13 +765,69 @@ describe("model routing", () => {
 
     await runTriage("diff text");
     await runDeepReview("context");
-    await runDeepReview("context", { model: config.HQ_JR_MODEL_ESCALATION });
+    await runDeepReview("context", { model: config.HQ_JR_MODEL_ESCALATION, role: "escalation" });
 
     expect(spy.mock.calls[0][0].config?.maxOutputTokens).toBeUndefined();
     expect(spy.mock.calls[1][0].config?.maxOutputTokens).toBeUndefined();
     expect(spy.mock.calls[2][0].config?.maxOutputTokens).toBe(
       config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS
     );
+  });
+
+  it("does not cap a Tier 2 review when both tiers share one model id", async () => {
+    // An operator may point both tiers at the same model.
+    const shared = config.HQ_JR_MODEL_ESCALATION;
+    const spy = vi.spyOn(ai.models, "generateContent").mockResolvedValue({
+      text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+    } as never);
+
+    await runDeepReview("context", { model: shared });
+    await runDeepReview("context", { model: shared, role: "escalation" });
+
+    expect(spy.mock.calls[0][0].config?.maxOutputTokens).toBeUndefined();
+    expect(spy.mock.calls[1][0].config?.maxOutputTokens).toBe(
+      config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS
+    );
+  });
+
+  it("refuses a truncated deep review response instead of accepting the repaired partial JSON", async () => {
+    vi.spyOn(ai.models, "generateContent").mockResolvedValue({
+      text: '{"summary":"s","verdict":"APPROVE","comments":[]',
+      candidates: [{ finishReason: "MAX_TOKENS" }],
+    } as never);
+
+    await expect(runDeepReview("context")).rejects.toThrow(/truncated/i);
+  });
+
+  it("accepts a deep review response the model finished", async () => {
+    vi.spyOn(ai.models, "generateContent").mockResolvedValue({
+      text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+      candidates: [{ finishReason: "STOP" }],
+    } as never);
+
+    await expect(runDeepReview("context")).resolves.toMatchObject({ verdict: "APPROVE" });
+  });
+
+  it("falls back to the uncapped Tier 2 model when the escalated answer is truncated", async () => {
+    const spy = vi
+      .spyOn(ai.models, "generateContent")
+      .mockResolvedValueOnce({
+        text: '{"summary":"s","verdict":"APPROVE","comments":[]',
+        candidates: [{ finishReason: "MAX_TOKENS" }],
+      } as never)
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+      } as never);
+
+    const outcome = await runEscalatedDeepReview({
+      overallRisk: "HIGH",
+      minRisk: "HIGH",
+      run: (model, role) => runDeepReview("context", { model, role }),
+    });
+
+    expect(outcome.fellBack).toBe(true);
+    expect(outcome.model).toBe(config.HQ_JR_MODEL_TIER2);
+    expect(spy.mock.calls[1][0].config?.maxOutputTokens).toBeUndefined();
   });
 
   it("keeps a single untrusted diff wrapper around a hostile diff payload", async () => {
@@ -685,6 +850,19 @@ describe("model routing", () => {
     expect(health.status).toBe("ok");
     expect(spy.mock.calls[0][0].model).toBe(config.HQ_JR_MODEL_HEALTH);
     expect(spy.mock.calls[0][0].config?.maxOutputTokens).toBeUndefined();
+  });
+
+  it("probes the model again after the health cache is reset", async () => {
+    const spy = vi.spyOn(ai.models, "generateContent").mockResolvedValue({ text: "pong" } as never);
+
+    await checkAiHealth();
+    await checkAiHealth();
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    resetAiHealthCache();
+    await checkAiHealth();
+
+    expect(spy).toHaveBeenCalledTimes(2);
   });
 
   it("routes discussion replies to the discussion model instead of the Tier 1 model", async () => {

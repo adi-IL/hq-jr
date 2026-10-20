@@ -153,8 +153,7 @@ describe("hq-jr Event Handlers & Security Guards", () => {
         requiresSandboxVerification: false,
         sandboxProbes: [],
       });
-    octokitMock.pulls.get.mockResolvedValueOnce({
-      data: `diff --git a/src/auth.ts b/src/auth.ts
+    const diff = `diff --git a/src/auth.ts b/src/auth.ts
 index 123..456 100644
 --- a/src/auth.ts
 +++ b/src/auth.ts
@@ -162,8 +161,8 @@ index 123..456 100644
  export function login() {
 +  console.log("login");
    return true;
- }`,
-    });
+ }`;
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: diff });
 
     await handlers.get("pull_request.opened")!({
       octokit: octokitMock,
@@ -178,9 +177,28 @@ index 123..456 100644
     expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
     // The escalation attempt and its Tier 2 fallback consume both queued rejections.
     expect(deepSpy).toHaveBeenCalledTimes(2);
-    // The spy is not left rejecting on every later call.
-    await expect(deepSpy("prompt", { model: "tier2" })).resolves.toMatchObject({
-      verdict: "COMMENT",
+
+    // A later review run is served by the same spy and still completes.
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Later change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: diff });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 61, state: "open", head: { sha: "sha-61", ref: "later" }, title: "Later PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(deepSpy).toHaveBeenCalledTimes(3);
+    expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({
+      status: "completed",
+      conclusion: "neutral",
     });
   });
 

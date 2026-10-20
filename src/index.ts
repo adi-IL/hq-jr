@@ -557,7 +557,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
 
       const deepReview = await runEscalatedDeepReview({
         overallRisk: triage.overallRisk,
-        run: (model) => runDeepReview(reviewPrompt, { previousReview, model }),
+        run: (model, role) => runDeepReview(reviewPrompt, { previousReview, model, role }),
         log: (payload, message) => app.log.warn({ ...payload, pullNumber }, message),
       });
       const review = await verifyReviewActionRefs(octokit, deepReview.result);

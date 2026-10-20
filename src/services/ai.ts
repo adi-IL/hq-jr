@@ -84,6 +84,11 @@ export async function withRetry<T>(
 let lastHealthCheck: { status: "ok" | "error"; message?: string; latencyMs: number; timestamp: number } | null = null;
 const HEALTH_CACHE_TTL_MS = 60000;
 
+/** Drops the cached health probe result so the next call probes the model again. */
+export function resetAiHealthCache(): void {
+  lastHealthCheck = null;
+}
+
 /**
  * Health check verifying Vertex AI connectivity with Application Default Credentials (cached for 60s).
  */
@@ -225,6 +230,35 @@ export const DEEP_REVIEW_RESPONSE_SCHEMA: Schema = {
   ],
 };
 
+/** Finish reasons that mean the model stopped before it produced the whole answer. */
+const TRUNCATED_FINISH_REASONS = new Set(["MAX_TOKENS"]);
+
+/**
+ * The finish reason when the model stopped because it reached its output
+ * limit, so the answer is a fragment rather than a complete one.
+ */
+export function truncationFinishReason(res: unknown): string | null {
+  const body = res as
+    | { candidates?: Array<{ finishReason?: unknown }>; finishReason?: unknown }
+    | null
+    | undefined;
+  const reason = body?.candidates?.[0]?.finishReason ?? body?.finishReason;
+  if (typeof reason !== "string") return null;
+  return TRUNCATED_FINISH_REASONS.has(reason.toUpperCase()) ? reason : null;
+}
+
+/**
+ * Rejects an answer the model cut short. A truncated answer is repaired into
+ * valid JSON that looks complete, so accepting it would drop findings.
+ */
+function assertCompleteResponse(res: unknown, label: string): void {
+  const reason = truncationFinishReason(res);
+  if (!reason) return;
+  throw new Error(
+    `${label} was truncated by the model output limit (finishReason ${reason}). The partial answer was not accepted as a complete result.`
+  );
+}
+
 /**
  * Tier 1: Fast triage using Gemini 3.8 Flash
  */
@@ -254,6 +288,7 @@ ${escapeUntrustedTags(diffText)}
     })
   );
 
+  assertCompleteResponse(res, "The triage response");
   const parsed = safeParseJson(res.text || "{}");
   return TriageResultSchema.parse(parsed);
 }
@@ -276,7 +311,15 @@ export interface DeepReviewOptions {
   previousReview?: PreviousReviewInput | null;
   /** Model override. Defaults to config.HQ_JR_MODEL_TIER2. */
   model?: string;
+  /** Role of the call. Only the escalated call carries the output cap. */
+  role?: DeepReviewRole;
 }
+
+/**
+ * Role of a deep review call. The output cap belongs to the escalated call,
+ * not to a model id, so two tiers may share one model without changing either.
+ */
+export type DeepReviewRole = "tier2" | "escalation";
 
 /**
  * Escalation gate. High risk pull requests run the deep review on the escalation model.
@@ -321,8 +364,8 @@ export function resolveDeepReviewRouting(
 export interface EscalatedDeepReviewParams {
   /** Triage risk of the pull request. */
   overallRisk: RiskLevel;
-  /** Runs the deep review on the given model. */
-  run: (model: string) => Promise<DeepReviewResult>;
+  /** Runs the deep review on the given model with the given role. */
+  run: (model: string, role: DeepReviewRole) => Promise<DeepReviewResult>;
   minRisk?: RiskLevel;
   /** Receives the fallback notice when the escalation model fails. */
   log?: (payload: Record<string, unknown>, message: string) => void;
@@ -343,8 +386,9 @@ export async function runEscalatedDeepReview(
   params: EscalatedDeepReviewParams
 ): Promise<EscalatedDeepReviewOutcome> {
   const routing = resolveDeepReviewRouting(params.overallRisk, params.minRisk);
+  const role: DeepReviewRole = routing.escalated ? "escalation" : "tier2";
   try {
-    const result = await params.run(routing.model);
+    const result = await params.run(routing.model, role);
     return { result, model: routing.model, escalated: routing.escalated, fellBack: false };
   } catch (err: unknown) {
     if (!routing.escalated) throw err;
@@ -356,7 +400,7 @@ export async function runEscalatedDeepReview(
       },
       "Escalated deep review failed, retrying deep review on the Tier 2 model"
     );
-    const result = await params.run(config.HQ_JR_MODEL_TIER2);
+    const result = await params.run(config.HQ_JR_MODEL_TIER2, "tier2");
     return {
       result,
       model: config.HQ_JR_MODEL_TIER2,
@@ -374,9 +418,10 @@ export async function runDeepReview(
   options?: DeepReviewOptions
 ): Promise<DeepReviewResult> {
   const model = options?.model || config.HQ_JR_MODEL_TIER2;
-  // Only the escalation model is capped. Tier 1 and Tier 2 keep their uncapped output.
+  // Only the escalated call is capped. The cap follows the role of the call,
+  // not the model id, so sharing one model id across tiers changes nothing.
   const outputCap =
-    model === config.HQ_JR_MODEL_ESCALATION
+    options?.role === "escalation"
       ? { maxOutputTokens: config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS }
       : {};
   let previousAuditSection = "";
@@ -428,6 +473,7 @@ ${contextPrompt}
     })
   );
 
+  assertCompleteResponse(res, "The deep review response");
   const parsed = safeParseJson(res.text || "{}");
   return DeepReviewResultSchema.parse(parsed);
 }
