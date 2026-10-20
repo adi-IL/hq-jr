@@ -222,17 +222,17 @@ describe("action ref verification edge cases", () => {
     expect(kept[0].body).toBe("The workflow uses acme/setup-node@v4 without a pin.");
   });
 
-  it("keeps a body that names another action with the same prefix", async () => {
-    const octokit = fakeOctokit({ "acme/setup": ["v1"] });
+  it("keeps a body that names an action the claim is a prefix of", async () => {
+    const octokit = fakeOctokit({ "acme/setup-node": ["v1"] });
     const c = comment({
-      title: "acme/setup@v1 does not exist",
-      body: "The workflow uses acme/setup-node@v4 without a pin.",
+      title: "acme/setup-node@v1 does not exist",
+      body: "The workflow uses acme/setup@v4 without a pin.",
     });
 
     const kept = await dropUnverifiedMissingActionRefs(octokit, [c]);
 
     expect(kept).toHaveLength(1);
-    expect(kept[0].body).toBe("The workflow uses acme/setup-node@v4 without a pin.");
+    expect(kept[0].body).toBe("The workflow uses acme/setup@v4 without a pin.");
   });
 
   it("drops a comment whose title was the false claim and whose body explains it", async () => {
