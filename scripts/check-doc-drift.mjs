@@ -77,7 +77,10 @@ function readValue(remainder) {
   const quote = text[0];
   if (quote === '"' || quote === "'" || quote === "`") {
     const close = text.indexOf(quote, 1);
-    if (close === -1) return null;
+    // An unmatched quote is a malformed value, not a command. Record what
+    // is there so the comparison still happens; skipping the variable would
+    // let a changed value evade the check.
+    if (close === -1) return text.slice(1).trim();
     return text.slice(1, close).trim();
   }
 
@@ -118,9 +121,9 @@ function readEnvBlockDefaults(file) {
   const isDotenv = file.endsWith(".env") || file.endsWith(".env.example");
   const blocks = isDotenv
     ? [source]
-    : [...source.matchAll(/^```[a-z]*\n([\s\S]*?)^```$/gm)].map((m) => m[1]);
+    : [...source.matchAll(/^```[a-z]*\r?\n([\s\S]*?)^```\r?$/gm)].map((m) => m[1]);
   for (const block of blocks) {
-    for (const line of block.split("\n")) {
+    for (const line of block.split(/\r?\n/)) {
       const assignment = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
       if (!assignment) continue;
       const [, name, remainder] = assignment;

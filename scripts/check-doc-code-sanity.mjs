@@ -146,7 +146,7 @@ for (const name of configVars) {
 // stripped before the path is read. The directory prefix comes from the
 // nearest ancestor row that ends in a slash.
 const readme = read("README.md");
-const structureBlock = readme.match(/## Project Structure\n[\s\S]*?```\n([\s\S]*?)```/);
+const structureBlock = readme.match(/## Project Structure\r?\n[\s\S]*?```\r?\n([\s\S]*?)```/);
 if (!structureBlock) {
   note("README has no '## Project Structure' code block, so the tree check cannot run");
 } else {
