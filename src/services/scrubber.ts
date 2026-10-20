@@ -46,9 +46,13 @@ const MIN_GENERIC_SECRET_LENGTH = 8;
  * the matching close quote, so it may contain spaces. Group 3 is an unquoted
  * value, which may contain bracket access with quoted keys such as
  * credentials['api_key'].
+ *
+ * An unterminated bracket is consumed in one step by the second branch of the
+ * value, so a value full of '[' and no ']' is scanned once instead of once
+ * per bracket.
  */
 const GENERIC_ASSIGNMENT_REGEX =
-  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(?:(["'`])((?:\\.|(?!\1)[^\\\r\n])*)\1?|((?:\[[^\]\r\n]*\]|[^"'`\s])+))/dgi;
+  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(?:(["'`])((?:\\.|(?!\1)[^\\\r\n])*)\1?|((?:\[[^\]\r\n]*\]|\[[^"'`\s]*|[^"'`\s])+))/dgi;
 
 const ENV_REFERENCE_REGEX =
   /^(?:process|globalThis|global|Deno|Bun)\.env\b|^os\.environ\b|^(?:import\.meta\.)?env\b|^this\.env\b/;

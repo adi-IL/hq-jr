@@ -105,7 +105,7 @@ ${secretLines}`;
     expect(context.itemsToReview[0].isTruncated).toBe(true);
   });
 
-  it("does not offer a file for review when its diff content is empty", () => {
+  it("omits a file from review when the budget leaves no room for its code", () => {
     const parsed = parseUnifiedDiff(multiFileDiff);
     const context = packageReviewContext(parsed, { maxTotalChars: 400 });
 

@@ -146,6 +146,17 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(redactedCount).toBe(0);
   });
 
+  it("scans a value with unterminated brackets once", () => {
+    const raw = `password = ${"[".repeat(60000)}`;
+    const started = Date.now();
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+    const elapsed = Date.now() - started;
+
+    expect(scrubbed).toBe("password = [REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+    expect(elapsed).toBeLessThan(500);
+  });
+
   it("keeps the semicolon after a key the first pass already redacted", () => {
     const { scrubbed, redactedCount } = scrubSecrets(
       "api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789;"
