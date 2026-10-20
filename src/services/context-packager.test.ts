@@ -339,4 +339,170 @@ Binary files a/assets/image_${i}.png and b/assets/image_${i}.png differ`).join("
     expect(context.promptPayload).toMatch(/- \.\.\. \(\d+ more ignored files not listed\)/);
     expect(context.ignoredItems).toHaveLength(501);
   });
+
+  it("does not offer a file with no reviewable lines", () => {
+    const diff = `diff --git a/src/data/blob.ts b/src/data/blob.ts
+new file mode 100644
+index 111..222 100644
+Binary files a/src/data/blob.ts and b/src/data/blob.ts differ
+diff --git a/src/data/script.ts b/src/data/script.ts
+old mode 100644
+new mode 100755
+diff --git a/src/data/empty.ts b/src/data/empty.ts
+index 111..222 100644
+--- a/src/data/empty.ts
++++ b/src/data/empty.ts
+@@ -1,0 +1,0 @@
+diff --git a/src/auth/jwt.ts b/src/auth/jwt.ts
+new file mode 100644
+index 000..444 100644
+--- /dev/null
++++ b/src/auth/jwt.ts
+@@ -0,0 +1,3 @@
++export function verifyToken(token: string) {
++  return token.length > 10;
++}
+`;
+    const context = packageReviewContext(parseUnifiedDiff(diff));
+
+    expect(context.itemsToReview.map((item) => item.file.newPath)).toEqual(["src/auth/jwt.ts"]);
+    expect(context.ignoredItems).toContainEqual({
+      path: "src/data/blob.ts",
+      reason: "Binary file has no reviewable text",
+    });
+    expect(context.ignoredItems).toContainEqual({
+      path: "src/data/script.ts",
+      reason: "No reviewable lines in the diff",
+    });
+    expect(context.ignoredItems).toContainEqual({
+      path: "src/data/empty.ts",
+      reason: "No reviewable lines in the diff",
+    });
+    expect(context.promptPayload).not.toContain("### File: src/data/blob.ts");
+    expect(context.promptPayload).not.toContain("### File: src/data/empty.ts");
+    expect(context.promptPayload).toContain("verifyToken");
+  });
+
+  it("keeps a file whose only hunk lines are unchanged context", () => {
+    const diff = `diff --git a/src/data/ctx.ts b/src/data/ctx.ts
+index 111..222 100644
+--- a/src/data/ctx.ts
++++ b/src/data/ctx.ts
+@@ -1,2 +1,2 @@
+ unchanged line
+ another line
+`;
+    const context = packageReviewContext(parseUnifiedDiff(diff));
+
+    expect(context.itemsToReview.map((item) => item.file.newPath)).toEqual(["src/data/ctx.ts"]);
+    expect(context.itemsToReview[0].formattedDiff).toContain("unchanged line");
+    expect(context.ignoredItems).toHaveLength(0);
+  });
+
+  it("adds a truncation notice when a metadata cut has room for one", () => {
+    const parsed = parseUnifiedDiff(manyFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 80 });
+
+    expect(context.itemsToReview).toHaveLength(0);
+    expect(context.promptPayload.length).toBeLessThanOrEqual(80);
+    expect(context.promptPayload).toBe("... [metadata truncated to preserve context budget]");
+  });
+
+  it("cuts a cap shorter than the metadata notice on a line boundary", () => {
+    const parsed = parseUnifiedDiff(manyFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 20 });
+
+    expect(context.promptPayload.length).toBeLessThanOrEqual(20);
+    expect(context.promptPayload).not.toContain("[metadata truncated");
+    expect(context.promptPayload.split("\n").every((line) => line === "" || line === "## Files Under Review (Ranked by Risk)")).toBe(true);
+  });
+
+  it("drops a file when the per-file cap cannot hold one whole code line", () => {
+    const parsed = parseUnifiedDiff(largeFileDiff);
+    const context = packageReviewContext(parsed, { maxPerFileChars: 40 });
+
+    expect(context.itemsToReview).toHaveLength(0);
+    expect(context.ignoredItems).toContainEqual({
+      path: "src/very/long/path/to/a/module/file.ts",
+      reason: "Per-file size limit leaves no whole line",
+    });
+  });
+
+  it("cuts a per-file diff on a line boundary and adds a notice", () => {
+    const parsed = parseUnifiedDiff(largeFileDiff);
+    const context = packageReviewContext(parsed, { maxPerFileChars: 400 });
+    const item = context.itemsToReview[0];
+
+    expect(context.itemsToReview).toHaveLength(1);
+    expect(item.isTruncated).toBe(true);
+    expect(item.formattedDiff.endsWith("... [diff truncated due to size limit]")).toBe(true);
+    const body = item.formattedDiff.replace(/\n\.\.\. \[diff truncated due to size limit\]$/, "");
+    expect(body).toMatch(/^[+\- ] /m);
+    for (const line of body.split("\n")) {
+      if (line.includes(" | ")) expect(line).toMatch(/;$/);
+    }
+  });
+
+  it("holds the budget invariants across caps", () => {
+    const diff = `${manyFileDiff}
+diff --git a/src/data/blob.ts b/src/data/blob.ts
+new file mode 100644
+index 111..222 100644
+Binary files a/src/data/blob.ts and b/src/data/blob.ts differ
+diff --git a/src/data/empty.ts b/src/data/empty.ts
+index 111..222 100644
+--- a/src/data/empty.ts
++++ b/src/data/empty.ts
+@@ -1,0 +1,0 @@
+`;
+    const parsed = parseUnifiedDiff(diff);
+    const full = packageReviewContext(parsed, { maxTotalChars: 1_000_000 });
+    const codeLines = new Set(full.itemsToReview.flatMap((item) => item.formattedDiff.split("\n")));
+    const notices = new Set([
+      "... [diff truncated due to size limit]",
+      "... [diff truncated to preserve context budget]",
+      "... [metadata truncated to preserve context budget]",
+    ]);
+    const headers = new Set([
+      "## Files Under Review (Ranked by Risk)",
+      "## Ignored / Pruned Files",
+      "## Diff Content with Exact Line Anchors",
+      "---",
+    ]);
+
+    for (let cap = 1; cap <= 2000; cap++) {
+      const context = packageReviewContext(parsed, { maxTotalChars: cap });
+
+      expect(context.promptPayload.length, `cap ${cap}`).toBeLessThanOrEqual(cap);
+      expect(listedReviewPaths(context.promptPayload), `cap ${cap}`).toEqual(
+        context.itemsToReview.map((item) => item.file.newPath)
+      );
+      expect(
+        context.itemsToReview.some((item) => item.file.newPath === "src/data/blob.ts"),
+        `cap ${cap}`
+      ).toBe(false);
+      expect(
+        context.itemsToReview.some((item) => item.file.newPath === "src/data/empty.ts"),
+        `cap ${cap}`
+      ).toBe(false);
+
+      for (const item of context.itemsToReview) {
+        expect(item.formattedDiff.length, `cap ${cap}`).toBeGreaterThan(0);
+        const body = item.formattedDiff
+          .replace(/\n\.\.\. \[diff truncated due to size limit\]$/, "")
+          .replace(/\n\.\.\. \[diff truncated to preserve context budget\]$/, "");
+        expect(body, `cap ${cap}`).toMatch(/^[+\- ] /m);
+        expect(context.promptPayload, `cap ${cap}`).toContain(item.formattedDiff);
+      }
+
+      for (const line of context.promptPayload.split("\n")) {
+        if (line === "" || notices.has(line) || headers.has(line) || codeLines.has(line)) continue;
+        const wholeListLine =
+          /^- \*\*.+\*\* \[Category: [A-Z]+, Priority: \d+\/10\]$/.test(line) ||
+          /^- .+ \([^()\n]+\)$/.test(line) ||
+          /^- \.\.\. \(\d+ more ignored files? not listed\)$/.test(line);
+        expect(wholeListLine, `cap ${cap} line ${line}`).toBe(true);
+      }
+    }
+  });
 });

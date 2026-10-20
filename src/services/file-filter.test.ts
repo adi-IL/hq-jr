@@ -86,6 +86,28 @@ describe("File Filter & Noise Exclusion", () => {
     expect(result.category).toBe("DOCUMENTATION");
   });
 
+  it("reviews security source that sits in a docs directory", () => {
+    const session = evaluateFile("src/docs/session-auth.ts");
+    expect(session.category).toBe("SECURITY");
+    expect(session.shouldIgnore).toBe(false);
+    expect(session.riskWeight).toBe(10);
+
+    const token = evaluateFile("packages/docs/token.ts");
+    expect(token.category).toBe("SECURITY");
+    expect(token.shouldIgnore).toBe(false);
+    expect(token.riskWeight).toBe(10);
+  });
+
+  it("reviews source files in a docs directory", () => {
+    const helper = evaluateFile("src/docs/helper.ts");
+    expect(helper.shouldIgnore).toBe(false);
+    expect(helper.category).not.toBe("DOCUMENTATION");
+
+    const script = evaluateFile("docs/setup.js");
+    expect(script.shouldIgnore).toBe(false);
+    expect(script.category).not.toBe("DOCUMENTATION");
+  });
+
   it("finds security roots inside compound words", () => {
     for (const file of [
       "src/errors/UnauthorizedError.ts",
@@ -104,5 +126,33 @@ describe("File Filter & Noise Exclusion", () => {
     expect(evaluateFile("src/models/coauthor.ts").category).toBe("BACKEND");
     expect(evaluateFile("src/parser/tokenizer.ts").category).toBe("BACKEND");
     expect(evaluateFile("src/hr/secretary.ts").category).toBe("BACKEND");
+  });
+
+  it("treats prose and data under docs as documentation", () => {
+    for (const file of ["docs/auth.md", "docs/secrets.md", "docs/guide.md", "src/auth.md"]) {
+      const result = evaluateFile(file);
+      expect(result.category, file).toBe("DOCUMENTATION");
+      expect(result.shouldIgnore, file).toBe(true);
+    }
+
+    for (const file of ["docs/api.json", "docs/data.csv"]) {
+      const result = evaluateFile(file);
+      expect(result.category, file).toBe("DOCUMENTATION");
+      expect(result.shouldIgnore, file).toBe(true);
+    }
+  });
+
+  it("keeps security source that sits in a docs directory", () => {
+    const session = evaluateFile("src/docs/session-auth.ts");
+    expect(session.category).toBe("SECURITY");
+    expect(session.shouldIgnore).toBe(false);
+
+    const token = evaluateFile("packages/docs/token.ts");
+    expect(token.category).toBe("SECURITY");
+    expect(token.shouldIgnore).toBe(false);
+
+    const authSource = evaluateFile("docs/auth.ts");
+    expect(authSource.category).toBe("SECURITY");
+    expect(authSource.shouldIgnore).toBe(false);
   });
 });
