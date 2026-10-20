@@ -34,6 +34,10 @@ jobs:
           path: ./
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           head: ${{ github.sha }}
+          # The scrubber tests hold fake credential shaped fixtures on purpose.
+          # TruffleHog scans every commit in the range, so a fixture that once
+          # sat in history keeps failing the scan even after it is rewritten.
+          extra_args: --exclude-paths=.github/trufflehog-exclude-paths.txt
 
   build-and-test:
     name: Lint, Typecheck, Test, and Build
