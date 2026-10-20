@@ -235,14 +235,40 @@ Image runs Probot under `tini` (PID 1) with `probot` on `PATH`, as the unprivile
 hq-jr/
 ├── app.yml                  # GitHub App Manifest (permissions & events)
 ├── deploy/                  # Reference GHCR + Compose deployment and update timer
+│   ├── compose.yaml             # Container definition used by the reference host
+│   ├── hq-jr-update.service     # Oneshot systemd unit that runs the updater
+│   ├── hq-jr-update.timer       # Runs the update unit every 15 minutes
+│   ├── refresh-deploy-files.sh  # Materializes the deploy files from the released image
+│   └── update.sh                # Pulls the image, recreates on change, rolls back on failure
 ├── Dockerfile               # Multi-stage Node 22 production image
 ├── docs/                    # Architecture and operations guides
-├── src/
-│   ├── cli.ts               # Standalone PR / sandbox CLI
-│   ├── config.ts            # Env schema (source of truth for defaults)
-│   ├── index.ts             # Probot entry and event handlers
-│   ├── schemas/
-│   └── services/            # AI, scrubber, memory, sandbox, remediation, ...
+├── scripts/                 # Release, package, and documentation checks
+│   ├── bump-version.mjs         # Local version bump, commit, and annotated tag
+│   ├── check-doc-code-sanity.mjs  # Fails when the docs and the code disagree
+│   ├── check-doc-drift.mjs        # Fails when documented env vars drift from config.ts
+│   ├── check-package-contents.mjs # Fails when the npm tarball holds a forbidden file
+│   └── manual-honesty-check.mjs   # End-to-end assertions on memory and sandbox paths
+└── src/
+    ├── cli.ts               # Standalone PR / sandbox CLI
+    ├── config.ts            # Env schema (source of truth for defaults)
+    ├── hq-jr-login.ts       # Exact-match check for the app's own GitHub login
+    ├── index.ts             # Probot entry and event handlers
+    ├── schemas/
+    │   └── review.ts        # Zod contracts for the triage and deep review results
+    └── services/
+        ├── action-ref-verifier.ts # Drops findings that claim an existing action ref is missing
+        ├── ai.ts                 # Vertex client, triage, deep review, sandbox dispatch and poll
+        ├── context-packager.ts   # Ranking, char budgets, prompt payload assembly
+        ├── db.ts                 # SQLite schema, migrations, run locks, findings, sandbox jobs
+        ├── diff-parser.ts        # Unified diff to DiffFile / DiffHunk / DiffLine
+        ├── discussion.ts         # Conversational replies in PR review threads
+        ├── file-filter.ts        # Path classification, ignore rules, risk weights
+        ├── json-repair.ts        # Parses and repairs malformed model JSON
+        ├── remediation.ts        # Synthesizes fixes, git plumbing, push, merge
+        ├── review-memory.ts      # Prior findings from threads, SQLite, and prior reviews
+        ├── sandbox-runner.ts     # Tier 3 check run, polling, and the recovery sweep
+        ├── scrubber.ts           # Credential redaction
+        └── symbol-cache.ts       # Symbol cache helpers, not wired into the review path
 ```
 
 ---
