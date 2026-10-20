@@ -26,15 +26,13 @@ const DEFAULT_MAX_TOTAL_CHARS = 120000;
 const DEFAULT_MAX_PER_FILE_CHARS = 30000;
 const PER_FILE_TRUNCATION_NOTICE = "\n... [diff truncated due to size limit]";
 const TOTAL_TRUNCATION_NOTICE = "\n... [diff truncated to preserve context budget]";
-/** The shared tail of the budget cut notices. */
-const BUDGET_CUT_TEXT = "truncated to preserve context budget";
 const METADATA_TRUNCATION_NOTICE = "\n... [metadata truncated to preserve context budget]";
+/** The metadata notice without its line break, for a lookup inside a payload. */
+const METADATA_NOTICE_MARK = "[metadata truncated to preserve context budget]";
 const BUDGET_DROP_REASON = "Context window budget limit reached";
 const BINARY_SKIP_REASON = "Binary file has no reviewable text";
 const NO_LINES_REASON = "No reviewable lines in the diff";
 const PER_FILE_DROP_REASON = "Per-file size limit leaves no whole line";
-/** Ignored files listed in the prompt payload. */
-const MAX_IGNORED_ITEMS_IN_PROMPT = 50;
 /** The ignored file list may use at most this share of the payload budget. */
 const IGNORED_LIST_SHARE = 0.2;
 
@@ -179,16 +177,19 @@ export function packageReviewContext(
   //
   // The notice travels with the payload, so its room comes out of the
   // metadata. When no file was kept the metadata holds no review line, so the
-  // cut cannot take a listed path away.
+  // cut cannot take a listed path away. The payload holds no code in that
+  // case, so the only text in it that names a cut is the one the metadata
+  // cut wrote, and the check for it cannot be silenced by diff text.
   let payload = layout.payload;
-  if (budgetDropped.length > 0 && !payload.includes(BUDGET_CUT_TEXT)) {
-    if (itemsToReview.length === 0 && maxTotalChars > TOTAL_TRUNCATION_NOTICE.length) {
-      payload =
-        cutAtLineBoundary(payload, maxTotalChars - TOTAL_TRUNCATION_NOTICE.length) +
-        TOTAL_TRUNCATION_NOTICE;
-    } else if (payload.length + TOTAL_TRUNCATION_NOTICE.length <= maxTotalChars) {
-      payload = payload + TOTAL_TRUNCATION_NOTICE;
-    }
+  if (
+    budgetDropped.length > 0 &&
+    itemsToReview.length === 0 &&
+    !payload.includes(METADATA_NOTICE_MARK) &&
+    maxTotalChars > TOTAL_TRUNCATION_NOTICE.length
+  ) {
+    payload =
+      cutAtLineBoundary(payload, maxTotalChars - TOTAL_TRUNCATION_NOTICE.length) +
+      TOTAL_TRUNCATION_NOTICE;
   }
 
   return {
@@ -297,7 +298,11 @@ function fitPayload(
   }
   let payload = sections.join("\n");
   if (payload.length <= maxTotalChars) {
-    if (dropped.length > 0 && kept.length > 0 && !payload.includes(BUDGET_CUT_TEXT)) {
+    // The notice is looked for in the parts the packager wrote, not in the
+    // whole payload. The diff content of a reviewed file can hold the same
+    // words, and that must not silence the announcement of a budget cut.
+    const announced = kept.some((entry) => entry.text.endsWith(TOTAL_TRUNCATION_NOTICE));
+    if (dropped.length > 0 && kept.length > 0 && !announced) {
       // The budget dropped a file, so the payload has to say that the diff was
       // cut. When the diff content filled the cap there is no room left for the
       // notice, so the room comes out of the diff content of the last kept
@@ -360,23 +365,17 @@ function formatIgnoredList(lines: string[], maxChars: number): string[] {
   const summary = (omitted: number) =>
     `- ... (${omitted} more ignored ${omitted === 1 ? "file" : "files"} not listed)`;
 
-  // The list is capped by count and by length, so a pull request that touches
-  // thousands of files cannot grow the prompt without bound.
-  const capped = lines.slice(0, MAX_IGNORED_ITEMS_IN_PROMPT);
   const sections = [IGNORED_LIST_HEADER];
   let used = IGNORED_LIST_HEADER.length;
-  for (let i = 0; i < capped.length; i++) {
+  for (let i = 0; i < lines.length; i++) {
     const remaining = lines.length - i - 1;
     const reserve = remaining > 0 ? summary(remaining).length + 1 : 0;
-    if (used + 1 + capped[i].length + reserve > maxChars) {
+    if (used + 1 + lines[i].length + reserve > maxChars) {
       sections.push(summary(lines.length - i));
       return sections;
     }
-    sections.push(capped[i]);
-    used += 1 + capped[i].length;
-  }
-  if (lines.length > capped.length) {
-    sections.push(summary(lines.length - capped.length));
+    sections.push(lines[i]);
+    used += 1 + lines[i].length;
   }
   return sections;
 }

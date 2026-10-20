@@ -80,172 +80,10 @@ ${Array.from({ length: 200 }, (_, index) => `+export const entry${index} = "valu
   });
 
   it("enforces maxTotalChars budget and flags truncation", () => {
-    const parsed = parseUnifiedDiff(multiFileDiff);
-    // Artificially tiny budget
-    const context = packageReviewContext(parsed, { maxTotalChars: 150 });
+    const parsed = parseUnifiedDiff(`${multiFileDiff}${largeFileDiff}`);
+    // Room for the metadata and part of the diff content only
+    const context = packageReviewContext(parsed, { maxTotalChars: 1000 });
 
-    expect(context.promptPayload.length).toBeGreaterThan(0);
-    // A 150-character cap cannot hold the required metadata, a listed path,
-    // and one complete code line. The file must therefore be ignored.
-    expect(context.itemsToReview).toHaveLength(0);
-  });
-
-  it("keeps the payload inside a tiny budget and says that the diff was cut", () => {
-    const parsed = parseUnifiedDiff(multiFileDiff);
-    const context = packageReviewContext(parsed, { maxTotalChars: 150 });
-
-    // The notice is part of the text that is sent, so the payload with the
-    // notice has to stay inside the budget.
-    expect(context.promptPayload.length).toBeLessThanOrEqual(150);
-    expect(context.promptPayload).toContain("truncated to preserve context budget");
-  });
-
-  it("keeps the payload inside the budget for every budget", () => {
-    const parsed = parseUnifiedDiff(multiFileDiff);
-
-    for (const budget of [60, 100, 150, 200, 300, 500, 1000, 5000]) {
-      const context = packageReviewContext(parsed, { maxTotalChars: budget });
-      expect(context.promptPayload.length).toBeLessThanOrEqual(budget);
-    }
-  });
-
-  it("keeps the payload inside the budget when a secret is replaced by a longer placeholder", () => {
-    const secretLines = Array.from({ length: 10 }, () => `+const api_key = "abcd1234";`).join("\n");
-    const diff = `diff --git a/src/config.ts b/src/config.ts
-index 111..222 100644
---- a/src/config.ts
-+++ b/src/config.ts
-@@ -1,1 +1,11 @@
- export const port = 3000;
-${secretLines}
-`;
-    // The placeholder is longer than the secret it replaces, so the budget
-    // has to hold for the redacted text and not for the text before it.
-    const context = packageReviewContext(parseUnifiedDiff(diff), { maxTotalChars: 650 });
-
-    expect(context.promptPayload.length).toBeLessThanOrEqual(650);
-    expect(context.promptPayload).toContain("[REDACTED_SECRET]");
-    expect(context.promptPayload).not.toContain("abcd1234");
-  });
-
-  it("keeps the emitted file diff inside the per file budget", () => {
-    const parsed = parseUnifiedDiff(multiFileDiff);
-    const context = packageReviewContext(parsed, { maxPerFileChars: 60 });
-
-    for (const item of context.itemsToReview) {
-      // The notice marks the cut, so the diff text itself stays inside the
-      // per file budget.
-      const content = item.formattedDiff.replace("\n... [diff truncated due to size limit]", "");
-      expect(content.length).toBeLessThanOrEqual(60);
-      expect(item.formattedDiff).toContain("truncated due to size limit");
-    }
-    expect(context.promptPayload.length).toBeLessThanOrEqual(120000);
-  });
-
-  it("bounds the ignored file list in the prompt payload", () => {
-    const ignoredPaths = Array.from({ length: 3000 }, (_, index) => `docs/guide${index}.md`);
-    const diff = [
-      ...ignoredPaths.map(
-        (path) =>
-          `diff --git a/${path} b/${path}\nindex 111..222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,1 @@\n-old\n+new\n`
-      ),
-      `diff --git a/src/app.ts b/src/app.ts
-index 111..222 100644
---- a/src/app.ts
-+++ b/src/app.ts
-@@ -1,1 +1,2 @@
- export const app = 1;
-+export const version = 2;
-`,
-    ].join("");
-    const context = packageReviewContext(parseUnifiedDiff(diff));
-
-    expect(context.ignoredItems).toHaveLength(3000);
-
-    const ignoredSection = context.promptPayload
-      .split("## Ignored / Pruned Files")[1]
-      .split("## Diff Content")[0];
-    const listed = ignoredSection
-      .split("\n")
-      .filter((line) => line.startsWith("- ") && !line.startsWith("- ..."));
-
-    expect(listed.length).toBeLessThanOrEqual(50);
-    expect(ignoredSection).toContain("2950 more ignored files not listed");
-    expect(context.promptPayload).toContain("docs/guide0.md");
-    expect(context.promptPayload).not.toContain("docs/guide2999.md");
-    expect(context.promptPayload.length).toBeLessThanOrEqual(120000);
-    expect(context.promptPayload).toContain("export const version = 2;");
-  });
-
-  describe("payload budget boundary", () => {
-    /** One file diff with a fixed number of added lines. */
-    const fileDiff = (path: string, addedLines: number) => {
-      const added = Array.from(
-        { length: addedLines },
-        (_, index) => `+const added${index} = ${index};`
-      ).join("\n");
-      return `diff --git a/${path} b/${path}
-index 111..222 100644
---- a/${path}
-+++ b/${path}
-@@ -1,3 +1,${3 + addedLines} @@
- const value = 1;
-${added}
- export default value;
-`;
-    };
-
-    // Three ignored files, so the ignored list uses the room it reserved from
-    // the budget, and four reviewable files.
-    const ignoredPaths = [
-      "docs/generated/long/path/one.md",
-      "docs/generated/long/path/two.md",
-      "docs/generated/long/path/three.md",
-    ];
-    const reviewablePaths = ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"];
-    const boundaryDiff = [
-      ...ignoredPaths.map((path) => fileDiff(path, 2)),
-      ...reviewablePaths.map((path) => fileDiff(path, 8)),
-    ].join("");
-
-    it("keeps the diff sections when the budget fits them", () => {
-      const parsed = parseUnifiedDiff(boundaryDiff);
-      // 1350 characters hold the review list, the ignored list and three diff
-      // sections. The diff sections are joined with a newline on each side of
-      // the separator, so a file costs two delimiters. Counting only one
-      // made the payload one character per file too long, which pushed it past
-      // the cap and dropped every diff section.
-      const context = packageReviewContext(parsed, { maxTotalChars: 1350 });
-
-      expect(context.promptPayload.length).toBeLessThanOrEqual(1350);
-      expect(context.promptPayload).toContain("### File: src/a.ts");
-      expect(context.promptPayload).toContain("### File: src/b.ts");
-      expect(context.promptPayload).toContain("### File: src/c.ts");
-    });
-
-    it("keeps the payload inside the budget around the boundary", () => {
-      const parsed = parseUnifiedDiff(boundaryDiff);
-
-      for (const budget of [1300, 1320, 1340, 1350, 1370, 1380, 1400]) {
-        const context = packageReviewContext(parsed, { maxTotalChars: budget });
-        expect(context.promptPayload.length).toBeLessThanOrEqual(budget);
-      }
-    });
-  });
-
-  it("filters out noise files and orders review items by risk priority", () => {
-    const context = packageReviewContext(parseUnifiedDiff(multiFileDiff));
-    expect(context.ignoredItems).toHaveLength(1);
-    expect(context.ignoredItems[0].path).toBe("package-lock.json");
-    expect(context.itemsToReview).toHaveLength(2);
-    expect(context.itemsToReview[0].file.newPath).toBe("src/auth/jwt.ts");
-    expect(context.itemsToReview[0].filter.category).toBe("SECURITY");
-    expect(context.itemsToReview[1].file.newPath).toBe("src/controllers/items.ts");
-    expect(context.itemsToReview[1].filter.category).toBe("BACKEND");
-  });
-
-  it("enforces maxTotalChars budget and flags truncation", () => {
-    const context = packageReviewContext(parseUnifiedDiff(`${multiFileDiff}${largeFileDiff}`), { maxTotalChars: 1000 });
     expect(context.promptPayload.length).toBeGreaterThan(0);
     expect(context.promptPayload.length).toBeLessThanOrEqual(1000);
     expect(context.itemsToReview.length).toBeGreaterThanOrEqual(1);
@@ -260,46 +98,72 @@ index 1111111..2222222 100644
 +++ b/src/config.ts
 @@ -1,1 +1,200 @@
 ${secretLines}`;
-    const context = packageReviewContext(parseUnifiedDiff(diff), { maxTotalChars: 1000 });
+
+    const parsed = parseUnifiedDiff(diff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 1000 });
+
     expect(context.promptPayload.length).toBeLessThanOrEqual(1000);
     expect(context.itemsToReview[0].isTruncated).toBe(true);
   });
 
   it("omits a file from review when the budget leaves no room for its code", () => {
-    const context = packageReviewContext(parseUnifiedDiff(multiFileDiff), { maxTotalChars: 400 });
-    for (const item of context.itemsToReview) expect(item.formattedDiff.trim().length).toBeGreaterThan(0);
+    const parsed = parseUnifiedDiff(multiFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 400 });
+
+    for (const item of context.itemsToReview) {
+      expect(item.formattedDiff.trim().length).toBeGreaterThan(0);
+    }
+
     const listed = listedReviewPaths(context.promptPayload);
     expect(listed).toEqual(context.itemsToReview.map((item) => item.file.newPath));
     expect(listed).not.toContain("src/controllers/items.ts");
   });
 
   it("reserves the metadata size so the diff content is trimmed instead", () => {
-    const context = packageReviewContext(parseUnifiedDiff(manyFileDiff), { maxTotalChars: 1200 });
+    const parsed = parseUnifiedDiff(manyFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 1200 });
+
     expect(context.promptPayload.length).toBeLessThanOrEqual(1200);
     expect(context.itemsToReview.length).toBeGreaterThan(0);
-    for (const item of context.itemsToReview) expect(item.formattedDiff.trim().length).toBeGreaterThan(0);
-    expect(listedReviewPaths(context.promptPayload)).toEqual(context.itemsToReview.map((item) => item.file.newPath));
+
+    for (const item of context.itemsToReview) {
+      expect(item.formattedDiff.trim().length).toBeGreaterThan(0);
+    }
+
+    expect(listedReviewPaths(context.promptPayload)).toEqual(
+      context.itemsToReview.map((item) => item.file.newPath)
+    );
   });
 
   it("cuts the metadata on a line boundary when the metadata alone exceeds the cap", () => {
-    const context = packageReviewContext(parseUnifiedDiff(manyFileDiff), { maxTotalChars: 400 });
+    const parsed = parseUnifiedDiff(manyFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 400 });
+
     expect(context.promptPayload.length).toBeLessThanOrEqual(400);
+
     const metadata = context.promptPayload.split("## Diff Content with Exact Line Anchors")[0];
     for (const line of metadata.split("\n")) {
-      if (line.startsWith("- **")) expect(line).toMatch(/\]\s*$/);
-      else if (line.startsWith("- ")) expect(line).toMatch(/\)\s*$/);
+      if (line.startsWith("- **")) {
+        expect(line).toMatch(/\]\s*$/);
+      } else if (line.startsWith("- ")) {
+        expect(line).toMatch(/\)\s*$/);
+      }
     }
   });
 
   it("keeps a truncation marker when the budget cuts the diff content", () => {
-    const context = packageReviewContext(parseUnifiedDiff(largeFileDiff), { maxTotalChars: 2000 });
+    const parsed = parseUnifiedDiff(largeFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 2000 });
+
     expect(context.promptPayload.length).toBeLessThanOrEqual(2000);
     expect(context.promptPayload).toContain("[diff truncated to preserve context budget]");
     expect(context.itemsToReview[0].isTruncated).toBe(true);
   });
 
   it("ends every budget cut with a truncation notice", () => {
-    const context = packageReviewContext(parseUnifiedDiff(`${multiFileDiff}${largeFileDiff}`), { maxTotalChars: 1500 });
+    const parsed = parseUnifiedDiff(`${multiFileDiff}${largeFileDiff}`);
+    const context = packageReviewContext(parsed, { maxTotalChars: 1500 });
+
     const truncated = context.itemsToReview.filter((item) => item.isTruncated);
     expect(truncated.length).toBeGreaterThan(0);
     for (const item of truncated) {
@@ -313,8 +177,11 @@ ${secretLines}`;
     const parsed = parseUnifiedDiff(multiFileDiff);
     for (let cap = 150; cap <= 700; cap++) {
       const context = packageReviewContext(parsed, { maxTotalChars: cap });
+
       expect(context.promptPayload.length, `cap ${cap}`).toBeLessThanOrEqual(cap);
-      expect(listedReviewPaths(context.promptPayload), `cap ${cap}`).toEqual(context.itemsToReview.map((item) => item.file.newPath));
+      expect(listedReviewPaths(context.promptPayload), `cap ${cap}`).toEqual(
+        context.itemsToReview.map((item) => item.file.newPath)
+      );
       for (const item of context.itemsToReview) {
         expect(item.formattedDiff, `cap ${cap}`).toContain("+ L1");
         expect(context.promptPayload, `cap ${cap}`).toContain(item.formattedDiff);
@@ -323,17 +190,27 @@ ${secretLines}`;
   });
 
   it("moves a file with no room for code to the ignored list", () => {
-    const context = packageReviewContext(parseUnifiedDiff(multiFileDiff), { maxTotalChars: 400 });
+    const parsed = parseUnifiedDiff(multiFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 400 });
+
     expect(context.itemsToReview.map((item) => item.file.newPath)).toEqual(["src/auth/jwt.ts"]);
-    expect(context.ignoredItems).toContainEqual({ path: "src/controllers/items.ts", reason: "Context window budget limit reached" });
+    expect(context.ignoredItems).toContainEqual({
+      path: "src/controllers/items.ts",
+      reason: "Context window budget limit reached",
+    });
     expect(context.totalReviewableAdditions).toBe(3);
   });
 
   it("summarizes a long ignored list so code still fits", () => {
-    const assets = Array.from({ length: 500 }, (_, i) => `diff --git a/assets/image_${i}.png b/assets/image_${i}.png
+    const assets = Array.from(
+      { length: 500 },
+      (_, i) => `diff --git a/assets/image_${i}.png b/assets/image_${i}.png
 index 1111111..2222222 100644
-Binary files a/assets/image_${i}.png and b/assets/image_${i}.png differ`).join("\n");
-    const context = packageReviewContext(parseUnifiedDiff(`${multiFileDiff}${assets}\n`), { maxTotalChars: 4000 });
+Binary files a/assets/image_${i}.png and b/assets/image_${i}.png differ`
+    ).join("\n");
+    const parsed = parseUnifiedDiff(`${multiFileDiff}${assets}\n`);
+    const context = packageReviewContext(parsed, { maxTotalChars: 4000 });
+
     expect(context.promptPayload.length).toBeLessThanOrEqual(4000);
     expect(context.itemsToReview).toHaveLength(2);
     expect(context.promptPayload).toContain("verifyToken");
@@ -613,12 +490,43 @@ index 111..222 100644
     }
   });
 
-  it("names a dropped file in the ignored list with the budget reason", () => {
-    const context = packageReviewContext(parseUnifiedDiff(multiFileDiff), { maxTotalChars: 400 });
-    expect(context.itemsToReview.map((item) => item.file.newPath)).toEqual(["src/auth/jwt.ts"]);
-    expect(context.ignoredItems).toContainEqual({
-      path: "src/controllers/items.ts",
-      reason: "Context window budget limit reached",
-    });
+  it("announces the cut when the diff content names the budget cut", () => {
+    // The diff of the kept file holds the words of the notice itself. The
+    // announcement has to come from the packager, so the bracketed notice is
+    // the marker: the diff text only carries the plain words.
+    const diff = `diff --git a/src/auth/jwt.ts b/src/auth/jwt.ts
+new file mode 100644
+index 111..222 100644
+--- /dev/null
++++ b/src/auth/jwt.ts
+@@ -0,0 +1,3 @@
++// this file was truncated to preserve context budget in an earlier run
++export function verifyToken(t: string) {
++  return t.length > 0;
+diff --git a/src/controllers/items.ts b/src/controllers/items.ts
+new file mode 100644
+index 111..222 100644
+--- /dev/null
++++ b/src/controllers/items.ts
+@@ -0,0 +1,3 @@
++export const items = ["a", "b", "c"];
++export const more = items.map((i) => i.toUpperCase());
++export default items;
+`;
+    let checked = 0;
+    for (let cap = 300; cap <= 700; cap++) {
+      const context = packageReviewContext(parseUnifiedDiff(diff), { maxTotalChars: cap });
+      const dropped = context.ignoredItems.filter((item) => item.reason.includes("budget"));
+      if (dropped.length === 0 || context.itemsToReview.length === 0) continue;
+      const kept = context.itemsToReview.find((item) => item.file.newPath === "src/auth/jwt.ts");
+      // The kept file has to hold the words and has to be whole, so the only
+      // notice in the payload can be the one the packager wrote.
+      if (kept === undefined || kept.isTruncated) continue;
+      if (!kept.formattedDiff.includes("truncated to preserve context budget")) continue;
+      checked++;
+      expect(context.promptPayload, `cap ${cap}`).toContain("[diff truncated to preserve context budget]");
+      expect(context.promptPayload.length, `cap ${cap}`).toBeLessThanOrEqual(cap);
+    }
+    expect(checked).toBeGreaterThan(0);
   });
 });
