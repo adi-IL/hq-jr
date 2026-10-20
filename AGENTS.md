@@ -6,14 +6,15 @@ hq-jr is a self-hosted GitHub App that reviews pull requests. This file is an in
 
 The daily procedure is `.agents/skills/daily-maintenance/SKILL.md`.
 
-- `npm test`
 - `npm run typecheck`
+- `npm test`
+- `npm run build`
 - `node scripts/check-doc-drift.mjs`
 - `node scripts/check-doc-code-sanity.mjs`
 - `node scripts/check-package-contents.mjs`
 - `node scripts/check-agents-files.mjs`
 
-`package.json` holds the npm scripts. Node is `>=22.12.0`. `CONTRIBUTING.md` is the same list for a human.
+`package.json` holds the npm scripts. Node is `>=22.12.0`. `CONTRIBUTING.md` is the human pre-PR checklist. It also asks for a secret-diff check.
 
 ## Boundaries
 
@@ -21,13 +22,13 @@ Release stops are in `.agents/skills/release-guard/SKILL.md`.
 
 Review stops are in `.agents/skills/review-loop/SKILL.md`.
 
-Do not run `scripts/bump-version.mjs` or push a `v*` tag unless the operator asked in this turn. That tag runs `.github/workflows/release.yml`.
+Do not run `scripts/bump-version.mjs`, push a `v*` tag, or run `npm publish` unless the operator asked in this turn. That tag runs `.github/workflows/release.yml`.
 
 Do not SSH to a deploy host. `deploy/README.md` is the host procedure for a person.
 
 Do not print `.env`, private keys, webhook secrets, or ADC files. `SECURITY.md` is the policy. `.env.example` is the empty template.
 
-Do not edit `dist/`. It is build output.
+Do not edit `dist` (build output).
 
 Do not merge while `.github/workflows/ci.yml` is red.
 

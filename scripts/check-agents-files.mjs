@@ -8,7 +8,7 @@
  * .env, and a secret match is reported by pattern name only.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const LINE_BUDGET = 120;
@@ -53,6 +53,26 @@ export function backtickPaths(text) {
   return found;
 }
 
+/** Pattern name when `value` looks like a secret. Otherwise null. */
+function secretName(value) {
+  for (const { name, pattern } of SECRET_PATTERNS) {
+    if (pattern.test(value)) return name;
+  }
+  return null;
+}
+
+/**
+ * Absolute path when `rel` stays inside `root` after normalization.
+ * A `../` path that leaves the repo returns null.
+ */
+function pathInside(root, rel) {
+  const base = resolve(root);
+  const abs = resolve(base, rel);
+  const fromRoot = relative(base, abs);
+  if (fromRoot.startsWith("..") || isAbsolute(fromRoot)) return null;
+  return abs;
+}
+
 /**
  * @param {string} root directory that holds AGENTS.md
  * @returns {{ ok: boolean, problems: string[] }}
@@ -84,8 +104,22 @@ export function checkAgentsFiles(root) {
   }
 
   for (const rel of backtickPaths(text)) {
-    if (!existsSync(join(root, rel))) {
-      problems.push(`AGENTS.md links ${rel}, which does not exist`);
+    const leaked = secretName(rel);
+    const abs = pathInside(root, rel);
+    if (abs === null) {
+      problems.push(
+        leaked
+          ? `AGENTS.md links a path that matches secret pattern ${leaked}`
+          : `AGENTS.md links ${rel}, which leaves the repository`,
+      );
+      continue;
+    }
+    if (!existsSync(abs)) {
+      problems.push(
+        leaked
+          ? `AGENTS.md links a path that matches secret pattern ${leaked}`
+          : `AGENTS.md links ${rel}, which does not exist`,
+      );
     }
   }
 
