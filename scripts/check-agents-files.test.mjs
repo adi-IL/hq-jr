@@ -103,10 +103,82 @@ const cases = [
         const result = checkAgentsFiles(root);
         if (result.ok) throw new Error("expected a failure");
         const text = result.problems.join("\n");
-        if (!text.includes("ghp_")) throw new Error(`expected the pattern name in ${text}`);
         if (text.includes(token)) throw new Error("the token was printed");
+        if (text !== "AGENTS.md matches secret pattern ghp_") {
+          throw new Error(`expected the pattern-only diagnostic, got ${text}`);
+        }
       } finally {
         rmSync(root, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "fails on AKIA, github_pat_, and BEGIN PRIVATE KEY by name only",
+    run() {
+      const samples = [
+        ["AKIA", "AKIAaaaaaaaaaaaaaaaa", "AKIAaaaaaaaaaaaaaaaa"],
+        ["github_pat_", "github_pat_aaaaaaaaaaaaaaaa", "github_pat_aaaaaaaaaaaaaaaa"],
+        ["BEGIN PRIVATE KEY", "BEGIN PRIVATE KEY\nfake-body", "fake-body"],
+      ];
+      for (const [name, sample, marker] of samples) {
+        const root = tree();
+        try {
+          writeSkills(root);
+          const lines = validBody();
+          lines.push(sample);
+          writeFileSync(join(root, "AGENTS.md"), agents(lines));
+          const result = checkAgentsFiles(root);
+          const text = result.problems.join("\n");
+          if (text.includes(marker)) throw new Error("a sample was printed");
+          if (text !== `AGENTS.md matches secret pattern ${name}`) {
+            throw new Error(`expected only ${name}, got ${text}`);
+          }
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      }
+    },
+  },
+  {
+    name: "does not print a secret-shaped missing path",
+    run() {
+      const root = tree();
+      const token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+      try {
+        writeSkills(root);
+        const lines = validBody();
+        lines.push(`See \`notes/${token}\`.`);
+        writeFileSync(join(root, "AGENTS.md"), agents(lines));
+        const result = checkAgentsFiles(root);
+        const text = result.problems.join("\n");
+        if (text.includes(token)) throw new Error("the token was printed");
+        if (!result.problems.includes("AGENTS.md links a path that matches secret pattern ghp_")) {
+          throw new Error("expected a pattern-only path diagnostic");
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  },
+  {
+    name: "fails when a backtick path leaves the repository",
+    run() {
+      const parent = tree();
+      const root = join(parent, "repo");
+      try {
+        mkdirSync(root);
+        writeFileSync(join(parent, "outside.md"), "outside\n");
+        writeSkills(root);
+        const lines = validBody();
+        lines.push("See `../outside.md`.");
+        writeFileSync(join(root, "AGENTS.md"), agents(lines));
+        const result = checkAgentsFiles(root);
+        if (result.ok) throw new Error("expected a failure");
+        if (!result.problems.some((p) => p.includes("leaves the repository"))) {
+          throw new Error(`expected an escape diagnostic in ${result.problems}`);
+        }
+      } finally {
+        rmSync(parent, { recursive: true, force: true });
       }
     },
   },
