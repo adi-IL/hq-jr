@@ -21,28 +21,47 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
-      - name: Checkout tagged commit
+      # The tag is read here, and the commit it names is resolved and verified
+      # below. No other job checks out the tag itself.
+      - name: Checkout the tag
         uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
 
-      - name: Resolve version from tag
+      - name: Resolve the tagged commit and check the version
         id: version
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Tag '$tag' is not a vMAJOR.MINOR.PATCH tag. Release tags look like v0.1.9."
+          set -euo pipefail
+          tag="$TAG"
+          # The tag is a mutable ref: anyone can move it while this workflow is
+          # queued or running. Resolve it to the commit it names here, once, and
+          # check out that commit in every later job, so the tarball and the
+          # provenance attestation always describe the same commit.
+          if ! git show-ref --verify --quiet "refs/tags/$tag"; then
+            git fetch --force --no-tags origin "refs/tags/$tag:refs/tags/$tag"
+          fi
+          if ! sha="$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")"; then
+            echo "::error::Could not resolve tag '$tag' to a commit."
             exit 1
           fi
-          version="${tag#v}"
-          pkg_version="$(node -p "require('./package.json').version")"
-          if [ "$version" != "$pkg_version" ]; then
-            echo "::error::Tag '$tag' does not match the package.json version '$pkg_version'. The tag is the release version, so package.json must already carry $version before the tag is pushed."
+          # The release event names the commit the tag pointed at when it was
+          # pushed. A tag that moved before this job started is not this release.
+          event_sha="$(git rev-parse --verify --quiet "${GITHUB_SHA}^{commit}" || printf '%s' "$GITHUB_SHA")"
+          if [ "$sha" != "$event_sha" ]; then
+            echo "::error::Tag '$tag' points at $sha, but this release was started for $event_sha. The tag was moved. Push a new tag instead of moving this one."
             exit 1
           fi
+          # The version check reads the package.json of the commit the tag
+          # names, so it checks what the release actually contains.
+          pkg_version="$(git show "${sha}:package.json" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version")"
+          version="$(node scripts/bump-version.mjs --check-release-version "$tag" "$pkg_version")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Releasing $version from $tag at ${GITHUB_SHA}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version from $tag at $sha"
 
   verify:
     name: Test and pack
@@ -55,10 +74,10 @@ jobs:
       name: ${{ steps.pack.outputs.name }}
       tarball: ${{ steps.pack.outputs.tarball }}
     steps:
-      - name: Checkout tagged commit
+      - name: Checkout the released commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v7
@@ -122,13 +141,13 @@ jobs:
       id-token: write
     steps:
       # npm builds the provenance attestation from the source repository, so the
-      # publishing job needs a git checkout of the tagged commit even though it
-      # runs nothing from the repository: there is no install, build or test
+      # publishing job needs a git checkout of the released commit even though
+      # it runs nothing from the repository: there is no install, build or test
       # step here, and the job token is not persisted into .git/config.
-      - name: Checkout tagged commit for provenance
+      - name: Checkout the released commit for provenance
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
           persist-credentials: false
 
       - name: Setup Node.js 22.x
@@ -143,6 +162,39 @@ jobs:
           name: npm-package
           # The tarball is downloaded outside the checkout, so the working tree stays clean.
           path: ${{ runner.temp }}/npm-package
+
+      # The tag is a mutable ref, so it can be moved while this workflow runs.
+      # Every job checked out the commit the tag named when the release started,
+      # so a moved tag means the published version would name a commit this
+      # release did not build. The release stops instead of publishing it.
+      - name: Verify the tag still names the released commit
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          if ! remote="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")"; then
+            echo "::error::Could not read tag '$TAG' from origin."
+            exit 1
+          fi
+          # An annotated tag lists the tag object and the commit it points at.
+          # A lightweight tag only lists the commit.
+          current="$(printf '%s\n' "$remote" | awk -v ref="refs/tags/$TAG" '$2 == ref "^{}" {print $1}')"
+          if [ -z "$current" ]; then
+            current="$(printf '%s\n' "$remote" | awk -v ref="refs/tags/$TAG" '$2 == ref {print $1}')"
+          fi
+          if [ -z "$current" ]; then
+            echo "::error::Tag '$TAG' is not on origin."
+            exit 1
+          fi
+          if [ "$current" != "$SHA" ]; then
+            echo "::error::Tag '$TAG' now points at $current, but this release was built from $SHA. The tag was moved while the release was running. Push a new tag instead of moving this one."
+            exit 1
+          fi
+          echo "Tag $TAG still points at $SHA"
 
       - name: Publish to npm
         env:
@@ -203,10 +255,10 @@ jobs:
       REGISTRY: ghcr.io
       IMAGE_NAME: adi-il/hq-jr
     steps:
-      - name: Checkout tagged commit
+      - name: Checkout the released commit
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
 
       # Only the highest release tag moves `latest`, so re-running or delaying an
       # older tag never points `latest` back at an older image. The check runs in
@@ -255,6 +307,38 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The tag is a mutable ref, so it can be moved while this workflow runs.
+      # The image carries the release version, so a moved tag means the pushed
+      # image would name a commit this release did not build.
+      - name: Verify the tag still names the released commit
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          if ! remote="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")"; then
+            echo "::error::Could not read tag '$TAG' from origin."
+            exit 1
+          fi
+          # An annotated tag lists the tag object and the commit it points at.
+          # A lightweight tag only lists the commit.
+          current="$(printf '%s\n' "$remote" | awk -v ref="refs/tags/$TAG" '$2 == ref "^{}" {print $1}')"
+          if [ -z "$current" ]; then
+            current="$(printf '%s\n' "$remote" | awk -v ref="refs/tags/$TAG" '$2 == ref {print $1}')"
+          fi
+          if [ -z "$current" ]; then
+            echo "::error::Tag '$TAG' is not on origin."
+            exit 1
+          fi
+          if [ "$current" != "$SHA" ]; then
+            echo "::error::Tag '$TAG' now points at $current, but this release was built from $SHA. The tag was moved while the release was running. Push a new tag instead of moving this one."
+            exit 1
+          fi
+          echo "Tag $TAG still points at $SHA"
 
       - name: Build and push image
         uses: docker/build-push-action@v7

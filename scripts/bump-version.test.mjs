@@ -5,9 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assertReleaseVersion,
   assertSameRepository,
   computeNextVersion,
   githubRepositorySlug,
+  parseReleaseTag,
   pickLastLine,
   pickNpmLatest,
   remoteTagExists,
@@ -34,6 +36,37 @@ describe("computeNextVersion", () => {
   });
 });
 
+describe("parseReleaseTag", () => {
+  it("reads the version a release tag names", () => {
+    expect(parseReleaseTag("v0.1.9")).toBe("0.1.9");
+    expect(parseReleaseTag(" v1.2.3 ")).toBe("1.2.3");
+  });
+
+  it("rejects tags that are not a plain release version", () => {
+    expect(parseReleaseTag("v0.1")).toBeNull();
+    expect(parseReleaseTag("v0.1.9-rc.1")).toBeNull();
+    expect(parseReleaseTag("0.1.9")).toBeNull();
+    expect(parseReleaseTag("release")).toBeNull();
+    expect(parseReleaseTag(undefined)).toBeNull();
+  });
+});
+
+describe("assertReleaseVersion", () => {
+  it("returns the version when the tag names the package version", () => {
+    expect(assertReleaseVersion("v0.1.9", "0.1.9")).toBe("0.1.9");
+  });
+
+  it("fails when the tag does not name the package version", () => {
+    expect(() => assertReleaseVersion("v0.1.9", "0.1.8")).toThrow(
+      /does not match the package.json version '0.1.8'/
+    );
+  });
+
+  it("fails when the tag is not a release tag", () => {
+    expect(() => assertReleaseVersion("v0.1", "0.1.9")).toThrow(/is not a vMAJOR.MINOR.PATCH tag/);
+  });
+});
+
 describe("pickNpmLatest", () => {
   it("returns null for empty output and the highest version otherwise", () => {
     expect(pickNpmLatest("\n")).toBeNull();
@@ -45,6 +78,12 @@ describe("pickNpmLatest", () => {
     expect(pickNpmLatest("'0.1.9'\n")).toBe("0.1.9");
     expect(pickNpmLatest('"0.1.9"\n')).toBe("0.1.9");
     expect(pickNpmLatest("`0.1.9`\n")).toBe("0.1.9");
+  });
+
+  it("reads a quoted value the same way the repository reader does", () => {
+    for (const quoted of ["'0.1.9'", '"0.1.9"', "`0.1.9`"]) {
+      expect(pickNpmLatest(`${quoted}\n`)).toBe(pickLastLine(`${quoted}\n`));
+    }
   });
 });
 
@@ -281,6 +320,21 @@ describe.skipIf(process.platform === "win32")("bump-version.mjs end to end", () 
     expect(git(["status", "--porcelain"]).trim()).toBe("");
   });
 
+  it("checks the release tag against the package version", () => {
+    const { bump } = setup();
+    const matching = bump("--check-release-version", "v0.1.9", "0.1.9");
+    expect(matching.status).toBe(0);
+    expect(matching.stdout.trim()).toBe("0.1.9");
+
+    const mismatched = bump("--check-release-version", "v0.1.9", "0.1.8");
+    expect(mismatched.status).toBe(1);
+    expect(mismatched.stderr).toMatch(/does not match the package.json version '0.1.8'/);
+
+    const notAReleaseTag = bump("--check-release-version", "v0.1", "0.1.9");
+    expect(notAReleaseTag.status).toBe(1);
+    expect(notAReleaseTag.stderr).toMatch(/is not a vMAJOR.MINOR.PATCH tag/);
+  });
+
   it("stops when origin cannot be read instead of assuming the tag is free", () => {
     const { git, bump } = setup({ origin: "/nonexistent/hq-jr-origin.git" });
     const result = bump();
@@ -388,9 +442,15 @@ describe.skipIf(process.platform === "win32")("bump-version.mjs end to end", () 
 
 describe("release workflow", () => {
   const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const prepareJob = workflow.slice(workflow.indexOf("  prepare:"), workflow.indexOf("  verify:"));
+  const laterJobs = workflow.slice(workflow.indexOf("  verify:"));
   const publishJob = workflow.slice(
     workflow.indexOf("  publish-npm:"),
     workflow.indexOf("  publish-image:")
+  );
+  const imageJob = workflow.slice(
+    workflow.indexOf("  publish-image:"),
+    workflow.indexOf("  create-release:")
   );
   const dirs = [];
 
@@ -400,7 +460,9 @@ describe("release workflow", () => {
 
   /** The shell script of the publish step, taken from the workflow file. */
   function publishScript() {
-    const lines = publishJob.slice(publishJob.indexOf("        run: |")).split("\n").slice(1);
+    // The publish step is not the first step of the job, so start at its name.
+    const step = publishJob.slice(publishJob.indexOf("- name: Publish to npm"));
+    const lines = step.slice(step.indexOf("        run: |")).split("\n").slice(1);
     const script = [];
     for (const line of lines) {
       if (line.trim() && !line.startsWith("          ")) break;
@@ -476,6 +538,30 @@ describe("release workflow", () => {
 
   it("keeps the checkout that the provenance attestation needs", () => {
     expect(publishJob).toContain("uses: actions/checkout@v7");
+  });
+
+  it("resolves the tag to a commit once and exposes it", () => {
+    expect(prepareJob).toContain("sha: ${{ steps.version.outputs.sha }}");
+    expect(prepareJob).toContain('git rev-parse --verify --quiet "refs/tags/$tag^{commit}"');
+    expect(prepareJob).toContain('echo "sha=$sha" >> "$GITHUB_OUTPUT"');
+  });
+
+  it("checks out the resolved commit in every job that builds or publishes", () => {
+    expect(laterJobs).not.toContain("ref: ${{ github.ref }}");
+    expect(laterJobs.match(/ref: \$\{\{ needs\.prepare\.outputs\.sha \}\}/g)).toHaveLength(3);
+  });
+
+  it("checks the version against the package.json of the resolved commit", () => {
+    expect(prepareJob).toContain('git show "${sha}:package.json"');
+    expect(prepareJob).toContain("--check-release-version");
+  });
+
+  it("stops the release when the tag no longer names the released commit", () => {
+    for (const job of [publishJob, imageJob]) {
+      expect(job).toContain("Verify the tag still names the released commit");
+      expect(job).toContain('ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}"');
+      expect(job).toContain('if [ "$current" != "$SHA" ]; then');
+    }
   });
 
   // The publish step is a shell script, so it runs against a fake npm.
