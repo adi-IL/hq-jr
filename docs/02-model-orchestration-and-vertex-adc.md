@@ -83,7 +83,7 @@ The system splits operational responsibilities according to capabilities: direct
 - **Availability.** Model id `gemini-4-argon`, GA since 2026-10-13, served from the `global` location that is the default `GOOGLE_CLOUD_LOCATION`. Supports structured output (`responseMimeType` plus `responseSchema`), system instructions, and thinking levels `LOW`, `MEDIUM`, `HIGH`. It rejects `thinking_budget` and `thinking_level: MINIMAL` with HTTP 400, so hq-jr only ever sends `thinkingLevel: HIGH`.
 - **Limits.** Unified context window of 1,048,576 tokens, maximum 65,536 output tokens for one synchronous request.
 - **Cost.** Global PayGo is 2 USD per 1M input tokens and 10 USD per 1M output tokens through 2026-11-30, then 4 in and 20 out from 2026-12-01. Gemini 3.8 Flash is 0.75 in and 3.75 out through 2026-12-31. Argon is therefore roughly **2.7x Flash per token**, which is why it is gated behind a risk threshold instead of being the default Tier 2.
-- **Fail soft.** If the escalated call throws (model not enabled for the project, quota exhausted, upstream error), hq-jr retries the deep review once on `HQ_JR_MODEL_TIER2` and logs a warning. A model access or quota failure on the escalation model never fails the whole review.
+- **Fail soft.** If the escalated call throws (model not enabled for the project, quota exhausted, upstream error), hq-jr retries the deep review once on `HQ_JR_MODEL_TIER2` and logs a warning. A model access or quota failure on the escalation model does not fail the whole review on its own. If the Tier 2 retry also fails, the review fails, and that is reported rather than masked.
 
 ### Tier 3: Antigravity Managed Agent (`antigravity-preview-05-2026`)
 
