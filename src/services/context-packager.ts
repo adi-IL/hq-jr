@@ -33,12 +33,10 @@ const BUDGET_DROP_REASON = "Context window budget limit reached";
 const BINARY_SKIP_REASON = "Binary file has no reviewable text";
 const NO_LINES_REASON = "No reviewable lines in the diff";
 const PER_FILE_DROP_REASON = "Per-file size limit leaves no whole line";
+/** Ignored files listed in the prompt payload. */
+const MAX_IGNORED_ITEMS_IN_PROMPT = 50;
 /** The ignored file list may use at most this share of the payload budget. */
-/** Ignored files listed in the prompt payload. */
-const MAX_IGNORED_ITEMS_IN_PROMPT = 50;
 const IGNORED_LIST_SHARE = 0.2;
-/** Ignored files listed in the prompt payload. */
-const MAX_IGNORED_ITEMS_IN_PROMPT = 50;
 
 const REVIEW_LIST_HEADER = "## Files Under Review (Ranked by Risk)";
 const IGNORED_LIST_HEADER = "\n## Ignored / Pruned Files";
