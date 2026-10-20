@@ -81,6 +81,7 @@ The context packager scrubs packaged diff and file text before it is sent to Ver
 - Matches private keys, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), Google `AIza` API keys, AWS access key IDs and secret-key assignments, Slack `xox[baprs]` tokens, JWTs, OpenAI/Anthropic `sk-` tokens, and generic `password` / `secret` / `api_key` / `access_token` assignments with fixed regular expressions. It does not use entropy scoring.
 - Replaces matches with `[REDACTED_SECRET]` placeholders.
 - Scrubs the PR title and body before interpolation, then labels them as untrusted metadata in the prompt. Tier 3 clones the repository directly and does not use this scrubber.
+- Escapes the untrusted wrapper tags (`<untrusted_pr_metadata>`, `<untrusted_context>`, `<untrusted_diff>`) in the PR title, body, file list, and diff payload. Without this, a PR body containing a closing tag would end the untrusted region early and place the remaining content outside it. The escape is applied to the PR title, body, author, file list and diff payload that reach the review and triage prompts. The remediation prompt interpolates the file path and the file body into its own wrapper and is not covered by this escape.
 
 ### 3. Role-Based Access Control (RBAC) on Privileged Commands
 For automated remediation and privileged actions (`@hq-jr fix`, `patch`, `remediate`, optional `and merge`, `commit-repro`, merge-only commands, and check-run action buttons):
@@ -94,5 +95,5 @@ For automated remediation and privileged actions (`@hq-jr fix`, `patch`, `remedi
 - The bot only replies without a mention when hq-jr authored the thread root. Being a later participant is not enough, so human-to-human peer reviews stay quiet.
 
 ### 5. Memory Management and Denial-of-Service Defense
-- In-flight reviews are gated via SQLite `active_runs` (`acquireRunLock` / `releaseRunLock`) inside `try ... finally` so concurrent webhooks for the same PR/SHA do not double-run.
+- In-flight reviews are gated via SQLite `active_runs` (`acquireRunLock` / `releaseRunLock`) inside `try ... finally` so concurrent webhooks for the same pull request do not double-run. The lock key is `owner/repo#pullNumber`, not the head SHA, so a webhook that arrives while the lock is held is dropped with a warning instead of queued.
 - Historical remediation commit hashes are stored in SQLite `remediation_commits` (pruned retention) so they survive process restarts and stay bounded.

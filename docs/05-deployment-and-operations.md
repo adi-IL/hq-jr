@@ -127,6 +127,7 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 
    ```bash
    sudo install -d -o 1001 -g 1001 /opt/hq-jr/data
+   sudo chown -R 1001:1001 /opt/hq-jr/data
    ```
 
 4. Stage ADC. The container runs as uid `1001` and only needs the ADC JSON file:
@@ -305,7 +306,7 @@ Cloud Run caveats:
    npm start
    ```
 
-   `npm start` runs `probot run ./dist/index.js`. The `npm run dev` script only watches `src/index.ts`; it does not start the Probot server.
+   `npm start` runs `probot run ./dist/index.js`. The `npm run dev` script watches `src/index.ts` and its imports; it does not start the Probot server.
 
 4. Authenticate to Vertex AI with host ADC:
 
@@ -339,10 +340,16 @@ Defaults come from `src/config.ts`. The Docker image also sets `NODE_ENV=product
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional | none | Path to an ADC JSON file. Not needed on GCE with a scoped service account. |
 | `HQ_JR_MODEL_TIER1` | Optional | `gemini-3.8-flash` | Triage model. |
 | `HQ_JR_MODEL_TIER2` | Optional | `gemini-3.8-flash` | Deep review model. |
+| `HQ_JR_MODEL_ESCALATION` | Optional | `gemini-4-argon` | Deep review model used when the triage risk reaches the escalation threshold. |
+| `HQ_JR_ESCALATION_MIN_RISK` | Optional | `HIGH` | Triage overall risk at or above this level escalates the deep review. One of `LOW`, `MEDIUM`, `HIGH`. |
+| `HQ_JR_MODEL_DISCUSSION` | Optional | `gemini-3.8-flash` | Model for replies in PR discussion threads. |
+| `HQ_JR_MODEL_REMEDIATION` | Optional | `gemini-3.8-flash` | Model for remediation synthesis. |
+| `HQ_JR_MODEL_HEALTH` | Optional | `gemini-3.8-flash` | Model for the Vertex AI connectivity probe. |
+| `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | Optional | `32768` | Output token cap for a call that runs on `HQ_JR_MODEL_ESCALATION`. Triage, discussion, remediation and health calls are never capped. |
 | `HQ_JR_AGENT_TIER3` | Optional | `antigravity-preview-05-2026` | Tier 3 sandbox agent. |
+| `PORT` | Optional | `3000` | HTTP listen port. |
 | `HQ_JR_AI_TIMEOUT_MS` | Optional | `900000` | HTTP timeout for Vertex AI requests, in milliseconds. |
 | `HQ_JR_DB_PATH` | Optional | `./data/hq-jr.db` | SQLite database path. The image uses `/app/data/hq-jr.db`. |
-| `PORT` | Optional | `3000` | HTTP listen port. |
 | `NODE_ENV` | Optional | `development` | `development`, `production`, or `test`. Compose sets `production`. |
 | `LOG_LEVEL` | Optional | `info` | `trace`, `debug`, `info`, `warn`, or `error`. |
 | `HOST` | Optional | none | Bind address read by Probot. Compose sets `0.0.0.0`; the `.env` may keep `127.0.0.1`. |

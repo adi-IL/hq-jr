@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Gemini 4 Argon escalation tier. A high-risk triage result routes the deep review to `gemini-4-argon` (`HQ_JR_MODEL_ESCALATION`) instead of `gemini-3.8-flash`. The gate is `HQ_JR_ESCALATION_MIN_RISK`, default `HIGH`. Argon costs roughly 2.7x Flash per token, so it stays off low-risk changes.
+- Per-workload model routing. Triage, deep review, escalation, discussion replies, remediation synthesis, and the health probe each read their own variable (`HQ_JR_MODEL_TIER1`, `HQ_JR_MODEL_TIER2`, `HQ_JR_MODEL_ESCALATION`, `HQ_JR_MODEL_DISCUSSION`, `HQ_JR_MODEL_REMEDIATION`, `HQ_JR_MODEL_HEALTH`). Raising one no longer raises the others.
+- `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` caps output on the escalation model. Tier 1 and Tier 2 keep their previous uncapped behavior.
+- Tag-driven releases. A `v*` tag push publishes to npm with provenance, builds and pushes the image, and creates the GitHub Release. The version comes from the tag, so a release is a re-runnable operation instead of a branch write-back race.
+- `scripts/bump-version.mjs` performs the version bump, commit, and annotated tag locally, so the release sequence is explicit and reviewable.
+- The deploy files ship inside the image at `/app/deploy`, so a host can extract the updater that matches its release.
+
+### Fixed
+
+- Prompt-injection escape gap. A PR title or body containing `</untrusted_context>` closed the outer wrapper, so the rest of the PR content landed outside the untrusted region. The metadata, file list, triage diff, and review payload are now escaped together.
+- Diff parsing dropped deleted lines whose content began with `-- `, which shifted every later line anchor in that hunk. The parser now treats `--- ` and `+++ ` as headers only outside a hunk body.
+- A file whose diff contained the digits `160000` was misread as a git submodule, which blocked every inline comment on that file. Submodule detection now reads the git index line.
+- The file filter classified whole-path substrings, so `src/AuthorProfile.tsx` scored as security-sensitive and `src/server/reviewer.ts` scored as frontend. Security terms now match whole path tokens and compound names.
+- The credential scrubber rewrote environment references such as `process.env.SECRET_KEY` into placeholders, so the model reviewed mangled source. Unquoted values containing a dot are redacted again.
+- The context packager measured its character budget before scrubbing, so the emitted prompt could exceed the cap. The cap now applies to the text actually sent.
+- Renamed files are listed in the check summary when a pull request has no textual hunks, instead of reporting no code changes.
+
+### Changed
+
+- Release no longer attaches a container tarball to the GitHub Release. The image is pulled with `docker pull`.
+- The CI job is named "Typecheck, Test, and Build" because `npm run lint` only runs the TypeScript compiler.
+- GitHub secret scanning and push protection are enabled on the repository, and the `gcloud/` directory holding Application Default Credentials is ignored by git and excluded from the Docker build context.
+
 ## [0.1.8] - 2026-10-19
 
 ### Added

@@ -26,6 +26,7 @@ Run the host commands below on the deploy host as the deploy account. That is th
 ```bash
 sudo install -d -o "$(id -un)" -g "$(id -gn)" /opt/hq-jr /opt/hq-jr/deploy
 sudo install -d -o 1001 -g 1001 /opt/hq-jr/data
+sudo chown -R 1001:1001 /opt/hq-jr/data
 sudo install -d -m 700 -o 1001 -g 1001 /opt/hq-jr/gcloud
 ```
 

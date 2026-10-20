@@ -24,9 +24,13 @@ npm test
 
 1. `npm run typecheck`
 2. `npm test`
-3. No secrets in the diff (no `.env`, keys, tokens, or personal ADC files)
-4. Prefer one concern per PR
-5. Update docs when behavior or env vars change
+3. `npm run build`
+4. `node scripts/check-package-contents.mjs`
+5. `node scripts/check-doc-drift.mjs`
+6. `node scripts/check-doc-code-sanity.mjs`
+7. No secrets in the diff (no `.env`, keys, tokens, or personal ADC files)
+8. Prefer one concern per PR
+9. Update docs when behavior or env vars change
 
 ## Code style
 

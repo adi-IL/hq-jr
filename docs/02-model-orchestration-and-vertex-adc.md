@@ -36,7 +36,7 @@ Local development and production both use Application Default Credentials. This 
 |  | - Fast file triage     |  | - High risk deep   |  | 05-2026       |  |
 |  | - Noise filtering      |  |   review           |  | - Sandbox VM  |  |
 |  | - Risk JSON schema     |  | - Gated on risk    |  | - Runs tests  |  |
-|  | - Discussion replies   |  | - 2.7x-5.3x cost  |  | - Async       |  |
+|  | - Discussion replies   |  | - ~2.7x cost/token |  | - Async       |  |
 |  | - Remediation synth    |  | - Fail soft to     |  |               |  |
 |  | - Health probe         |  |   Tier 2           |  +---------------+  |
 |  | - Synchronous          |  +--------------------+                     |
@@ -82,8 +82,8 @@ The system splits operational responsibilities according to capabilities: direct
 - **Gate.** `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`). The gate compares `triage.overallRisk` against the threshold with the `riskRank` total order (`LOW` < `MEDIUM` < `HIGH`), never a string comparison. Below the threshold the deep review stays on `HQ_JR_MODEL_TIER2`.
 - **Availability.** Model id `gemini-4-argon`, GA since 2026-10-13, served from the `global` location that is the default `GOOGLE_CLOUD_LOCATION`. Supports structured output (`responseMimeType` plus `responseSchema`), system instructions, and thinking levels `LOW`, `MEDIUM`, `HIGH`. It rejects `thinking_budget` and `thinking_level: MINIMAL` with HTTP 400, so hq-jr only ever sends `thinkingLevel: HIGH`.
 - **Limits.** Unified context window of 1,048,576 tokens, maximum 65,536 output tokens for one synchronous request.
-- **Cost.** Global PayGo for Argon is 2 USD per 1M input tokens and 10 USD per 1M output tokens through 2026-11-30, then 4 in and 20 out from 2026-12-01. Gemini 3.8 Flash is 0.75 in and 3.75 out through 2026-12-31. Argon is therefore about **2.7x Flash per token** through 2026-11-30 (2 in and 10 out against 0.75 in and 3.75 out) and about **5.3x Flash per token** from 2026-12-01 to 2026-12-31 (4 in and 20 out against 0.75 in and 3.75 out), which is why it is gated behind a risk threshold instead of being the default Tier 2.
-- **Fail soft.** If the escalated call throws (model not enabled for the project, quota exhausted, upstream error), hq-jr retries the deep review once on `HQ_JR_MODEL_TIER2` and logs a warning. A model access or quota failure on the escalation model never fails the whole review. When both models fail, the review fails: no verdict was produced, and that is reported instead of being masked.
+- **Cost.** Global PayGo is 2 USD per 1M input tokens and 10 USD per 1M output tokens through 2026-11-30, then 4 in and 20 out from 2026-12-01. Gemini 3.8 Flash is 0.75 in and 3.75 out through 2026-12-31. Argon is therefore roughly **2.7x Flash per token**, which is why it is gated behind a risk threshold instead of being the default Tier 2.
+- **Fail soft.** If the escalated call throws (model not enabled for the project, quota exhausted, upstream error), hq-jr retries the deep review once on `HQ_JR_MODEL_TIER2` and logs a warning. A model access or quota failure on the escalation model never fails the whole review.
 
 ### Tier 3: Antigravity Managed Agent (`antigravity-preview-05-2026`)
 
@@ -97,15 +97,15 @@ The system splits operational responsibilities according to capabilities: direct
   - It does **not** support manual generation parameters (`temperature`, `top_p`, `max_output_tokens`).
   - Budget must be governed via `agent_config.max_total_tokens`.
 - **Tasks:**
-  - Clone the target repository into `/workspace/repo` (the dispatch uses `environment: "remote"` and sends no source bundle).
-  - Detect and execute baseline test suites (`cargo test`, `npm test`, `pytest`).
+  - Clone the target repository into `/workspace/repo` (the dispatch sends no source bundle, and the environment is `remote` with a network allowlist when an installation token is available).
+  - Detect and execute baseline test suites (`cargo test`, `go test ./...`, `pytest`, `npm test`).
   - Synthesize **new adversarial reproduction tests** targeting Tier 2 findings using 4 archetypes: Unit Assertions, Property-Based Tests (PBT), Subprocess Boundary Probes, and Fault-Injection Scripts.
   - Execute dual-commit trials: prove unpatched code reproduces the failure (red), apply suggested patches, and confirm the fix passes with zero regressions (green).
   - Surface an **Adversarial Test Execution Matrix** in a dedicated GitHub Check Run (`hq-jr AI Sandbox Verification`).
   - Support 1-click maintainer test adoption via the `Commit Repro Test` action button (`check_run.requested_action`).
 
 > [!NOTE]
-> In production, Tier 1 and Tier 2 execute synchronously on incoming pull request webhooks and post results when the run completes. When Tier 2 detects critical boundary defects or concurrency hazards, it populates `sandboxProbes` and triggers the asynchronous Tier 3 Check Run via `src/services/sandbox-runner.ts`. After dispatch the check stays `in_progress` while `pollSandboxInteraction` polls `ai.interactions.get` (backoff, capped ~3 minutes). Conclusion mapping: `failure` when the agent hard-fails (`failed` / `budget_exceeded`) or when completed with reproduced and not cured; `success` when completed and not-reproduced or patch cured; `neutral` on incomplete, timeout, cancelled, or infra `interactions.get` failure. NOTE: On Cloud Run without a persistent volume, process death can leave checks `in_progress` until timeout/re-run; with a shared durable `HQ_JR_DB_PATH`, `resumeStaleSandboxJobs` claims jobs whose heartbeat is older than 45 seconds and finishes the poll. Each claim writes a `lease_token`. Heartbeats, status writes and check-run closes only land while that token still matches, and the original worker stops once recovery holds the job, so two workers never conclude the same check. Tier 3 can also be tested on demand via CLI: `hq-jr sandbox-test --repo <url> --branch <name> --cmd <test_cmd>`.
+> In production, Tier 1 and Tier 2 execute synchronously on incoming pull request webhooks and post results when the run completes. When the deep review sets `requiresSandboxVerification`, it populates `sandboxProbes` and hq-jr triggers the asynchronous Tier 3 Check Run via `src/services/sandbox-runner.ts`. After dispatch the check stays `in_progress` while `pollSandboxInteraction` polls `ai.interactions.get` (backoff, capped ~3 minutes). Conclusion mapping: `failure` when the agent hard-fails (`failed` / `budget_exceeded`) or when completed with reproduced and not cured; `success` when completed and not-reproduced or patch cured; `neutral` on incomplete, timeout, cancelled, or infra `interactions.get` failure. NOTE: On Cloud Run without a persistent volume, process death can leave checks `in_progress` until timeout/re-run; with a shared durable `HQ_JR_DB_PATH`, `resumeStaleSandboxJobs` claims jobs whose heartbeat is older than 45 seconds and finishes the poll. Each claim writes a `lease_token`. Heartbeats, status writes and check-run closes only land while that token still matches, and the original worker stops once recovery holds the job, so two workers never conclude the same check. Tier 3 can also be tested on demand via CLI: `hq-jr sandbox-test --repo <url> --branch <name> --cmd <test_cmd>`.
 
 ### Model routing and configuration
 
@@ -120,12 +120,10 @@ The system splits operational responsibilities according to capabilities: direct
 | `HQ_JR_MODEL_DISCUSSION` | `gemini-3.8-flash` | Replies in review discussion threads. |
 | `HQ_JR_MODEL_REMEDIATION` | `gemini-3.8-flash` | Autonomous remediation synthesis. |
 | `HQ_JR_MODEL_HEALTH` | `gemini-3.8-flash` | Health probe (`/healthz`, `hq-jr health`). |
-| `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | `32768` | Output token cap sent only on the escalation model call. |
+| `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | `32768` | Output token cap sent on the escalated deep review call. |
 
-- **Output cap.** `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on the escalation model call only. The cap follows the role of the call, not the model id, so two tiers may share one model id without either of them gaining a cap. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice. Triage, the Tier 2 deep review, the discussion replies, the remediation synthesis and the health probe are uncapped, exactly as before the escalation tier was added.
-- **Truncated answers.** A response the model cut short (`finishReason` `MAX_TOKENS`) is never accepted as a complete review. The partial JSON is not repaired into a verdict; the deep review fails with a message that says the output was truncated, and an escalated review falls back to the uncapped Tier 2 model.
-- **Visibility.** `hq-jr health` and `hq-jr review` print the resolved model for every tier, and the app logs print the resolved model for the deep review, so a run shows which model actually served each stage.
-- **Model ids.** Every model variable in the table above has to name a model. An empty or whitespace-only value is rejected when the process starts, with the name of the offending variable, instead of silently degrading that stage later.
+- **Output cap.** `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on the escalated deep review call only. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice. The cap is keyed on the role of the call, not on the model id, so pointing both tiers at the same model does not change what is capped. The fallback from an escalated review to the Tier 2 model is a Tier 2 review, so it is uncapped and a truncated escalated answer can be retried in full. Triage, the discussion replies, the remediation synthesis and the health probe never send a cap.
+- **Visibility.** `hq-jr health` and `hq-jr review` print the resolved model for every tier, so a local run shows which model actually served each stage. The app logs the resolved deep review model when a review starts.
 - **Compatibility.** `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` keep their names and defaults, but `HQ_JR_MODEL_TIER1` no longer drives the discussion, remediation and health calls. A deployment that set `HQ_JR_MODEL_TIER1` to anything other than `gemini-3.8-flash` sees those three call sites move to `gemini-3.8-flash` after this change. To keep the previous behavior, set `HQ_JR_MODEL_DISCUSSION`, `HQ_JR_MODEL_REMEDIATION` and `HQ_JR_MODEL_HEALTH` to the same value that `HQ_JR_MODEL_TIER1` used to hold. `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is new in this release and caps the escalation model only, so no existing call gains a cap.
 
 ## Pipeline Flow
@@ -134,8 +132,10 @@ The system splits operational responsibilities according to capabilities: direct
 GitHub Webhook Event (pull_request.opened / synchronize)
        │
        ▼
+[ Heuristic filter: drop generated files & lockfiles ]
+       │
+       ▼
 [ Tier 1: Flash + High Thinking (triage schema) ]
-  ├─ Drop generated files & lockfiles in the heuristic filter
   ├─ Model-based risk classification (Low / Medium / High)
   └─ Output: Strict JSON triage report
        │
@@ -146,13 +146,11 @@ GitHub Webhook Event (pull_request.opened / synchronize)
   ├─ Yes ──► [ Tier 2 on Argon (gemini-4-argon) ]
   │             └─ on failure ──► retry once on Tier 2 (Flash) and log a warning
   └─ No  ──► [ Tier 2: Flash + High Thinking (deep review schema) ]
-  │
-  └─ Both paths then run the shared Tier 2 steps:
-     ├─ Deep semantic trace on modified call sites
-     ├─ Audit verification against prior review memory
-     ├─ Security vulnerability & concurrency audit
-     ├─ Line-anchored patch generation
-     └─ Output: Strict JSON review comments
+  ├─ Deep semantic trace on modified call sites
+  ├─ Audit verification against prior review memory
+  ├─ Security vulnerability & concurrency audit
+  ├─ Line-anchored patch generation
+  └─ Output: Strict JSON review comments
        │
        ├─────────────────────────────────────────┐
        ▼                                         ▼
@@ -227,8 +225,6 @@ The JSON `responseSchema` sent to the model lives in `src/services/ai.ts` (`TRIA
 
 Untrusted input is wrapped in `<untrusted_diff>` for triage and in `<untrusted_context>` for the deep review. `escapeUntrustedTags` in `src/services/ai.ts` neutralizes those tag names, plus `untrusted_pr_metadata`, in every untrusted field: the triage diff, the PR metadata block, the reviewed file list and reasons, the deep review prompt payload, and the discussion diff hunk, thread history and developer query. Discussion replies also neutralize `developer_query`, the tag that wraps the query. It inserts a backslash after the `<` and leaves everything else in place, including whitespace or line breaks before the tag name, attributes, the closing angle bracket and the rest of the payload. A pull request therefore cannot close a wrapper and push the rest of the payload outside the untrusted region.
 
-The pattern matches the whitespace in front of the tag name with a single group, so a long run of whitespace in a comment cannot make the match backtrack quadratically. Discussion replies also cut the diff hunk, the conversation section and the developer query to a fixed character budget and mark the cut with `...[truncated]`, so a long comment cannot inflate the prompt.
-
 ## Implementation Snippets
 
 ### Node.js / TypeScript (`@google/genai` >= 2.3.0)
@@ -236,12 +232,12 @@ The pattern matches the whitespace in front of the tag name with a single group,
 ```typescript
 import { GoogleGenAI } from "@google/genai";
 import { config } from "./config.js";
-import { resolveDeepReviewModel, shouldEscalate } from "./services/ai.js";
+import { resolveDeepReviewModel } from "./services/ai.js";
 
 const ai = new GoogleGenAI({
   vertexai: true,
-  project: process.env.GOOGLE_CLOUD_PROJECT || "test-gcp-project",
-  location: process.env.GOOGLE_CLOUD_LOCATION || "global",
+  project: config.GOOGLE_CLOUD_PROJECT,
+  location: config.GOOGLE_CLOUD_LOCATION,
 });
 
 export async function runTriage(diffText: string) {
@@ -265,23 +261,19 @@ export async function runDeepReview(
     contents: contextPrompt,
     config: {
       responseMimeType: "application/json",
-      // Only the escalated call is capped, not a model id two tiers happen to share.
+      // Only the escalated call is capped. The cap follows the role of the
+      // call, not the model id.
       ...(options?.role === "escalation"
         ? { maxOutputTokens: config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS }
         : {}),
       responseSchema: { /* deep review schema */ },
     },
   });
-  if (res.candidates?.[0]?.finishReason === "MAX_TOKENS") {
-    throw new Error("The deep review response was truncated by the model output limit.");
-  }
   return res.text;
 }
 
 // Escalation gate, applied before the deep review.
 const deepModel = resolveDeepReviewModel(triage.overallRisk);
-const deepRole = shouldEscalate(triage.overallRisk) ? "escalation" : "tier2";
-const deepReview = await runDeepReview(reviewPrompt, { model: deepModel, role: deepRole });
 
 export async function dispatchSandboxVerification(params: {
   repoUrl: string;
@@ -290,7 +282,7 @@ export async function dispatchSandboxVerification(params: {
   instructions: string;
 }) {
   const interaction = await ai.interactions.create({
-    agent: "antigravity-preview-05-2026",
+    agent: config.HQ_JR_AGENT_TIER3,
     input: `You are the Tier 3 verification agent.
 Clone ${params.repoUrl} on branch ${params.branch} into /workspace/repo,
 run "${params.testCommand}", and write the verdict to
@@ -302,7 +294,22 @@ ${params.instructions}`,
       type: "antigravity",
       max_total_tokens: "150000",
     },
-    environment: "remote",
+    // "remote" on its own when there is no installation token. With a token the
+    // environment always carries a network allowlist listing only the hosts
+    // the agent needs: github.com, plus the package and toolchain hosts of
+    // the language under test. The allowlist is sent whether or not a token
+    // is available, so the agent can never reach an arbitrary host. Only the
+    // github.com entry injects the token, as a Basic authorization header,
+    // and only when there is one. That is what lets the agent clone a private
+    // repository, and a public clone still needs github.com. There is
+    // deliberately no wildcard entry, because one reopens the exfiltration
+    // path.
+    environment: {
+      type: "remote",
+      network: {
+        allowlist: buildSandboxAllowlist(testCommand, base64AuthToken),
+      },
+    },
     background: true,
   });
 
@@ -310,4 +317,4 @@ ${params.instructions}`,
 }
 ```
 
-The real implementation in `src/services/ai.ts` also injects probe instructions and the full verdict contract. It does not attach a source bundle or a network allowlist; the agent clones the repository itself. `pollSandboxInteraction` then polls the interaction with backoff and a 180-second default cap.
+The real implementation in `src/services/ai.ts` also injects probe instructions and the full verdict contract. It does not attach a source bundle, so the agent clones the repository itself. It always attaches a network allowlist, and `buildSandboxAllowlist` in the same file builds it from the test command the sandbox will run. `github.com` is always first and is the only entry that carries the credential, so a private repository can be cloned while no other host receives the token. The remaining entries are the package and toolchain hosts of the language under test, so the test command can resolve dependencies and install a toolchain. There is no wildcard and no all-hosts entry. A language outside the four that `detectTestCommand` recognises has no package host, so the sandbox can clone the repository but cannot install dependencies. Without a token the allowlist is still sent, so the agent reaches the same hosts, but the github.com entry carries no credential and the request is unauthenticated. `pollSandboxInteraction` then polls the interaction with backoff and a 180-second default cap.
