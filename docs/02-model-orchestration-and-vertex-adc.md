@@ -295,22 +295,17 @@ ${params.instructions}`,
       max_total_tokens: "150000",
     },
     // "remote" on its own when there is no installation token. With a token the
-    // environment carries a network allowlist. The wildcard entry keeps every
-    // domain reachable, so the agent can install a toolchain and download
-    // packages. Only the github.com entry injects the token, as a Basic
-    // authorization header, which is what lets the agent clone a private
-    // repository.
+    // environment carries a network allowlist listing only the hosts the
+    // agent needs: github.com, plus the package and toolchain hosts of the
+    // language under test. Only the github.com entry injects the token, as a
+    // Basic authorization header, which is what lets the agent clone a
+    // private repository. There is deliberately no wildcard entry, because
+    // one reopens the exfiltration path.
     environment: base64AuthToken
       ? {
           type: "remote",
           network: {
-            allowlist: [
-              { domain: "*" },
-              {
-                domain: "github.com",
-                transform: [{ Authorization: `Basic ${base64AuthToken}` }],
-              },
-            ],
+            allowlist: buildSandboxAllowlist(testCommand, base64AuthToken),
           },
         }
       : "remote",
@@ -321,4 +316,4 @@ ${params.instructions}`,
 }
 ```
 
-The real implementation in `src/services/ai.ts` also injects probe instructions and the full verdict contract. It does not attach a source bundle, so the agent clones the repository itself. When an installation token is available it does attach a network allowlist with two entries. The wildcard entry keeps every domain reachable, because the agent runs a test command that downloads dependencies from the language package registries. The `github.com` entry injects the token as a `Basic` authorization header, so a private repository can be cloned, and no other domain receives the credential. Without a token the request carries no allowlist and no credentials. `pollSandboxInteraction` then polls the interaction with backoff and a 180-second default cap.
+The real implementation in `src/services/ai.ts` also injects probe instructions and the full verdict contract. It does not attach a source bundle, so the agent clones the repository itself. When an installation token is available it does attach a network allowlist, and `buildSandboxAllowlist` in the same file builds it from the test command the sandbox will run. `github.com` is always first and is the only entry that carries the credential, so a private repository can be cloned while no other host receives the token. The remaining entries are the package and toolchain hosts of the language under test, so the test command can resolve dependencies and install a toolchain. There is no wildcard and no all-hosts entry. A language outside the four that `detectTestCommand` recognises has no package host, so the sandbox can clone the repository but cannot install dependencies. Without a token the request carries no allowlist and no credentials. `pollSandboxInteraction` then polls the interaction with backoff and a 180-second default cap.
