@@ -748,9 +748,9 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
       if (verdict !== review.verdict) {
         app.log.warn(
           { pullNumber, verdict: review.verdict, effectiveVerdict: verdict },
-          verdict === "COMMENT" && review.verdict === "REQUEST_CHANGES"
+          verdict === "COMMENT"
             ? "Downgraded a REQUEST_CHANGES verdict with no blocking finding to COMMENT"
-            : "Downgraded an APPROVE verdict that reports a blocking finding to COMMENT"
+            : "Raised a verdict that reports a blocking finding to REQUEST_CHANGES"
         );
       }
 

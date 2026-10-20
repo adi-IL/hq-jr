@@ -424,7 +424,7 @@ index 123..456 100644
     );
   });
 
-  it("keeps the check neutral when APPROVE reports a blocking comment", async () => {
+  it("fails the check when APPROVE reports a blocking comment", async () => {
     vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
       summary: "Auth change",
       overallRisk: "LOW",
@@ -454,11 +454,11 @@ index 123..456 100644
     await openAuthPr(85);
 
     const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
-    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
-    expect(finalUpdate.output.title).toBe("Review Completed: COMMENT");
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "failure" });
+    expect(finalUpdate.output.title).toBe("Review Completed: REQUEST_CHANGES");
     expect(mockApp.log.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ verdict: "APPROVE", effectiveVerdict: "COMMENT" }),
-      expect.stringContaining("APPROVE")
+      expect.objectContaining({ verdict: "APPROVE", effectiveVerdict: "REQUEST_CHANGES" }),
+      expect.stringContaining("REQUEST_CHANGES")
     );
   });
 
@@ -1515,7 +1515,7 @@ index 123..456 100644
     const fallback = octokitMock.pulls.createReview.mock.calls[1][0].body as string;
     expect(fallback.length).toBeLessThan(65535);
     expect(fallback).toContain("## hq-jr Automated Code Review");
-    expect(fallback).toContain("**Verdict:** `COMMENT`");
+    expect(fallback).toContain("**Verdict:** `REQUEST_CHANGES`");
     expect(fallback).toContain("### Inline Comments (Attached as Summary due to diff positioning):");
     expect(fallback).toContain("truncated");
   });
@@ -1675,7 +1675,7 @@ describe("CLI deep review output", () => {
     expect(runs.map((run) => run.result.verdict)).toEqual([
       "COMMENT",
       "REQUEST_CHANGES",
-      "COMMENT",
+      "REQUEST_CHANGES",
       "APPROVE",
     ]);
   });
