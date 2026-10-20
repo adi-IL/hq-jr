@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification } from "./services/ai.js";
+import { fileURLToPath } from "node:url";
+import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags } from "./services/ai.js";
+import type { DeepReviewResult } from "./schemas/review.js";
 import { parseUnifiedDiff, isLineInDiff } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
-import { config } from "./config.js";
+import { config, type RiskLevel } from "./config.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -53,12 +55,71 @@ Usage:
 `);
 }
 
+function printModelRouting() {
+  console.log("Model routing:");
+  console.log(`  triage (Tier 1):      ${config.HQ_JR_MODEL_TIER1}`);
+  console.log(`  escalation:           ${config.HQ_JR_MODEL_ESCALATION}`);
+  console.log(`  deep review (Tier 2): ${config.HQ_JR_MODEL_TIER2}`);
+  console.log(`  discussion:           ${config.HQ_JR_MODEL_DISCUSSION}`);
+  console.log(`  remediation:          ${config.HQ_JR_MODEL_REMEDIATION}`);
+  console.log(`  health probe:         ${config.HQ_JR_MODEL_HEALTH}`);
+  console.log(`  escalation max output tokens: ${config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS}`);
+  console.log(`  escalation threshold: ${config.HQ_JR_ESCALATION_MIN_RISK}`);
+}
+
+/**
+ * Header for the deep review stage. It names the model that produced the
+ * verdict, which is the Tier 2 model when the escalation model failed.
+ */
+export function formatDeepReviewHeader(outcome: { model: string; fellBack: boolean }): string {
+  const suffix = outcome.fellBack ? " after the escalation fallback" : "";
+  return `\n--- Tier 2: Deep Semantic Review (${outcome.model}${suffix}) ---`;
+}
+
+/**
+ * Notice printed before the deep review call starts. A high thinking model
+ * call can run for minutes, so the operator sees which model is running
+ * instead of an idle CLI. The routing is known before the call, so this line
+ * is written as soon as the decision to escalate is known.
+ */
+export function formatDeepReviewPendingLine(model: string): string {
+  return `Running deep review on ${model}...`;
+}
+
+/**
+ * Runs the deep review for the CLI and returns the header that names the
+ * model that produced the verdict. The model that is about to run is reported
+ * through `onStart` before the call, so the output does not go quiet while a
+ * long escalated call is in flight.
+ */
+export async function runCliDeepReview(params: {
+  overallRisk: RiskLevel;
+  reviewPrompt: string;
+  log?: (payload: Record<string, unknown>, message: string) => void;
+  /** Called with the model that is about to run, before the call starts. */
+  onStart?: (model: string) => void;
+}): Promise<{ header: string; result: DeepReviewResult }> {
+  const minRisk = config.HQ_JR_ESCALATION_MIN_RISK;
+  // The routing is resolved with the same threshold the escalation helper uses,
+  // so the pending line names the model that is about to run.
+  const routing = resolveDeepReviewRouting(params.overallRisk, minRisk);
+  params.onStart?.(routing.model);
+
+  const deepReview = await runEscalatedDeepReview({
+    overallRisk: params.overallRisk,
+    minRisk,
+    run: (model, role) => runDeepReview(params.reviewPrompt, { model, role }),
+    log: params.log,
+  });
+
+  return { header: formatDeepReviewHeader(deepReview), result: deepReview.result };
+}
+
 async function handleHealth() {
   console.log("Checking Google Cloud Vertex AI ADC connectivity...");
   console.log(`Project:  ${config.GOOGLE_CLOUD_PROJECT}`);
   console.log(`Location: ${config.GOOGLE_CLOUD_LOCATION}`);
-  console.log(`Tier 1:   ${config.HQ_JR_MODEL_TIER1}`);
-  console.log(`Tier 2:   ${config.HQ_JR_MODEL_TIER2}`);
+  printModelRouting();
 
   try {
     const health = await checkAiHealth();
@@ -138,6 +199,7 @@ async function handleReview(args: string[]) {
   }
 
   // 3. Tier 1 Triage
+  printModelRouting();
   console.log(`\n--- Tier 1: Triage + High Thinking (${config.HQ_JR_MODEL_TIER1}) ---`);
   const triage = await runTriage(context.promptPayload);
   console.log(`Overall Risk: [${triage.overallRisk}]`);
@@ -154,15 +216,28 @@ async function handleReview(args: string[]) {
   }
 
   // 4. Tier 2 Deep Semantic Review
-  console.log(`\n--- Tier 2: Deep Semantic Review (${config.HQ_JR_MODEL_TIER2}) ---`);
+  const routing = resolveDeepReviewRouting(triage.overallRisk);
+  console.log(
+    `\nEscalation: ${routing.escalated ? "engaged" : "not engaged"} (overall risk ${triage.overallRisk}, threshold ${config.HQ_JR_ESCALATION_MIN_RISK})`
+  );
   const reviewPrompt = `Local CLI Review Mode
 Files requiring deep review:
-${reviewables.map((f) => `- ${f.path} (Risk: ${f.risk}, Reason: ${f.reason})`).join("\n")}
+${reviewables.map((f) => `- ${escapeUntrustedTags(f.path)} (Risk: ${escapeUntrustedTags(f.risk)}, Reason: ${escapeUntrustedTags(f.reason)})`).join("\n")}
 
-${context.promptPayload}
+${escapeUntrustedTags(context.promptPayload)}
 `;
 
-  const review = await runDeepReview(reviewPrompt);
+  const { header, result: review } = await runCliDeepReview({
+    overallRisk: triage.overallRisk,
+    reviewPrompt,
+    log: (payload, message) =>
+      console.warn(
+        `${message}: ${payload.err instanceof Error ? payload.err.message : String(payload.err)}`
+      ),
+    // Printed before the call, so a long escalated call does not look hung.
+    onStart: (model) => console.log(formatDeepReviewPendingLine(model)),
+  });
+  console.log(header);
   console.log(`\nVerdict: ${review.verdict}`);
   console.log(`Summary: ${review.summary}\n`);
 
@@ -214,7 +289,26 @@ async function handleSandboxTest(args: string[]) {
   console.log(JSON.stringify(result, null, 2));
 }
 
-main().catch((err) => {
-  console.error("Unhandled CLI error:", err);
-  process.exit(1);
-});
+/**
+ * True when the given entry path is this module, so importing it does not run the CLI.
+ *
+ * Fails closed. A missing entry path (a worker thread, `node -e`, a test harness)
+ * or an entry path that cannot be resolved is not proof that this module is the
+ * entry point, so both cases return false. Only a positively resolved entry path
+ * that points at this very file starts the CLI.
+ */
+export function isCliEntryPoint(entry: string | undefined): boolean {
+  if (!entry) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(entry);
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntryPoint(process.argv[1])) {
+  main().catch((err) => {
+    console.error("Unhandled CLI error:", err);
+    process.exit(1);
+  });
+}

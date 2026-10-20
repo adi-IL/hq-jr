@@ -1,9 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import appFn from "./index.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { fileURLToPath } from "node:url";
+import appFn, { buildDeepReviewBody, buildExcludedFilesSummary } from "./index.js";
 import { addRemediationCommit, acquireRunLock, releaseRunLock } from "./services/db.js";
+import { BUDGET_DROP_REASON } from "./services/context-packager.js";
 import * as aiModule from "./services/ai.js";
 import * as sandboxRunnerModule from "./services/sandbox-runner.js";
 import * as discussionModule from "./services/discussion.js";
+import { formatDeepReviewPendingLine, runCliDeepReview, isCliEntryPoint } from "./cli.js";
+import { config } from "./config.js";
 
 describe("hq-jr Event Handlers & Security Guards", () => {
   let handlers: Map<string, Function>;
@@ -11,6 +15,7 @@ describe("hq-jr Event Handlers & Security Guards", () => {
   let octokitMock: any;
 
   beforeEach(() => {
+    vi.restoreAllMocks();
     handlers = new Map();
     mockApp = {
       log: {
@@ -71,6 +76,19 @@ describe("hq-jr Event Handlers & Security Guards", () => {
     },
   });
 
+  const renameDiff = (count: number, path: (index: number) => string) =>
+    Array.from({ length: count }, (_, index) => {
+      const oldPath = path(index);
+      const newPath = oldPath.replace("src/", "moved/");
+      return `diff --git a/${oldPath} b/${newPath}\nsimilarity index 100%\nrename from ${oldPath}\nrename to ${newPath}\n`;
+    }).join("");
+
+  const ignoredFileDiff = (count: number, path: (index: number) => string) =>
+    Array.from({ length: count }, (_, index) => {
+      const filePath = path(index);
+      return `diff --git a/${filePath} b/${filePath}\nindex 123..456 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,1 +1,2 @@\n+# generated\n`;
+    }).join("");
+
   it("does not reply to unmentioned human root review comments", async () => {
     const replySpy = vi.spyOn(discussionModule, "replyToDiscussion").mockResolvedValue("ack");
 
@@ -125,9 +143,20 @@ describe("hq-jr Event Handlers & Security Guards", () => {
       overallRisk: "HIGH",
       files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
     });
-    vi.spyOn(aiModule, "runDeepReview").mockRejectedValueOnce(new TypeError("fetch failed"));
-    octokitMock.pulls.get.mockResolvedValueOnce({
-      data: `diff --git a/src/auth.ts b/src/auth.ts
+    const deepSpy = vi
+      .spyOn(aiModule, "runDeepReview")
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValue({
+        summary: "ok",
+        verdict: "COMMENT",
+        resolvedPriorIssues: [],
+        unresolvedPriorIssues: [],
+        comments: [],
+        requiresSandboxVerification: false,
+        sandboxProbes: [],
+      });
+    const diff = `diff --git a/src/auth.ts b/src/auth.ts
 index 123..456 100644
 --- a/src/auth.ts
 +++ b/src/auth.ts
@@ -135,8 +164,8 @@ index 123..456 100644
  export function login() {
 +  console.log("login");
    return true;
- }`,
-    });
+ }`;
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: diff });
 
     await handlers.get("pull_request.opened")!({
       octokit: octokitMock,
@@ -149,6 +178,31 @@ index 123..456 100644
 
     const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
     expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    // The escalation attempt and its Tier 2 fallback consume both queued rejections.
+    expect(deepSpy).toHaveBeenCalledTimes(2);
+
+    // A later review run is served by the same spy and still completes.
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Later change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: diff });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 61, state: "open", head: { sha: "sha-61", ref: "later" }, title: "Later PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(deepSpy).toHaveBeenCalledTimes(3);
+    expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({
+      status: "completed",
+      conclusion: "neutral",
+    });
   });
 
   it("still fails the check when the review requests changes", async () => {
@@ -190,6 +244,510 @@ index 123..456 100644
     });
 
     expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({ status: "completed", conclusion: "failure" });
+  });
+
+  it("keeps the check run neutral when a REQUEST_CHANGES review reports no comments", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "The review found no issues.",
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 81, state: "open", head: { sha: "sha-81", ref: "c" }, title: "PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    expect(finalUpdate.output.title).toBe("Review Completed: COMMENT");
+    expect(finalUpdate.output.summary).toContain("Found **0** observation(s).");
+    expect(mockApp.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ verdict: "REQUEST_CHANGES", effectiveVerdict: "COMMENT" }),
+      expect.stringContaining("REQUEST_CHANGES")
+    );
+  });
+
+  it("still fails the check when a REQUEST_CHANGES review reports a comment", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "One blocker.",
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        { path: "src/auth.ts", line: 2, side: "RIGHT", severity: "CRITICAL", category: "SECURITY", title: "Logs a credential", body: "Remove the log." },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 82, state: "open", head: { sha: "sha-82", ref: "c" }, title: "PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({ status: "completed", conclusion: "failure" });
+    const reviewCall = octokitMock.pulls.createReview.mock.calls.at(-1)?.[0];
+    expect(reviewCall.event).toBe("REQUEST_CHANGES");
+    expect(reviewCall.body).toContain("**Verdict:** `REQUEST_CHANGES`");
+    expect(reviewCall.body).toContain("Found **1** observation(s).");
+  });
+
+  it("escalates the deep review to the escalation model on high risk pull requests", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth rewrite",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    const deepSpy = vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "ok",
+      verdict: "COMMENT",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 21, state: "open", head: { sha: "sha-21", ref: "risk" }, title: "Auth rewrite" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    const deepOptions = deepSpy.mock.calls[0][1] as { model?: string } | undefined;
+    expect(deepOptions?.model).toBeTruthy();
+    expect(deepOptions?.model).toBe(config.HQ_JR_MODEL_ESCALATION);
+    expect(deepOptions?.model).not.toBe(config.HQ_JR_MODEL_TIER2);
+  });
+
+  it("keeps the deep review on the Tier 2 model below the escalation threshold", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Docs tweak",
+      overallRisk: "MEDIUM",
+      files: [{ path: "src/auth.ts", risk: "MEDIUM", reason: "Docs", shouldReview: true }],
+    });
+    const deepSpy = vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "ok",
+      verdict: "COMMENT",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 22, state: "open", head: { sha: "sha-22", ref: "calm" }, title: "Docs tweak" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(deepSpy.mock.calls[0][1]?.model).toBe(config.HQ_JR_MODEL_TIER2);
+  });
+
+  it("retries the deep review on the Tier 2 model when the escalation model fails", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth rewrite",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    const deepSpy = vi
+      .spyOn(aiModule, "runDeepReview")
+      .mockRejectedValueOnce(new Error("model gemini-4-argon is not accessible in this project"))
+      .mockResolvedValueOnce({
+        summary: "ok",
+        verdict: "COMMENT",
+        resolvedPriorIssues: [],
+        unresolvedPriorIssues: [],
+        comments: [],
+        requiresSandboxVerification: false,
+        sandboxProbes: [],
+      });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 23, state: "open", head: { sha: "sha-23", ref: "fallback" }, title: "Auth rewrite" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(deepSpy).toHaveBeenCalledTimes(2);
+    expect(deepSpy.mock.calls[0][1]?.model).toBeTruthy();
+    expect(deepSpy.mock.calls[0][1]?.model).toBe(config.HQ_JR_MODEL_ESCALATION);
+    expect(deepSpy.mock.calls[1][1]?.model).toBe(config.HQ_JR_MODEL_TIER2);
+    expect(mockApp.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        escalationModel: config.HQ_JR_MODEL_ESCALATION,
+        fallbackModel: config.HQ_JR_MODEL_TIER2,
+      }),
+      expect.stringContaining("retrying deep review on the Tier 2 model")
+    );
+    expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({
+      status: "completed",
+      conclusion: "neutral",
+    });
+  });
+
+  it("surfaces renamed files in the no code changes summary", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/old/auth.ts b/src/new/auth.ts
+similarity index 100%
+rename from src/old/auth.ts
+rename to src/new/auth.ts
+`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 24,
+          state: "open",
+          title: "Move auth module",
+          head: { sha: "sha-24", ref: "rename" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    expect(finalUpdate.output.summary).toContain("src/old/auth.ts");
+    expect(finalUpdate.output.summary).toContain("src/new/auth.ts");
+  });
+
+  it("escapes backticks in renamed file paths in the check summary", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: "diff --git a/src/old`x.ts b/src/new`x.ts\nsimilarity index 100%\nrename from src/old`x.ts\nrename to src/new`x.ts\n",
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 25,
+          state: "open",
+          title: "Move auth module",
+          head: { sha: "sha-25", ref: "rename" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    // A longer fence keeps the real path text; an entity like &#96; would render literally in a code span.
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate.output.summary).toContain("- ``src/old`x.ts`` -> ``src/new`x.ts``");
+    expect(finalUpdate.output.summary).not.toContain("&#96;");
+  });
+
+  it("caps the renamed file list in the no code changes summary", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: renameDiff(312, (index) => `src/old/file${index}.ts`) });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 26,
+          state: "open",
+          title: "Move the whole folder",
+          head: { sha: "sha-26", ref: "rename" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const summary = octokitMock.checks.update.mock.calls.at(-1)?.[0].output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("Renamed files (showing first 50 of 312):");
+  });
+
+  it("keeps the no code changes summary under the check character limit with long paths", async () => {
+    const longPath = (index: number) => `src/${"d".repeat(3000)}/file${index}.ts`;
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: renameDiff(312, longPath) });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 27,
+          state: "open",
+          title: "Move the whole folder",
+          head: { sha: "sha-27", ref: "rename" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const summary = octokitMock.checks.update.mock.calls.at(-1)?.[0].output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toMatch(/Renamed files \(showing first \d+ of 312\):/);
+  });
+
+  it("caps the excluded file list in the excluded files only summary", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(2000, (index) => `docs/guide${index}.md`) });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 28,
+          state: "open",
+          title: "Regenerate every doc",
+          head: { sha: "sha-28", ref: "docs" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate.output.title).toBe("Triage Passed: Excluded Files Only");
+    const summary = finalUpdate.output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("Modified files were excluded from review");
+    expect(summary).toContain("Excluded files (showing first 50 of 2000):");
+  });
+
+  it("keeps the excluded files only summary under the check character limit with long paths", async () => {
+    const longPath = (index: number) => `docs/${"d".repeat(3000)}/page${index}.md`;
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(200, longPath) });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 29,
+          state: "open",
+          title: "Regenerate every doc",
+          head: { sha: "sha-29", ref: "docs" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const summary = octokitMock.checks.update.mock.calls.at(-1)?.[0].output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("...[truncated]");
+    expect(summary).toMatch(/Excluded files \(showing first \d+ of 200\):/);
+  });
+
+  it("caps the model summary in the low risk check summary", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "verbose model answer ".repeat(12000),
+      overallRisk: "LOW",
+      files: [{ path: "src/config.ts", risk: "LOW", reason: "Config only", shouldReview: false }],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/config.ts b/src/config.ts
+index 123..456 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -1,3 +1,4 @@
+ export const port = 3000;
++export const host = "localhost";
+`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 30,
+          state: "open",
+          title: "Config tweak",
+          head: { sha: "sha-30", ref: "config" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate.output.title).toBe("Triage Passed: Low Risk Changes");
+    const summary = finalUpdate.output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("All modified files are low risk or auto-generated. Deep review bypassed.");
+    expect(summary).toContain("truncated");
+  });
+
+  it("caps the model summary in the deep review check summary", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "verbose model answer ".repeat(12000),
+      verdict: "COMMENT",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 32,
+          state: "open",
+          title: "Auth change",
+          head: { sha: "sha-32", ref: "auth" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate.output.title).toBe("Review Completed: COMMENT");
+    const summary = finalUpdate.output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("Found **0** observation(s).");
+    expect(summary).toContain("truncated");
+  });
+
+  it("does not describe a file dropped for the context budget as an artifact", () => {
+    const summary = buildExcludedFilesSummary([
+      { path: "src/big.ts", reason: BUDGET_DROP_REASON },
+    ]);
+
+    expect(summary).toContain("src/big.ts");
+    expect(summary).toContain(BUDGET_DROP_REASON);
+    // A file that was dropped for the budget was not a lockfile and not a
+    // generated bundle.
+    expect(summary.toLowerCase()).not.toContain("lockfile");
+    expect(summary.toLowerCase()).not.toContain("generated bundle");
+  });
+
+  it("keeps the artifact reasons in the excluded files summary", () => {
+    const summary = buildExcludedFilesSummary([
+      { path: "package-lock.json", reason: "Dependency lockfile: package-lock.json" },
+      { path: "src/big.ts", reason: BUDGET_DROP_REASON },
+    ]);
+
+    expect(summary).toContain("package-lock.json");
+    expect(summary).toContain("Dependency lockfile: package-lock.json");
+    expect(summary).toContain(BUDGET_DROP_REASON);
   });
 
   it("still fails the check when the review itself errors", async () => {
@@ -690,5 +1248,262 @@ index 123..456 100644
         body: expect.stringContaining("Merged"),
       })
     );
+  });
+
+  it("caps a verbose deep review summary in the review body", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth rewrite",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "verbose model answer ".repeat(12000),
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        {
+          path: "src/auth.ts",
+          line: 2,
+          side: "RIGHT",
+          severity: "CRITICAL",
+          category: "SECURITY",
+          title: "Logs in login path",
+          body: "Remove the log.",
+        },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 90, state: "open", head: { sha: "sha-90", ref: "verbose" }, title: "Verbose review" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    const body = octokitMock.pulls.createReview.mock.calls[0][0].body as string;
+    expect(body.length).toBeLessThan(65535);
+    expect(body).toContain("## hq-jr Automated Code Review");
+    expect(body).toContain("**Verdict:** `REQUEST_CHANGES`");
+    expect(body).toContain("truncated");
+  });
+
+  it("caps the 422 fallback body that carries the inline comments", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth rewrite",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "verbose model answer ".repeat(12000),
+      verdict: "COMMENT",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        {
+          path: "src/auth.ts",
+          line: 2,
+          side: "RIGHT",
+          severity: "CRITICAL",
+          category: "SECURITY",
+          title: "Logs in login path",
+          body: "verbose inline body ".repeat(4000),
+        },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.createReview
+      .mockRejectedValueOnce(Object.assign(new Error("Validation Failed"), { status: 422 }))
+      .mockResolvedValueOnce({ data: { id: 202 } });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 91, state: "open", head: { sha: "sha-91", ref: "fallback" }, title: "Verbose review" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(octokitMock.pulls.createReview).toHaveBeenCalledTimes(2);
+    const fallback = octokitMock.pulls.createReview.mock.calls[1][0].body as string;
+    expect(fallback.length).toBeLessThan(65535);
+    expect(fallback).toContain("## hq-jr Automated Code Review");
+    expect(fallback).toContain("**Verdict:** `COMMENT`");
+    expect(fallback).toContain("### Inline Comments (Attached as Summary due to diff positioning):");
+    expect(fallback).toContain("truncated");
+  });
+});
+
+describe("deep review body budget", () => {
+  it("keeps the structure of the body and marks the cut", () => {
+    const body = buildDeepReviewBody({
+      summary: "verbose model answer ".repeat(12000),
+      verdict: "REQUEST_CHANGES",
+      commentCount: 1,
+      resolvedPriorIssues: ["fixed the race"],
+      unresolvedPriorIssues: ["the lock is still missing"],
+      orphanComments: ["- **src/auth.ts:9** [WARNING]: note outside the diff"],
+      inlineComments: [{ path: "src/auth.ts", line: 2, side: "RIGHT", body: "fix this" }],
+    });
+
+    expect(body.length).toBeLessThan(65535);
+    expect(body).toContain("## hq-jr Automated Code Review");
+    expect(body).toContain("**Verdict:** `REQUEST_CHANGES`");
+    expect(body).toContain("Found **1** observation(s).");
+    expect(body).toContain("### ✅ Resolved Issues from Prior Review");
+    expect(body).toContain("### ⚠️ Remaining Open Issues from Prior Review");
+    expect(body).toContain("### Additional File Observations (Outside Modified Diff Lines)");
+    expect(body).toContain("### Inline Comments (Attached as Summary due to diff positioning):");
+    expect(body).toContain("fixed the race");
+    expect(body).toContain("the lock is still missing");
+    expect(body).toContain("truncated");
+  });
+
+  it("leaves a short review body untouched", () => {
+    expect(buildDeepReviewBody({ summary: "short", verdict: "APPROVE", commentCount: 0 })).toBe(
+      "## hq-jr Automated Code Review\n\nshort\n\n**Verdict:** `APPROVE`\n\nFound **0** observation(s)."
+    );
+  });
+
+  it("states the same count of findings that the check run reports", () => {
+    const body = buildDeepReviewBody({
+      summary: "two findings",
+      verdict: "COMMENT",
+      commentCount: 2,
+    });
+
+    expect(body).toContain("Found **2** observation(s).");
+  });
+
+  it("keeps a small body budget inside the cap and still marks the cut", () => {
+    for (const maxChars of [20, 50, 80, 120, 200, 400]) {
+      const body = buildDeepReviewBody({
+        summary: "verbose model answer ".repeat(50),
+        verdict: "REQUEST_CHANGES",
+        commentCount: 1,
+        resolvedPriorIssues: ["fixed the race"],
+        unresolvedPriorIssues: ["the lock is still missing"],
+        orphanComments: ["- **src/auth.ts:9** [WARNING]: note outside the diff"],
+        inlineComments: [{ path: "src/auth.ts", line: 2, side: "RIGHT", body: "fix this" }],
+        maxChars,
+      });
+
+      expect(body.length).toBeLessThanOrEqual(maxChars);
+      // The cut is marked, so a reader can tell a cut review from a short one.
+      expect(body).toMatch(/truncated|\.\.\.\[cut\]/);
+    }
+  });
+});
+
+describe("CLI deep review output", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const deepReviewResult = {
+    summary: "ok",
+    verdict: "COMMENT" as const,
+    resolvedPriorIssues: [],
+    unresolvedPriorIssues: [],
+    comments: [],
+    requiresSandboxVerification: false,
+    sandboxProbes: [],
+  };
+
+  it("names the model that is about to run before the deep review call", async () => {
+    const order: string[] = [];
+    vi.spyOn(aiModule, "runDeepReview").mockImplementation(async (_prompt, options) => {
+      order.push(`call:${options?.model}`);
+      return deepReviewResult;
+    });
+
+    const started: string[] = [];
+    await runCliDeepReview({
+      overallRisk: "HIGH",
+      reviewPrompt: "prompt",
+      onStart: (model) => {
+        started.push(model);
+        order.push(`start:${model}`);
+      },
+    });
+
+    expect(started).toEqual([config.HQ_JR_MODEL_ESCALATION]);
+    // The pending line is written before the model call starts.
+    expect(order[0]).toBe(`start:${config.HQ_JR_MODEL_ESCALATION}`);
+    expect(order[1]).toBe(`call:${config.HQ_JR_MODEL_ESCALATION}`);
+    expect(formatDeepReviewPendingLine(config.HQ_JR_MODEL_ESCALATION)).toContain(
+      config.HQ_JR_MODEL_ESCALATION
+    );
+  });
+
+  it("names the fallback model in the header after the escalation model fails", async () => {
+    vi.spyOn(aiModule, "runDeepReview")
+      .mockRejectedValueOnce(new Error("escalation model unavailable"))
+      .mockResolvedValueOnce(deepReviewResult);
+
+    const started: string[] = [];
+    const { header } = await runCliDeepReview({
+      overallRisk: "HIGH",
+      reviewPrompt: "prompt",
+      onStart: (model) => started.push(model),
+    });
+
+    expect(started).toEqual([config.HQ_JR_MODEL_ESCALATION]);
+    expect(header).toContain(config.HQ_JR_MODEL_TIER2);
+    expect(header).toContain("fallback");
+  });
+});
+
+describe("CLI entry point guard", () => {
+  /**
+   * The path of src/cli.ts. The test file sits next to the module under test,
+   * so the path is stable and points at the file the guard compares against.
+   */
+  const cliModulePath = fileURLToPath(new URL("./cli.ts", import.meta.url));
+
+  it("does not run the CLI when the entry path is missing", () => {
+    // A worker thread, `node -e`, or a test harness has no process.argv[1].
+    expect(isCliEntryPoint(undefined)).toBe(false);
+  });
+
+  it("does not run the CLI when the entry path cannot be resolved", () => {
+    // An entry path that does not exist is not proof that this module is the entry point.
+    expect(isCliEntryPoint("/nonexistent/path/to/hq-jr-cli.js")).toBe(false);
+  });
+
+  it("does not run the CLI when the entry path is a different module", () => {
+    expect(isCliEntryPoint(fileURLToPath(import.meta.url))).toBe(false);
+  });
+
+  it("runs the CLI when the entry path resolves to this module", () => {
+    expect(isCliEntryPoint(cliModulePath)).toBe(true);
   });
 });

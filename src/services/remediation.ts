@@ -49,7 +49,7 @@ ${scrubbedContent}
 
   const res = await withRetry(() =>
     ai.models.generateContent({
-      model: config.HQ_JR_MODEL_TIER1,
+      model: config.HQ_JR_MODEL_REMEDIATION,
       contents,
       config: {
         systemInstruction,
@@ -73,7 +73,7 @@ ${scrubbedContent}
  * Executes autonomous remediation on a Pull Request:
  * 1. Groups review findings by file.
  * 2. Fetches current file contents from GitHub.
- * 3. Synthesizes corrected code via Gemini 3.8 Flash (High Thinking).
+ * 3. Synthesizes corrected code via the configured remediation model (High Thinking).
  * 4. Creates a Git tree and commit via Git Data API.
  * 5. Pushes to a nested branch (hq-jr/fix-pr-<num>) and/or PR branch.
  * 6. Creates a sub-PR or auto-merges if requested.
