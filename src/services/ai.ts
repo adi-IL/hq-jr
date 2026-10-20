@@ -7,7 +7,7 @@ import {
   DeepReviewResultSchema,
 } from "../schemas/review.js";
 import { safeParseJson } from "./json-repair.js";
-import { Agent, fetch as undiciFetch } from "undici";
+import { Agent, Request as UndiciRequest, fetch as undiciFetch } from "undici";
 
 export const AI_REQUEST_TIMEOUT_MS = config.HQ_JR_AI_TIMEOUT_MS;
 
@@ -19,8 +19,20 @@ export const aiDispatcherOptions = {
 };
 export const aiDispatcher = new Agent(aiDispatcherOptions);
 
-export const aiFetch = ((input: Parameters<typeof undiciFetch>[0], init?: Parameters<typeof undiciFetch>[1]) =>
-  undiciFetch(input, { ...init, dispatcher: aiDispatcher })) as unknown as typeof fetch;
+export const aiFetch = ((input: Parameters<typeof undiciFetch>[0] | Request, init?: Parameters<typeof undiciFetch>[1]) => {
+  const target =
+    input instanceof Request
+      ? new UndiciRequest(input.url, {
+          method: input.method,
+          headers: input.headers as never,
+          body: input.body,
+          signal: input.signal,
+          redirect: input.redirect,
+          ...(input.body ? { duplex: "half" as const } : {}),
+        })
+      : input;
+  return undiciFetch(target, { ...init, dispatcher: aiDispatcher });
+}) as unknown as typeof fetch;
 
 export const aiHttpOptions = { timeout: AI_REQUEST_TIMEOUT_MS, fetch: aiFetch };
 
