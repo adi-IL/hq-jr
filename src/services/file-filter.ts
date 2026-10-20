@@ -102,6 +102,17 @@ const DOCUMENTATION_BASENAMES = new Set([
   "todo",
 ]);
 
+/** Data files are not source. Under a docs directory they are documentation. */
+const DATA_EXTENSIONS = new Set([".csv", ".json", ".ndjson", ".tsv", ".xml"]);
+
+function isProseExtension(ext: string): boolean {
+  return ext === ".md" || ext === ".markdown" || ext === ".txt";
+}
+
+function isDataExtension(ext: string): boolean {
+  return DATA_EXTENSIONS.has(ext);
+}
+
 function isDocumentationPath(lowerFilename: string, ext: string, inDocsDirectory: boolean): boolean {
   if (ext === ".md" || ext === ".markdown" || ext === ".txt") {
     return true;
@@ -213,9 +224,14 @@ export function evaluateFile(filePath: string): FilterResult {
   }
 
   const pathTokens = tokenizePath(normalized);
+  const directorySegments = segments.slice(0, -1);
+  const isDocsDirectory = directorySegments.some((segment) => segment.toLowerCase() === "docs");
+  const prose = isProseExtension(ext);
+  const data = isDataExtension(ext);
 
-  // 5. Security-critical paths, including source that sits in a docs directory.
-  if (pathTokens.some((token) => isSecurityToken(token))) {
+  // 5. Security-critical source. Prose and data keep their documentation class,
+  // including a markdown file whose name contains a security root.
+  if (!prose && !data && pathTokens.some((token) => isSecurityToken(token))) {
     return {
       shouldIgnore: false,
       category: "SECURITY",
@@ -224,9 +240,7 @@ export function evaluateFile(filePath: string): FilterResult {
   }
 
   // 6. Documentation. A docs directory does not drop source files.
-  const directorySegments = segments.slice(0, -1);
-  const isDocsDirectory = directorySegments.some((segment) => segment.toLowerCase() === "docs");
-  if (isDocumentationPath(lowerFilename, ext, isDocsDirectory)) {
+  if (isDocumentationPath(lowerFilename, ext, isDocsDirectory) || (isDocsDirectory && data)) {
     return {
       shouldIgnore: true,
       reason: "Documentation / markdown content",

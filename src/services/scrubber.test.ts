@@ -487,4 +487,131 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(scrubbed).toBe('secret_key = "[REDACTED_SECRET]"');
     expect(redactedCount).toBe(1);
   });
+
+  it("redacts a secret assignment inside a quoted string", () => {
+    const raw = scrubSecrets('const payload = "{"password":"supersecret"}"');
+    expect(raw.scrubbed).toBe('const payload = "{"password":"[REDACTED_SECRET]"}"');
+    expect(raw.redactedCount).toBe(1);
+
+    const wrapped = scrubSecrets('const payload = \'{"password":"supersecret"}\'');
+    expect(wrapped.scrubbed).toBe('const payload = \'{"password":"[REDACTED_SECRET]"}\'');
+    expect(wrapped.redactedCount).toBe(1);
+
+    const escaped = scrubSecrets('const payload = "{\\"password\\":\\"supersecret\\"}"');
+    expect(escaped.scrubbed).toBe('const payload = "{\\"password\\":\\"[REDACTED_SECRET]\\"}"');
+    expect(escaped.redactedCount).toBe(1);
+
+    const plain = scrubSecrets('const label = "hello world"');
+    expect(plain.scrubbed).toBe('const label = "hello world"');
+    expect(plain.redactedCount).toBe(0);
+  });
+
+  it("finds a key that follows an unpaired quote in a comment", () => {
+    const sameLine = scrubSecrets('// it\'s a comment password = "realsecretvalue" trailing');
+    expect(sameLine.scrubbed).toBe('// it\'s a comment password = "[REDACTED_SECRET]" trailing');
+    expect(sameLine.redactedCount).toBe(1);
+
+    const nextLine = scrubSecrets('// it\'s a comment with a quote\npassword = "realsecretvalue"');
+    expect(nextLine.scrubbed).toBe('// it\'s a comment with a quote\npassword = "[REDACTED_SECRET]"');
+    expect(nextLine.redactedCount).toBe(1);
+
+    const prose = scrubSecrets('note it\'s fine password = "realsecretvalue" done');
+    expect(prose.scrubbed).toBe('note it\'s fine password = "[REDACTED_SECRET]" done');
+    expect(prose.redactedCount).toBe(1);
+  });
+
+  it("matches a secret key after an underscore", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("DB_PASSWORD=hunter2hunter2");
+    expect(scrubbed).toBe("DB_PASSWORD=[REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+
+    const separators = ["-", ".", "/", "$", " ", "(", "@", "#", "+", "*", ",", ";", ":", "=", "[", "{", "!", "?", "%", "&", "~", "^", "\\", "|", "<", ">"];
+    for (const separator of separators) {
+      const result = scrubSecrets(`${separator}PASSWORD=hunter2hunter2`);
+      expect(result.scrubbed, separator).toBe(`${separator}PASSWORD=[REDACTED_SECRET]`);
+      expect(result.redactedCount, separator).toBe(1);
+    }
+
+    const glued = scrubSecrets("xPASSWORD=hunter2hunter2");
+    expect(glued.scrubbed).toBe("xPASSWORD=hunter2hunter2");
+    expect(glued.redactedCount).toBe(0);
+
+    const trailing = scrubSecrets("PASSWORD_DB=hunter2hunter2");
+    expect(trailing.scrubbed).toBe("PASSWORD_DB=hunter2hunter2");
+    expect(trailing.redactedCount).toBe(0);
+  });
+
+  it("keeps the line break after a block scalar", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("api_key: |\n  supersecretvalue\nnext_key: value");
+    expect(scrubbed).toBe("api_key: [REDACTED_SECRET]\nnext_key: value");
+    expect(redactedCount).toBe(1);
+
+    const following = scrubSecrets("api_key: |\n  supersecretvalue\ntoken: othersecretvalue");
+    expect(following.scrubbed).toBe("api_key: [REDACTED_SECRET]\ntoken: [REDACTED_SECRET]");
+    expect(following.redactedCount).toBe(2);
+  });
+
+  it("keeps a semicolon or comma inside one secret value", () => {
+    const password = scrubSecrets("password = abc;defg");
+    expect(password.scrubbed).toBe("password = [REDACTED_SECRET]");
+    expect(password.redactedCount).toBe(1);
+
+    const comma = scrubSecrets("password = abc,defg");
+    expect(comma.scrubbed).toBe("password = [REDACTED_SECRET]");
+    expect(comma.redactedCount).toBe(1);
+
+    const shortKey = scrubSecrets("secret_key = abc;def");
+    expect(shortKey.scrubbed).toBe("secret_key = [REDACTED_SECRET]");
+    expect(shortKey.redactedCount).toBe(1);
+
+    const split = scrubSecrets("password = abc;defg; token = othersecretvalue");
+    expect(split.scrubbed).toBe("password = [REDACTED_SECRET]; token = [REDACTED_SECRET]");
+    expect(split.redactedCount).toBe(2);
+
+    const call = scrubSecrets("login(password=abc12345);");
+    expect(call.scrubbed).toBe("login(password=[REDACTED_SECRET]);");
+    expect(call.redactedCount).toBe(1);
+  });
+
+  it("does not treat the next key as an empty block scalar", () => {
+    const empty = scrubSecrets("password: |\nother: value");
+    expect(empty.scrubbed).toBe("password: |\nother: value");
+    expect(empty.redactedCount).toBe(0);
+
+    const sibling = scrubSecrets("password: |\ntoken: supersecretvalue");
+    expect(sibling.scrubbed).toBe("password: |\ntoken: [REDACTED_SECRET]");
+    expect(sibling.redactedCount).toBe(1);
+  });
+
+  it("keeps ordinary code and configuration references unredacted", () => {
+    const raw = [
+      'const label = "hello world"',
+      'const note = "password"',
+      "const banner = \"password = \"; const password = \"realsecretvalue\"",
+      "password = process.env.SECRET_KEY",
+      'password = os.getenv("DB_PASSWORD")',
+      "password = config.apiKey",
+      "password = users[currentId]",
+      "password = arr[0]",
+      "DB_PASSWORD=${DB_PASSWORD}",
+      "function checkPassword() { return 1; }",
+    ].join("\n");
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(
+      [
+        'const label = "hello world"',
+        'const note = "password"',
+        "const banner = \"password = \"; const password = \"[REDACTED_SECRET]\"",
+        "password = process.env.SECRET_KEY",
+        'password = os.getenv("DB_PASSWORD")',
+        "password = config.apiKey",
+        "password = users[currentId]",
+        "password = arr[0]",
+        "DB_PASSWORD=${DB_PASSWORD}",
+        "function checkPassword() { return 1; }",
+      ].join("\n")
+    );
+    expect(redactedCount).toBe(1);
+  });
 });

@@ -17,6 +17,9 @@
  * and is redacted whole, whatever its length. The value is one span, read
  * forward to the end of the statement, so a call argument and the indented
  * lines of a block scalar are classified with the value and not on their own.
+ * A quoted string is scanned for an assignment. A quote in a comment, and an
+ * unpaired quote, does not hide the rest of the line. A block scalar keeps
+ * the line break after its body, and an empty scalar does not take the next key.
  */
 const SECRET_PATTERNS = [
   // Private keys (RSA, EC, PGP, OPENSSH)
@@ -392,12 +395,27 @@ function startsWithKey(text: string, index: number, key: string): boolean {
   return true;
 }
 
-function skipSpacesOnly(text: string, index: number): number {
+function skipSpacesOnly(text: string, index: number, limit: number = text.length): number {
   let cursor = index;
-  while (cursor < text.length && isSpace(text[cursor])) {
+  while (cursor < limit && isSpace(text[cursor])) {
     cursor++;
   }
   return cursor;
+}
+
+/**
+ * The index after a closing quote that follows a key. The closer is the
+ * quote itself, or a backslash and the quote when the assignment is escaped
+ * inside a string.
+ */
+function closingQuoteEnd(text: string, after: number, quote: string, limit: number): number {
+  if (after < limit && text[after] === quote) {
+    return after + 1;
+  }
+  if (after + 1 < limit && text[after] === "\\" && text[after + 1] === quote) {
+    return after + 2;
+  }
+  return -1;
 }
 
 /**
@@ -405,25 +423,34 @@ function skipSpacesOnly(text: string, index: number): number {
  * whole quoted word, so a banner such as "password = " is not an assignment.
  * The scan is forward only.
  */
-function matchAssignmentAt(text: string, index: number): AssignmentHit | null {
+function matchAssignmentAt(text: string, index: number, limit: number = text.length): AssignmentHit | null {
+  if (index < 0 || index >= limit) {
+    return null;
+  }
   const quote = text[index];
   const quoted = quote === '"' || quote === "'";
   const keyStart = quoted ? index + 1 : index;
-  if (!quoted && index > 0 && isWordChar(text[index - 1])) {
+  // A leading underscore is a separator (DB_PASSWORD). A letter or digit is not.
+  if (!quoted && index > 0 && text[index - 1] !== "_" && isWordChar(text[index - 1])) {
     return null;
   }
   let key: string | null = null;
+  let cursor = 0;
   for (const candidate of SECRET_KEY_NAMES) {
     if (!startsWithKey(text, keyStart, candidate)) {
       continue;
     }
     const after = keyStart + candidate.length;
     if (quoted) {
-      if (text[after] !== quote) {
+      const closedAt = closingQuoteEnd(text, after, quote, limit);
+      if (closedAt < 0) {
         continue;
       }
-    } else if (after < text.length && isWordChar(text[after])) {
+      cursor = closedAt;
+    } else if (after < limit && isWordChar(text[after])) {
       continue;
+    } else {
+      cursor = after;
     }
     key = candidate;
     break;
@@ -431,13 +458,12 @@ function matchAssignmentAt(text: string, index: number): AssignmentHit | null {
   if (key === null) {
     return null;
   }
-  let cursor = keyStart + key.length + (quoted ? 1 : 0);
-  cursor = skipSpacesOnly(text, cursor);
-  if (cursor >= text.length || (text[cursor] !== ":" && text[cursor] !== "=")) {
+  cursor = skipSpacesOnly(text, cursor, limit);
+  if (cursor >= limit || (text[cursor] !== ":" && text[cursor] !== "=")) {
     return null;
   }
   const resumeAt = cursor + 1;
-  return { key, valueStart: skipSpacesOnly(text, resumeAt), resumeAt };
+  return { key, valueStart: skipSpacesOnly(text, resumeAt, limit), resumeAt };
 }
 
 /**
@@ -445,13 +471,13 @@ function matchAssignmentAt(text: string, index: number): AssignmentHit | null {
  * close quote or at the line break. Used so a key inside a banner is not
  * classified as its own assignment.
  */
-function skipString(text: string, start: number): number {
+function skipString(text: string, start: number, limit: number = text.length): number {
   const quote = text[start];
   let index = start + 1;
-  while (index < text.length) {
+  while (index < limit) {
     const char = text[index];
     if (char === "\\") {
-      index += 2;
+      index += index + 1 < limit ? 2 : 1;
       continue;
     }
     if (char === quote) {
@@ -465,67 +491,91 @@ function skipString(text: string, start: number): number {
   return index;
 }
 
+/** True when skipString stopped on the matching quote rather than a line break. */
+function stringClosed(text: string, start: number, end: number): boolean {
+  return end > start + 1 && text[end - 1] === text[start];
+}
+
 /**
  * True when the value opens a YAML block scalar. The indicator is | or >,
  * with an optional chomp marker or indent number, and the line ends there.
  */
-function isBlockScalarStart(text: string, start: number): boolean {
+function isBlockScalarStart(text: string, start: number, limit: number = text.length): boolean {
   const indicator = text[start];
   if (indicator !== "|" && indicator !== ">") {
     return false;
   }
   let index = start + 1;
-  if (text[index] === "+" || text[index] === "-") {
+  if (index < limit && (text[index] === "+" || text[index] === "-")) {
     index++;
   }
-  while (index < text.length && text[index] >= "0" && text[index] <= "9") {
+  while (index < limit && text[index] >= "0" && text[index] <= "9") {
     index++;
   }
-  index = skipSpacesOnly(text, index);
-  if (text[index] === "#") {
-    while (index < text.length && !isLineBreak(text[index])) {
+  index = skipSpacesOnly(text, index, limit);
+  if (index < limit && text[index] === "#") {
+    while (index < limit && !isLineBreak(text[index])) {
       index++;
     }
   }
-  return index >= text.length || isLineBreak(text[index]);
+  return index >= limit || isLineBreak(text[index]);
+}
+
+/** How far the line containing index is indented. */
+function lineIndent(text: string, index: number): number {
+  let lineStart = index;
+  while (lineStart > 0 && !isLineBreak(text[lineStart - 1])) {
+    lineStart--;
+  }
+  let indent = 0;
+  while (text[lineStart] === " " || text[lineStart] === "\t") {
+    indent++;
+    lineStart++;
+  }
+  return indent;
 }
 
 /**
  * The indented lines that follow a block scalar indicator. A less indented
  * line ends the block. Each line is visited once.
  */
-function readBlockScalar(text: string, start: number): ValueSpan {
+function readBlockScalar(text: string, start: number, limit: number = text.length): ValueSpan {
+  const parentIndent = lineIndent(text, start);
   let index = start;
-  while (index < text.length && !isLineBreak(text[index])) {
+  while (index < limit && !isLineBreak(text[index])) {
     index++;
   }
-  if (text[index] === "\r") {
+  if (index < limit && text[index] === "\r") {
     index++;
   }
-  if (text[index] === "\n") {
+  if (index < limit && text[index] === "\n") {
     index++;
   }
   let contentIndent = -1;
-  while (index < text.length) {
+  while (index < limit) {
     let line = index;
     let indent = 0;
-    while (line < text.length && (text[line] === " " || text[line] === "\t")) {
+    while (line < limit && (text[line] === " " || text[line] === "\t")) {
       indent++;
       line++;
     }
-    if (line >= text.length) {
+    if (line >= limit) {
       index = line;
       break;
     }
     if (isLineBreak(text[line])) {
-      if (text[line] === "\r") {
+      if (text[line] === "\r" && line < limit) {
         line++;
       }
-      if (text[line] === "\n") {
+      if (line < limit && text[line] === "\n") {
         line++;
       }
       index = line;
       continue;
+    }
+    // A line at or above the key is the next statement, not scalar content.
+    if (indent <= parentIndent) {
+      break;
     }
     if (contentIndent === -1) {
       contentIndent = indent;
@@ -533,16 +583,24 @@ function readBlockScalar(text: string, start: number): ValueSpan {
     if (indent < contentIndent) {
       break;
     }
-    while (line < text.length && !isLineBreak(text[line])) {
+    while (line < limit && !isLineBreak(text[line])) {
       line++;
     }
-    if (text[line] === "\r") {
+    if (line < limit && text[line] === "\r") {
       line++;
     }
-    if (text[line] === "\n") {
+    if (line < limit && text[line] === "\n") {
       line++;
     }
     index = line;
+  }
+  // The line break that ends the scalar stays in the text, so the next key
+  // keeps its own line.
+  if (index > start && text[index - 1] === "\n") {
+    index--;
+  }
+  if (index > start && text[index - 1] === "\r") {
+    index--;
   }
   return { text: text.slice(start, index), start, end: index };
 }
@@ -580,26 +638,64 @@ function quotedInterior(span: string): string | null {
   return span.slice(1, -1);
 }
 
+/** A value that is an escaped quoted string, such as \"supersecret\". */
+function readEscapedQuoted(text: string, start: number, limit: number): ValueSpan | null {
+  if (start + 1 >= limit || text[start] !== "\\") {
+    return null;
+  }
+  const quote = text[start + 1];
+  if (quote !== '"' && quote !== "'" && quote !== "`") {
+    return null;
+  }
+  let cursor = start + 2;
+  while (cursor < limit) {
+    if (text[cursor] === "\\" && cursor + 1 < limit) {
+      if (text[cursor + 1] === quote) {
+        const end = cursor + 2;
+        return { text: text.slice(start, end), start, end };
+      }
+      cursor += 2;
+      continue;
+    }
+    if (isLineBreak(text[cursor])) {
+      break;
+    }
+    cursor++;
+  }
+  return null;
+}
+
 /**
  * Reads one candidate value, forward only, until the newline that ends the
  * statement or the next secret assignment. Quotes, calls and brackets are
  * part of the span. A block scalar also includes its indented lines.
+ * A quoted value ends at its close quote, so text after it stays in place.
+ * A semicolon or comma ends the value only when it ends the statement.
  */
-function readValueSpan(text: string, start: number): ValueSpan {
-  if (start >= text.length) {
+function readValueSpan(text: string, start: number, limit: number = text.length): ValueSpan {
+  if (start >= limit) {
     return { text: "", start, end: start };
   }
-  if (isBlockScalarStart(text, start)) {
-    return readBlockScalar(text, start);
+  if (isBlockScalarStart(text, start, limit)) {
+    return readBlockScalar(text, start, limit);
+  }
+  const escaped = readEscapedQuoted(text, start, limit);
+  if (escaped !== null) {
+    return escaped;
+  }
+  const opener = text[start];
+  if (opener === '"' || opener === "'" || opener === "`") {
+    const end = skipString(text, start, limit);
+    return { text: text.slice(start, end), start, end };
   }
   let index = start;
   let depth = 0;
   let quote: string | null = null;
-  while (index < text.length) {
+  while (index < limit) {
     const char = text[index];
     if (quote !== null) {
       if (char === "\\") {
-        index += index + 1 < text.length ? 2 : 1;
+        index += index + 1 < limit ? 2 : 1;
         continue;
       }
       if (char === quote) {
@@ -635,15 +731,26 @@ function readValueSpan(text: string, start: number): ValueSpan {
       continue;
     }
     if (depth === 0 && (char === ";" || char === ",")) {
-      break;
+      const after = index + 1;
+      const next = skipSpacesOnly(text, after, limit);
+      const followedBySpace = after < limit && isSpace(text[after]);
+      const statementEnd =
+        next >= limit ||
+        isLineBreak(text[next]) ||
+        text[next] === ")" ||
+        text[next] === "]" ||
+        text[next] === "}" ||
+        followedBySpace ||
+        matchAssignmentAt(text, next, limit) !== null;
+      if (statementEnd) {
+        break;
+      }
+      index++;
+      continue;
     }
     if (isSpace(char)) {
-      const next = skipSpacesOnly(text, index);
-      if (
-        next >= text.length ||
-        isLineBreak(text[next]) ||
-        matchAssignmentAt(text, next) !== null
-      ) {
+      const next = skipSpacesOnly(text, index, limit);
+      if (next >= limit || isLineBreak(text[next]) || matchAssignmentAt(text, next, limit) !== null) {
         break;
       }
       index = next;
@@ -672,6 +779,21 @@ function literalIsSecret(literal: string, key: string): boolean {
 }
 
 /**
+ * The body of an escaped quoted span (\"secret\"), or null when the span is
+ * any other shape. The escaped quotes stay in the output.
+ */
+function escapedQuotedBody(span: string): string | null {
+  if (span.length < 4 || span[0] !== "\\") {
+    return null;
+  }
+  const quote = span[1];
+  if ((quote !== '"' && quote !== "'" && quote !== "`") || span[span.length - 2] !== "\\" || span[span.length - 1] !== quote) {
+    return null;
+  }
+  return span.slice(2, -2);
+}
+
+/**
  * The range to replace, or null when the candidate is code or too short to
  * be a credential. A quoted literal is replaced inside its quotes. Anything
  * else is replaced as a whole span.
@@ -694,6 +816,13 @@ function redactRange(span: ValueSpan, key: string): { start: number; end: number
     }
     return { start: span.start, end: span.end };
   }
+  const escapedBody = escapedQuotedBody(raw);
+  if (escapedBody !== null) {
+    if (!literalIsSecret(escapedBody, key)) {
+      return null;
+    }
+    return { start: span.start + 2, end: span.end - 2 };
+  }
   const interior = quotedInterior(raw);
   if (interior !== null) {
     if (!literalIsSecret(interior, key)) {
@@ -710,33 +839,120 @@ function redactRange(span: ValueSpan, key: string): { start: number; end: number
   return null;
 }
 
-/**
- * Replaces the value of each generic secret assignment with the placeholder.
- * The scan walks forward once. A value is classified once, so a key inside
- * a value is not a second assignment.
- */
-function redactGenericAssignments(input: string): { text: string; count: number } {
-  let text = "";
-  let lastIndex = 0;
-  let count = 0;
-  let index = 0;
+function findLineEnd(text: string, index: number, limit: number): number {
+  while (index < limit && !isLineBreak(text[index])) {
+    index++;
+  }
+  return index;
+}
 
-  while (index < input.length) {
-    const char = input[index];
-    if ((char === '"' || char === "'" || char === "`") && matchAssignmentAt(input, index) === null) {
-      index = skipString(input, index);
+function findBlockCommentEnd(text: string, index: number, limit: number): number {
+  let cursor = index + 2;
+  while (cursor + 1 < limit) {
+    if (text[cursor] === "*" && text[cursor + 1] === "/") {
+      return cursor + 2;
+    }
+    cursor++;
+  }
+  return limit;
+}
+
+function isLineCommentStart(text: string, index: number, limit: number): boolean {
+  return index + 1 < limit && text[index] === "/" && text[index + 1] === "/";
+}
+
+function isBlockCommentStart(text: string, index: number, limit: number): boolean {
+  return index + 1 < limit && text[index] === "/" && text[index + 1] === "*";
+}
+
+/** A hash comment starts a line, or follows only spaces on that line. */
+function isHashCommentStart(text: string, index: number): boolean {
+  if (text[index] !== "#") {
+    return false;
+  }
+  let cursor = index - 1;
+  while (cursor >= 0 && !isLineBreak(text[cursor])) {
+    if (!isSpace(text[cursor])) {
+      return false;
+    }
+    cursor--;
+  }
+  return true;
+}
+
+/**
+ * Redacts assignments in [start, end). A comment is scanned with inComment
+ * set, so a quote there is not the start of a string. Each index is visited
+ * a constant number of times.
+ */
+function redactRegion(
+  input: string,
+  start: number,
+  end: number,
+  inComment: boolean
+): { text: string; count: number } {
+  let text = "";
+  let last = start;
+  let count = 0;
+  let index = start;
+
+  while (index < end) {
+    if (!inComment && (isLineCommentStart(input, index, end) || isHashCommentStart(input, index))) {
+      const lineEnd = findLineEnd(input, index, end);
+      const inner = redactRegion(input, index, lineEnd, true);
+      text += input.slice(last, index) + inner.text;
+      last = lineEnd;
+      count += inner.count;
+      index = lineEnd;
       continue;
     }
-    const assignment = matchAssignmentAt(input, index);
+    if (!inComment && isBlockCommentStart(input, index, end)) {
+      const blockEnd = findBlockCommentEnd(input, index, end);
+      const inner = redactRegion(input, index, blockEnd, true);
+      text += input.slice(last, index) + inner.text;
+      last = blockEnd;
+      count += inner.count;
+      index = blockEnd;
+      continue;
+    }
+
+    const char = input[index];
+    if (
+      !inComment &&
+      (char === '"' || char === "'" || char === "`") &&
+      matchAssignmentAt(input, index, end) === null
+    ) {
+      const stringEnd = skipString(input, index, end);
+      if (!stringClosed(input, index, stringEnd)) {
+        index++;
+        continue;
+      }
+      const closer = stringEnd - 1;
+      if (closer !== index && matchAssignmentAt(input, closer, end) !== null) {
+        index = closer;
+        continue;
+      }
+      const inner = redactRegion(input, index + 1, closer, false);
+      text += input.slice(last, index + 1) + inner.text;
+      last = closer;
+      count += inner.count;
+      index = stringEnd;
+      continue;
+    }
+
+    const assignment = matchAssignmentAt(input, index, end);
     if (assignment === null) {
       index++;
       continue;
     }
-    if (assignment.valueStart >= input.length || isLineBreak(input[assignment.valueStart])) {
+    if (assignment.valueStart >= end || isLineBreak(input[assignment.valueStart])) {
       index = Math.max(assignment.resumeAt, index + 1);
+      if (index > end) {
+        index = end;
+      }
       continue;
     }
-    const span = readValueSpan(input, assignment.valueStart);
+    const span = readValueSpan(input, assignment.valueStart, end);
     if (span.end <= index) {
       index++;
       continue;
@@ -746,14 +962,23 @@ function redactGenericAssignments(input: string): { text: string; count: number 
       index = span.end;
       continue;
     }
-    text += input.slice(lastIndex, range.start) + REDACTION_PLACEHOLDER;
-    lastIndex = range.end;
+    text += input.slice(last, range.start) + REDACTION_PLACEHOLDER;
+    last = range.end;
     count++;
     index = span.end;
   }
 
-  text += input.slice(lastIndex);
+  text += input.slice(last, end);
   return { text, count };
+}
+
+/**
+ * Replaces the value of each generic secret assignment with the placeholder.
+ * The scan walks forward once. A value is classified once, so a key inside
+ * a value is not a second assignment.
+ */
+function redactGenericAssignments(input: string): { text: string; count: number } {
+  return redactRegion(input, 0, input.length, false);
 }
 
 /**
