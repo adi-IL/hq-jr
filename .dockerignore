@@ -4,6 +4,7 @@ dist
 .github
 .env*
 !.env.example
+gcloud
 data
 *.db
 *.db-wal
@@ -15,3 +16,5 @@ scratch
 .internal
 **/*.test.ts
 docs
+manual-test-output.txt
+deploy/.last-failed-image

@@ -14,7 +14,7 @@ The container is the recommended production shape. It ships the Node runtime, pr
 
 ## Published Container (GHCR)
 
-Each release publishes two tags to GitHub Container Registry:
+Each release publishes its version tag (for example `0.1.9`) to GitHub Container Registry, and moves `latest` when it is the highest release:
 
 ```bash
 docker pull ghcr.io/adi-il/hq-jr:latest
@@ -31,19 +31,31 @@ CMD ["probot", "run", "./dist/index.js"]
 
 The image is the App daemon. It is separate from the npm global CLI (`npm i -g hq-jr`), which exposes only `health`, `review`, and `sandbox-test`.
 
-Each release also attaches `hq-jr-<version>-linux-amd64.tar.gz` to the [GitHub Release](https://github.com/adi-IL/hq-jr/releases).
+The image also carries the deploy files at `/app/deploy` (`compose.yaml`, `update.sh`, `refresh-deploy-files.sh`, `hq-jr-update.service`, `hq-jr-update.timer`), so a host can extract the updater that matches a release. See [`deploy/README.md`](../deploy/README.md) for the two ways to put those files on a host.
 
 ## Release Pipeline (Maintainers)
 
-Pushes to `master` or `main` run `.github/workflows/release.yml` unless the commit message contains `[skip release]`:
+Releases are tag driven. Pushing a `v*` tag runs `.github/workflows/release.yml`; nothing else starts a release.
 
-1. Install dependencies, typecheck, and test.
-2. Compute the next patch version as `patch(max(package.json version, npm latest))`.
-3. Build with `NODE_ENV=production`.
-4. Publish to npm.
-5. Push the version commit and tag, retrying with a rebase if `master` moved during the run. The tag stays on the published commit.
-6. Build and push the GHCR image with the version tag and `latest`.
-7. Create the GitHub Release with the Docker tarball asset.
+```bash
+node scripts/bump-version.mjs
+git push origin HEAD
+git push origin v0.1.9
+```
+
+`scripts/bump-version.mjs` is the maintainer step that replaces the version bump the workflow used to do. It reads `package.json`, computes the next version as `patch(max(package.json version, npm latest version))`, writes it into `package.json` and `package-lock.json`, commits both as `chore: release X.Y.Z [skip release]`, and creates the annotated tag `vX.Y.Z`. It refuses to run on a dirty working tree, on a version whose tag already exists locally or on `origin`, when HEAD is a release commit whose tag was never created, and when the npm package points at a different repository. Every check fails closed: when `origin` or the npm registry cannot be read, the script stops instead of assuming the answer. If the commit succeeds but the tag fails, it prints the commit and the exact command to finish or undo the release. Use `--dry-run` to print the plan and `--help` for the options.
+
+The tag is the version. The workflow asserts that `vX.Y.Z` matches the `package.json` version of the tagged commit and fails the run when it does not, so the version must be committed before the tag is pushed.
+
+The workflow runs five jobs:
+
+1. **Verify tag and version.** Checks the tag shape and asserts it matches `package.json`.
+2. **Test and pack.** Installs, typechecks, tests, builds, packs the tarball, and runs `scripts/check-package-contents.mjs` on it, the same forbidden-file check CI runs on every branch.
+3. **Publish to npm.** Downloads that tarball and runs `npm publish --access public --provenance` on it. This job holds `id-token: write`, so it runs no repository code and no dependency install. A version older than the current npm `latest` is published under the `backport` dist-tag, so `latest` never moves backward.
+4. **Build and push GHCR image.** Builds the image from the tagged commit with the OCI labels from `docker/metadata-action` and pushes the version tag. It lists the `vX.Y.Z` tags on `origin` and moves `latest` only when this tag is the highest, so re-running an older tag never moves `latest` backward.
+5. **Create GitHub Release.** Creates the release for the tag with generated release notes and the install commands.
+
+Each job holds only the permissions it needs: `id-token: write` for npm provenance, `packages: write` for GHCR, `contents: write` for the GitHub Release. The workflow is safe to re-run on the same tag: the npm step skips a version that is already published, the image push overwrites the version tag, and the release step updates the existing release.
 
 Required repository secret:
 
@@ -51,9 +63,9 @@ Required repository secret:
 | :--- | :--- |
 | `NPM_TOKEN` | npm publish token. |
 
-`GITHUB_TOKEN` is automatic and provides `contents: write` and `packages: write` for the tag push, GitHub Release, and GHCR push.
+`GITHUB_TOKEN` is automatic. Provenance also requires the `id-token: write` permission, which the workflow requests for the npm job only.
 
-Version rules and the publish-before-push ordering live in `.github/workflows/release.yml`. The tag push retries three times. If all attempts fail, the run pushes a `release-recovery/<tag>` branch and uploads the version commit patch as an artifact, then prints the recovery details; it never republishes.
+If a publish step fails after the version reached npm, do not republish under a new version without checking the registry first. The version and the tag identify one release.
 
 ## Reference Deployment: GHCR + Docker Compose
 
@@ -63,8 +75,10 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 | :--- | :--- |
 | `deploy/compose.yaml` | Container definition: image, env file, data volume, ADC mount, port, healthcheck, log rotation. |
 | `deploy/update.sh` | Reads the image from compose, pulls it, compares image IDs, recreates only on change, health-checks, and rolls back to the previous image if the new one fails. |
+| `deploy/refresh-deploy-files.sh` | Copies the deploy files from a released image into `/opt/hq-jr/deploy` and keeps the host `compose.yaml`. |
 | `deploy/hq-jr-update.service` | Oneshot systemd unit that runs `update.sh`. |
 | `deploy/hq-jr-update.timer` | Runs the update unit every 15 minutes. |
+| `deploy/README.md` | The two update modes, with the exact commands for each. |
 
 ### Prerequisites
 
@@ -77,13 +91,19 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 
 ### Setup
 
-1. Place the deployment on the host. The reference layout is `/opt/hq-jr`:
+1. Place the deployment on the host. The reference layout is `/opt/hq-jr`, and the host does not need a git checkout. The recommended mode materializes the deploy directory from the released image:
+
+   Run these as the deploy account. It owns `/opt/hq-jr` and `/opt/hq-jr/deploy`, so it can write `.env`, the deploy files, and the `update.sh` state:
 
    ```bash
-   sudo mkdir -p /opt/hq-jr
-   sudo chown "$USER":"$USER" /opt/hq-jr
-   git clone https://github.com/adi-IL/hq-jr.git /opt/hq-jr
+   sudo install -d -o "$(id -un)" -g "$(id -gn)" /opt/hq-jr /opt/hq-jr/deploy
+   docker pull ghcr.io/adi-il/hq-jr:latest
+   docker create --name hqjr-deploy-extract ghcr.io/adi-il/hq-jr:latest
+   docker cp hqjr-deploy-extract:/app/deploy/. /opt/hq-jr/deploy/
+   docker rm hqjr-deploy-extract
    ```
+
+   The alternative is to copy `deploy/` to the host by hand. Both modes are documented in [`deploy/README.md`](../deploy/README.md).
 
 2. Create `/opt/hq-jr/.env` from `.env.example`. At minimum:
 
@@ -99,14 +119,14 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
    Keep `PRIVATE_KEY` on one line with escaped `\n` characters. Do not put spaces around `=`.
 
    ```bash
+   touch /opt/hq-jr/.env
    chmod 600 /opt/hq-jr/.env
    ```
 
 3. Create the data directory. The container runs as uid `1001`, so that user must own the directory:
 
    ```bash
-   mkdir -p /opt/hq-jr/data
-   sudo chown -R 1001:1001 /opt/hq-jr/data
+   sudo install -d -o 1001 -g 1001 /opt/hq-jr/data
    ```
 
 4. Stage ADC. The container runs as uid `1001` and only needs the ADC JSON file:
@@ -119,6 +139,8 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
    ```
 
    `deploy/compose.yaml` mounts `/opt/hq-jr/gcloud` at `/gcloud` and sets `GOOGLE_APPLICATION_CREDENTIALS=/gcloud/application_default_credentials.json`. Mounting the dedicated directory keeps unrelated host credentials out of the container. On a GCE VM whose service account has the Vertex AI scope, remove that mount and the `GOOGLE_APPLICATION_CREDENTIALS` variable.
+
+   That directory holds the Application Default Credentials file. A `gcloud/` directory is gitignored in this repository and excluded from the Docker build context, and CI fails if a credential JSON shows up under it. Never commit it, and never copy it into the image.
 
 5. Start the service:
 
@@ -135,10 +157,11 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
    docker compose logs --tail=50
    ```
 
-7. Install the update timer:
+7. Install the update timer. Set `User` and `Group` in the unit to the deploy account before enabling it:
 
    ```bash
    sudo cp /opt/hq-jr/deploy/hq-jr-update.service /opt/hq-jr/deploy/hq-jr-update.timer /etc/systemd/system/
+   sudo sed -i "s/^User=.*/User=$(id -un)/; s/^Group=.*/Group=$(id -gn)/" /etc/systemd/system/hq-jr-update.service
    sudo systemctl daemon-reload
    sudo systemctl enable --now hq-jr-update.timer
    ```
@@ -161,6 +184,14 @@ The image user is `hqjr` (`1001:1001`), not root. The data directory must remain
 ### Upgrades and Rollback
 
 The update timer runs every 15 minutes. `deploy/update.sh` reads the image reference from the compose file, pulls it, compares the running image ID with the pulled image ID, recreates the container only when they differ, and polls `/livez` until a 60-second deadline. If the new container stays unhealthy, the script restores the previous image when one exists and exits non-zero. It records the failed digest in `deploy/.last-failed-image` and skips that digest until a new image is published.
+
+In image-baked mode, refresh the deploy files from the new release before or together with the update:
+
+```bash
+/opt/hq-jr/deploy/refresh-deploy-files.sh
+```
+
+It pulls the image that `compose.yaml` runs, copies the deploy files from it, and keeps the host `compose.yaml`, writing the release copy as `compose.yaml.release`. Pass an image reference to take the files from a specific release. It does not update the units in `/etc/systemd/system`; re-run step 7 when a release changes them. Uncomment `ExecStartPre` in the unit to run it before every update, after reading the trust note in [`deploy/README.md`](../deploy/README.md).
 
 Manual upgrade:
 
@@ -366,4 +397,4 @@ It does not call Vertex AI. The Docker healthcheck and `deploy/update.sh` use th
 - **GitHub API limits.** Probot includes `@octokit/plugin-throttling`; secondary rate limits back off and retry.
 - **Vertex AI quota limits.** `withRetry` in `src/services/ai.ts` retries `429` / `RESOURCE_EXHAUSTED` up to 3 times with exponential backoff starting at 2,500 ms.
 - **SQLite durability.** Active run locks, review findings, remediation commit markers, and Tier 3 sandbox recovery all depend on a durable `HQ_JR_DB_PATH`. Use a persistent volume in every production topology.
-- **Legacy source service.** The volt-rust host keeps a disabled `hq-jr.service` unit and the old `/opt/hq-jr` checkout as a fallback. New deployments should use the container path above.
+- **Legacy source service.** The volt-rust host keeps a disabled `hq-jr.service` unit and the old `/opt/hq-jr` checkout as an optional fallback. Nothing in the container path depends on it, and a new deployment does not need it.
