@@ -158,6 +158,27 @@ describe("check-doc-code-sanity project structure parsing", () => {
     expect(output).toContain("src/services/gone.ts");
   });
 
+  it("reports a directory code span that does not exist", () => {
+    const readme = readFileSync(readmePath, "utf8").replace(
+      "## Project Structure",
+      "`src/widgets/`\n\n## Project Structure"
+    );
+    const { output, code } = runCheck(readme);
+    expect(code).toBe(1);
+    expect(output).toContain("src/widgets/");
+  });
+
+  it("does not flag a directory example on a line that names a foreign file", () => {
+    const readme = readFileSync(readmePath, "utf8").replace(
+      "## Project Structure",
+      "`src/widgets/` `src/example.py`\n\n## Project Structure"
+    );
+    const { output, code } = runCheck(readme);
+    expect(output).not.toContain("src/widgets/");
+    expect(output).not.toContain("src/example.py");
+    expect(code).toBe(0);
+  });
+
   it("does not require a test file to be named in the docs", () => {
     const extra = join(repoRoot, "src/services/zz-doc-only.test.ts");
     writeFileSync(extra, "export const t = 1;\n");
@@ -231,9 +252,20 @@ describe("not wired claims", () => {
   });
 
   it("does not treat an import of symbol-cache-utils as an import of symbol-cache", () => {
-    const { output } = withWire(
+    const readme = readFileSync(readmePath, "utf8").replace(
+      "## Project Structure",
+      "`src/services/zz-wire.ts`\n\n## Project Structure"
+    );
+    writeFileSync(
+      wire,
       'import { cache } from "./symbol-cache-utils.js";\nexport const cache = 1;\n'
     );
-    expect(output).not.toContain("not wired");
+    try {
+      const { output, code } = runCheck(readme);
+      expect(code).toBe(0);
+      expect(output).not.toContain("not wired");
+    } finally {
+      unlinkSync(wire);
+    }
   });
 });

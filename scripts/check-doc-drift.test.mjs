@@ -69,6 +69,48 @@ describe("readConfigDefaults", () => {
     expect(unreadable).not.toContain("HQ_JR_WEIRD");
     expect(defaults.get("HQ_JR_WEIRD")).toBe("true");
   });
+
+  it("decodes an escape sequence in a string default", () => {
+    const { defaults, unreadable } = readConfigDefaults(`
+      const envSchema = z.object({
+        HQ_JR_WEIRD: z.string().default("a\\nb"),
+      });
+    `);
+    expect(unreadable).not.toContain("HQ_JR_WEIRD");
+    expect(defaults.get("HQ_JR_WEIRD")).toBe("a\nb");
+  });
+
+  it("reports a string default whose escape cannot be decoded", () => {
+    const { defaults, unreadable } = readConfigDefaults(`
+      const envSchema = z.object({
+        HQ_JR_WEIRD: z.string().default("a\\8b"),
+      });
+    `);
+    expect(defaults.has("HQ_JR_WEIRD")).toBe(false);
+    expect(unreadable).toContain("HQ_JR_WEIRD");
+  });
+
+  it("ignores a commented out default and reads the live one", () => {
+    const { defaults, unreadable } = readConfigDefaults(`
+      const envSchema = z.object({
+        HQ_JR_WEIRD: z.string()
+          // .default("stale")
+          .default("live"),
+      });
+    `);
+    expect(unreadable).not.toContain("HQ_JR_WEIRD");
+    expect(defaults.get("HQ_JR_WEIRD")).toBe("live");
+  });
+
+  it("does not read a default that exists only in a comment", () => {
+    const { defaults, unreadable } = readConfigDefaults(`
+      const envSchema = z.object({
+        HQ_JR_WEIRD: z.string(), // .default("stale")
+      });
+    `);
+    expect(defaults.has("HQ_JR_WEIRD")).toBe(false);
+    expect(unreadable).not.toContain("HQ_JR_WEIRD");
+  });
 });
 
 describe("readEnvBlockDefaultsFrom", () => {
@@ -119,6 +161,14 @@ describe("readEnvBlockDefaultsFrom", () => {
     const parsed = readEnvBlockDefaultsFrom("``` not a block\nPORT=1\n", "README.md");
     expect(parsed.blocksUnreadable).toBe(true);
     expect(parsed.defaults.has("PORT")).toBe(false);
+  });
+
+  it("reports an unmatched fence that follows a closed block", () => {
+    const parsed = readEnvBlockDefaultsFrom(
+      "```bash\nPORT=3000\n```\n```bash\nNODE_ENV=production\n",
+      "README.md"
+    );
+    expect(parsed.blocksUnreadable).toBe(true);
   });
 
   it("skips a command that shares the line with an assignment", () => {
