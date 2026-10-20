@@ -77,7 +77,7 @@ flowchart TD
 
 ### Multi-Tier AI Review Funnel
 
-Defaults match [`src/config.ts`](src/config.ts): Tier 1 and Tier 2 use `gemini-3.8-flash`. Override via env if needed.
+Defaults match [`src/config.ts`](src/config.ts). Tier 1 and Tier 2 use `gemini-3.8-flash`. A high-risk change escalates the deep review to `gemini-4-argon`. Override any of them via env.
 
 1. **Pre-AI Heuristic Filter & Diff Parser** ([`src/services/file-filter.ts`](src/services/file-filter.ts), [`src/services/diff-parser.ts`](src/services/diff-parser.ts)):
    - Excludes lockfiles, compiled artifacts (`dist/`, `build/`), vendor bundles, minified JS, and binary assets.
@@ -87,14 +87,21 @@ Defaults match [`src/config.ts`](src/config.ts): Tier 1 and Tier 2 use `gemini-3
    - **Gemini 3.8 Flash** with **High Thinking** (`HQ_JR_MODEL_TIER1`), narrow triage prompt and schema.
    - Sets per-file **overall risk** as `LOW` | `MEDIUM` | `HIGH` and `shouldReview`; skips deep review for low-risk changes.
 3. **Tier 2: Deep Semantic Audit** ([`src/services/ai.ts`](src/services/ai.ts)):
-   - Same default model with **High Thinking** (`HQ_JR_MODEL_TIER2`; optional override e.g. `gemini-3.1-pro-preview`), wider review prompt.
+   - **Gemini 3.8 Flash** with **High Thinking** (`HQ_JR_MODEL_TIER2`; optional override e.g. `gemini-3.1-pro-preview`), wider review prompt.
    - Finding **severity** is `CRITICAL` | `WARNING` | `SUGGESTION` (separate from triage risk).
    - Loads prior findings via [`src/services/review-memory.ts`](src/services/review-memory.ts).
    - Line-anchored comments with suggestion blocks; HTTP 422 fallback if lines drift.
-4. **Tier 3: Sandbox Verification (experimental)** (CLI & runner):
+4. **Tier 2 Escalation: Gemini 4 Argon** ([`src/services/ai.ts`](src/services/ai.ts)):
+   - When the triage **overall risk** reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), the deep review runs on `gemini-4-argon` instead (`HQ_JR_MODEL_ESCALATION`).
+   - Argon costs roughly 2.7x Flash per token, so the gate keeps it off low-risk changes.
+   - If the escalation call fails, the review retries once on `HQ_JR_MODEL_TIER2` and logs the fallback. A model-access or quota failure never fails the review.
+   - The escalation model runs with an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). Tier 1 and Tier 2 keep their previous uncapped behavior.
+5. **Tier 3: Sandbox Verification (experimental)** (CLI & runner):
    - Antigravity agent (`HQ_JR_AGENT_TIER3`, default `antigravity-preview-05-2026`) for empirical reproduction in isolated containers via `src/cli.ts` / [`src/services/sandbox-runner.ts`](src/services/sandbox-runner.ts).
    - After dispatch the Check Run stays `in_progress` while `pollSandboxInteraction` waits for a verdict; conclusion is success/failure/neutral from that result (not success-on-dispatch).
    - Treat as experimental until you validate live Antigravity in your environment.
+
+Each workload picks its own model, so raising one does not raise the others: triage (`HQ_JR_MODEL_TIER1`), deep review (`HQ_JR_MODEL_TIER2`), escalation (`HQ_JR_MODEL_ESCALATION`), discussion replies (`HQ_JR_MODEL_DISCUSSION`), remediation synthesis (`HQ_JR_MODEL_REMEDIATION`), and the health probe (`HQ_JR_MODEL_HEALTH`).
 
 ---
 
@@ -161,6 +168,12 @@ GOOGLE_CLOUD_LOCATION=global
 HQ_JR_MODEL_TIER1=gemini-3.8-flash
 HQ_JR_MODEL_TIER2=gemini-3.8-flash
 # Optional: HQ_JR_MODEL_TIER2=gemini-3.1-pro-preview
+HQ_JR_MODEL_ESCALATION=gemini-4-argon
+HQ_JR_ESCALATION_MIN_RISK=HIGH
+HQ_JR_MODEL_DISCUSSION=gemini-3.8-flash
+HQ_JR_MODEL_REMEDIATION=gemini-3.8-flash
+HQ_JR_MODEL_HEALTH=gemini-3.8-flash
+HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS=32768
 HQ_JR_AGENT_TIER3=antigravity-preview-05-2026
 
 PORT=3000
