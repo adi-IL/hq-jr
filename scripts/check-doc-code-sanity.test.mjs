@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -9,31 +9,31 @@ const script = join(repoRoot, "scripts", "check-doc-code-sanity.mjs");
 const readmePath = join(repoRoot, "README.md");
 
 /**
- * The files the tests below put in the tree. The check reads the whole tree,
- * so a file left behind by an interrupted run makes every other test in this
+ * The paths the tests below put in the tree. The check reads the whole tree,
+ * so a path left behind by an interrupted run makes every other test in this
  * file fail. They are removed before and after every test.
  *
- * The names that start with zz- belong to these tests and are removed
- * whatever they hold. The one file that has to carry a name of its own is
- * removed only when it still holds the content the test wrote, so a file a
- * developer is working on is never deleted.
+ * Every path starts with zz-, so it cannot be a module of the repository and
+ * a file a developer is working on is never touched.
  */
-const tempFiles = [
+const tempPaths = [
   join(repoRoot, "src/services/zz-doc-only.test.ts"),
   join(repoRoot, "src/services/zz-wire.ts"),
+  join(repoRoot, "src/services/zz-doc-only"),
 ];
-const namedTempFile = join(repoRoot, "src/services/index.ts");
+
+// The file name has to be one the README already names, so the check has to
+// see the file name and the path as two different things. The directory keeps
+// the name out of the way of the modules of the repository.
+const namedTempFile = join(repoRoot, "src/services/zz-doc-only/index.ts");
 const namedTempContent = "export const extra = 1;\n";
 
-function removeTempFiles() {
-  for (const file of tempFiles) rmSync(file, { force: true });
-  if (existsSync(namedTempFile) && readFileSync(namedTempFile, "utf8") === namedTempContent) {
-    rmSync(namedTempFile, { force: true });
-  }
+function removeTempPaths() {
+  for (const path of tempPaths) rmSync(path, { force: true, recursive: true });
 }
 
-beforeEach(removeTempFiles);
-afterEach(removeTempFiles);
+beforeEach(removeTempPaths);
+afterEach(removeTempPaths);
 
 /**
  * Runs the sanity check against a README and returns its output and exit code.
@@ -155,13 +155,14 @@ describe("check-doc-code-sanity project structure parsing", () => {
 
   it("reports a new module whose filename already appears in the README", () => {
     const extra = namedTempFile;
+    mkdirSync(dirname(extra), { recursive: true });
     writeFileSync(extra, namedTempContent);
     try {
       const { output, code } = runCheck(readFileSync(readmePath, "utf8"));
       expect(code).toBe(1);
-      expect(output).toContain("src/services/index.ts is not mentioned");
+      expect(output).toContain("src/services/zz-doc-only/index.ts is not mentioned");
     } finally {
-      unlinkSync(extra);
+      rmSync(dirname(extra), { recursive: true, force: true });
     }
   });
 
