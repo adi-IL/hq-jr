@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-10-21
+
+### Added
+
+- `AGENTS.md`, `.agents/skills/` (`daily-maintenance`, `release-guard`, `review-loop`), and `scripts/check-agents-files.mjs` in CI to enforce line limits, valid repository paths, and secret checks on agent instruction files.
+
+### Fixed
+
+- Tier 3 sandbox dispatch (`ai.interactions.create` and `ai.interactions.get`) failed with `TypeError: Failed to parse URL from [object Request]` because `@google/genai` passes a native `Request` instance to `aiFetch`, and the bundled `undici` package rejected native `Request` objects. `aiFetch` now extracts the native `Request` URL and metadata via `toAiFetchInit` before dispatching through `aiDispatcher`.
+
 ## [0.1.10] - 2026-10-20
 
 ### Fixed
