@@ -54,6 +54,9 @@ for file in "$staging"/*; do
 done
 
 echo "deploy files refreshed from $image"
-if ! cmp -s compose.yaml compose.yaml.release; then
+# A deploy directory that has no compose.yaml yet has nothing to compare, so
+# the release copy is only reported when there is a host copy to compare it
+# with.
+if [ -f compose.yaml ] && ! cmp -s compose.yaml compose.yaml.release; then
   echo "compose.yaml differs from the release copy; review compose.yaml.release"
 fi

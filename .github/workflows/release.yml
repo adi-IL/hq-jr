@@ -350,9 +350,15 @@ jobs:
         id: latest
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -o pipefail
-          tags="$(git ls-remote --tags --refs origin 'refs/tags/v*')"
+          set -euo pipefail
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          if ! tags="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            ls-remote --tags --refs origin 'refs/tags/v*')"; then
+            echo "::error::Could not list the release tags on origin."
+            exit 1
+          fi
           highest="$(printf '%s\n' "$tags" \
             | sed -n 's#^.*refs/tags/v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$#\1#p' \
             | sort -V | tail -n 1)"
