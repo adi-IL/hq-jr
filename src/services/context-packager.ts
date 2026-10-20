@@ -26,6 +26,8 @@ const DEFAULT_MAX_TOTAL_CHARS = 120000;
 const DEFAULT_MAX_PER_FILE_CHARS = 30000;
 const PER_FILE_TRUNCATION_NOTICE = "\n... [diff truncated due to size limit]";
 const TOTAL_TRUNCATION_NOTICE = "\n... [diff truncated to preserve context budget]";
+/** The shared tail of the budget cut notices. */
+const BUDGET_CUT_TEXT = "truncated to preserve context budget";
 const METADATA_TRUNCATION_NOTICE = "\n... [metadata truncated to preserve context budget]";
 const BUDGET_DROP_REASON = "Context window budget limit reached";
 const BINARY_SKIP_REASON = "Binary file has no reviewable text";
@@ -174,12 +176,20 @@ export function packageReviewContext(
   ];
   // A file that the budget dropped is named in the ignored list, but the
   // payload must also say that the diff content was cut, so the cut is never
-  // silent. The notice travels with the payload, so its room is taken from
-  // the budget as soon as it is known.
+  // silent.
+  //
+  // The notice travels with the payload, so its room comes out of the
+  // metadata. When no file was kept the metadata holds no review line, so
+  // the cut cannot take a listed path away.
   let payload = layout.payload;
-  if (budgetDropped.length > 0 && !payload.includes(TOTAL_TRUNCATION_NOTICE)) {
-    const withNotice = `${payload}${TOTAL_TRUNCATION_NOTICE}`;
-    payload = withNotice.length <= maxTotalChars ? withNotice : payload;
+  if (budgetDropped.length > 0 && !payload.includes(BUDGET_CUT_TEXT)) {
+    if (itemsToReview.length === 0 && maxTotalChars > TOTAL_TRUNCATION_NOTICE.length) {
+      payload =
+        cutAtLineBoundary(payload, maxTotalChars - TOTAL_TRUNCATION_NOTICE.length) +
+        TOTAL_TRUNCATION_NOTICE;
+    } else if (payload.length + TOTAL_TRUNCATION_NOTICE.length <= maxTotalChars) {
+      payload = payload + TOTAL_TRUNCATION_NOTICE;
+    }
   }
 
   return {
