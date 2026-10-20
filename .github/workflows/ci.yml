@@ -88,5 +88,11 @@ jobs:
       - name: Verify npm Package Contents
         run: node scripts/check-package-contents.mjs
 
+      - name: Verify Documented Environment Variables
+        run: node scripts/check-doc-drift.mjs
+
+      - name: Verify Documentation Matches The Code
+        run: node scripts/check-doc-code-sanity.mjs
+
       - name: Dependency Vulnerability Audit
         run: npm audit --omit=dev --audit-level=high
