@@ -86,6 +86,28 @@ describe("File Filter & Noise Exclusion", () => {
     expect(result.category).toBe("DOCUMENTATION");
   });
 
+  it("reviews security source that sits in a docs directory", () => {
+    const session = evaluateFile("src/docs/session-auth.ts");
+    expect(session.category).toBe("SECURITY");
+    expect(session.shouldIgnore).toBe(false);
+    expect(session.riskWeight).toBe(10);
+
+    const token = evaluateFile("packages/docs/token.ts");
+    expect(token.category).toBe("SECURITY");
+    expect(token.shouldIgnore).toBe(false);
+    expect(token.riskWeight).toBe(10);
+  });
+
+  it("reviews source files in a docs directory", () => {
+    const helper = evaluateFile("src/docs/helper.ts");
+    expect(helper.shouldIgnore).toBe(false);
+    expect(helper.category).not.toBe("DOCUMENTATION");
+
+    const script = evaluateFile("docs/setup.js");
+    expect(script.shouldIgnore).toBe(false);
+    expect(script.category).not.toBe("DOCUMENTATION");
+  });
+
   it("finds security roots inside compound words", () => {
     for (const file of [
       "src/errors/UnauthorizedError.ts",

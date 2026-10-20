@@ -378,4 +378,113 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(redactedCount).toBe(0);
     expect(elapsed).toBeLessThan(500);
   });
+
+  it("redacts the assignment that follows a quoted password banner", () => {
+    const { scrubbed, redactedCount } = scrubSecrets(
+      'const banner = "password = "; const password = "realsecretvalue"'
+    );
+
+    expect(scrubbed).toBe('const banner = "password = "; const password = "[REDACTED_SECRET]"');
+    expect(redactedCount).toBe(1);
+  });
+
+  it("redacts a secret passed inside a call", () => {
+    const getenv = scrubSecrets('client_secret = os.getenv("super-secret-value")');
+    expect(getenv.scrubbed).toBe("client_secret = [REDACTED_SECRET]");
+    expect(getenv.redactedCount).toBe(1);
+
+    const hash = scrubSecrets('password = hash("supersecretvalue")');
+    expect(hash.scrubbed).toBe("password = [REDACTED_SECRET]");
+    expect(hash.redactedCount).toBe(1);
+  });
+
+  it("redacts the indented lines of a yaml block scalar", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("api_key: |\n  supersecretvalue");
+
+    expect(scrubbed).not.toContain("supersecretvalue");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("redacts a token segment on every reference root", () => {
+    for (const value of ["config.abc12345", "settings.abc12345", "config.s3cr3tvalue", "env.abc12345"]) {
+      const { scrubbed, redactedCount } = scrubSecrets(`password = ${value}`);
+
+      expect(scrubbed, value).toBe("password = [REDACTED_SECRET]");
+      expect(redactedCount, value).toBe(1);
+    }
+  });
+
+  it("keeps legitimate configuration references", () => {
+    const raw = [
+      "password = config.apiKey",
+      "password = settings.maxRetries",
+      "password = process.env.SECRET_KEY",
+      "password = os.environ.CLIENT_SECRET",
+      "password = config.timeoutMs",
+      "password = cfg.baseUrl",
+      'password = os.getenv("DB_PASSWORD")',
+    ].join("\n");
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
+  it("keeps a long bracket read whose root is an identifier", () => {
+    const raw = [
+      "password = users[currentId]",
+      "password = items[100]",
+      "password = arr[0]",
+      "password = config[ key ]",
+      'password = configuration["secretKey"]',
+    ].join("\n");
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
+  it("redacts a bracket whose contents are a token", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password = users[abc12345]");
+
+    expect(scrubbed).toBe("password = [REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("redacts the whole value of keys that previously leaked", () => {
+    const hex = "ab".repeat(32);
+    const secretKey = scrubSecrets(`secret_key = "${hex}"`);
+    expect(secretKey.scrubbed).toBe('secret_key = "[REDACTED_SECRET]"');
+    expect(secretKey.redactedCount).toBe(1);
+
+    const apiKey = "ab".repeat(16);
+    const api = scrubSecrets(`api-key: ${apiKey}`);
+    expect(api.scrubbed).toBe("api-key: [REDACTED_SECRET]");
+    expect(api.redactedCount).toBe(1);
+
+    const privateKey = scrubSecrets('private_key: "not-a-pem-value"');
+    expect(privateKey.scrubbed).toBe('private_key: "[REDACTED_SECRET]"');
+    expect(privateKey.redactedCount).toBe(1);
+
+    const database = scrubSecrets(
+      "DATABASE_URL=postgres://app:supersecretvalue@db.internal:5432/app"
+    );
+    expect(database.scrubbed).toBe("DATABASE_URL=[REDACTED_SECRET]");
+    expect(database.redactedCount).toBe(1);
+
+    const token = scrubSecrets('token = "supersecretvalue12345"');
+    expect(token.scrubbed).toBe('token = "[REDACTED_SECRET]"');
+    expect(token.redactedCount).toBe(1);
+
+    const apiToken = scrubSecrets('api-token: "supersecretvalue12345"');
+    expect(apiToken.scrubbed).toBe('api-token: "[REDACTED_SECRET]"');
+    expect(apiToken.redactedCount).toBe(1);
+  });
+
+  it("redacts a short secret_key value", () => {
+    const { scrubbed, redactedCount } = scrubSecrets('secret_key = "abc"');
+
+    expect(scrubbed).toBe('secret_key = "[REDACTED_SECRET]"');
+    expect(redactedCount).toBe(1);
+  });
 });

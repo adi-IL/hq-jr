@@ -86,6 +86,36 @@ const FRONTEND_TERMS = new Set([
 ]);
 
 /**
+ * Basenames that are documentation even when the extension is source.
+ * A docs directory drops these names and prose files. A .ts or .js file
+ * with any other name is source and stays in the review.
+ */
+const DOCUMENTATION_BASENAMES = new Set([
+  "authors",
+  "changelog",
+  "contributing",
+  "copying",
+  "guide",
+  "license",
+  "licence",
+  "readme",
+  "todo",
+]);
+
+function isDocumentationPath(lowerFilename: string, ext: string, inDocsDirectory: boolean): boolean {
+  if (ext === ".md" || ext === ".markdown" || ext === ".txt") {
+    return true;
+  }
+  if (!inDocsDirectory) {
+    return false;
+  }
+  const basename = lowerFilename.includes(".")
+    ? lowerFilename.slice(0, lowerFilename.lastIndexOf("."))
+    : lowerFilename;
+  return DOCUMENTATION_BASENAMES.has(basename);
+}
+
+/**
  * Splits a path into lowercase words: on separators and on camel case
  * boundaries, so "useAuthor.ts" yields "use" and "author" and "JWTAuth.ts"
  * yields "jwt" and "auth".
@@ -182,26 +212,26 @@ export function evaluateFile(filePath: string): FilterResult {
     };
   }
 
-  // 5. Documentation
-  const directorySegments = segments.slice(0, -1);
-  const isDocsDirectory = directorySegments.some((segment) => segment.toLowerCase() === "docs");
-  if (ext === ".md" || ext === ".markdown" || ext === ".txt" || isDocsDirectory) {
-    return {
-      shouldIgnore: true,
-      reason: "Documentation / markdown content",
-      category: "DOCUMENTATION",
-      riskWeight: 1,
-    };
-  }
-
   const pathTokens = tokenizePath(normalized);
 
-  // 6. Security-critical paths
+  // 5. Security-critical paths, including source that sits in a docs directory.
   if (pathTokens.some((token) => isSecurityToken(token))) {
     return {
       shouldIgnore: false,
       category: "SECURITY",
       riskWeight: 10,
+    };
+  }
+
+  // 6. Documentation. A docs directory does not drop source files.
+  const directorySegments = segments.slice(0, -1);
+  const isDocsDirectory = directorySegments.some((segment) => segment.toLowerCase() === "docs");
+  if (isDocumentationPath(lowerFilename, ext, isDocsDirectory)) {
+    return {
+      shouldIgnore: true,
+      reason: "Documentation / markdown content",
+      category: "DOCUMENTATION",
+      riskWeight: 1,
     };
   }
 

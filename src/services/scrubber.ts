@@ -4,15 +4,19 @@
  * Known limitation: a pattern only scrubber cannot tell a real credential from
  * an arbitrary string of the same shape. Tokens with an unexpected length
  * (ghp_ under 36 characters, github_pat_ that is not exactly 82, AIza that is
- * not exactly 35, generic values under 8 characters) are not redacted. An
+ * not exactly 35, generic values under 8 characters) are not redacted.
+ * secret_key is the exception: its value is redacted at any length. An
  * unquoted generic value is kept when it reads configuration (process.env.X,
- * config.X, vault.read(...)); any other unquoted value is redacted. A call
- * with a root that is not a known accessor, such as getSecret(), is a literal
- * value and is redacted. A broken bracket value, such as [abcdefgh[i jkl], is
- * a literal and is redacted whole, whatever its length, because a broken
- * bracket is never a name in the source. The value is read as a whole before
- * it is classified, so a broken bracket whose tail sits behind a space, such
- * as [abc def[ghi], is redacted whole as well.
+ * config.apiKey, vault.read(...)). A dotted or bracketed reference is a
+ * secret when any segment looks like a token (config.abc12345,
+ * users[abc12345]). A bracket read whose root is an identifier is code
+ * (users[currentId], items[100]). A call with a root that is not a known
+ * accessor, such as getSecret(), is a literal and is redacted. A call that
+ * passes a literal secret, such as os.getenv("super-secret-value"), is a
+ * literal too. A broken bracket value, such as [abcdefgh[i jkl], is a literal
+ * and is redacted whole, whatever its length. The value is one span, read
+ * forward to the end of the statement, so a call argument and the indented
+ * lines of a block scalar are classified with the value and not on their own.
  */
 const SECRET_PATTERNS = [
   // Private keys (RSA, EC, PGP, OPENSSH)
@@ -28,8 +32,9 @@ const SECRET_PATTERNS = [
   // AWS Access Key ID
   /\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/g,
 
-  // AWS Secret Access Key (heuristics near keywords)
-  /(?:aws_secret_access_key|aws_access_key_id|secret_key)\s*[:=]\s*["'`]?([A-Za-z0-9/+=]{40})["'`]?/gi,
+  // AWS Secret Access Key (heuristics near keywords). secret_key is not here:
+  // a fixed 40 character capture leaves the rest of a longer value in place.
+  /(?:aws_secret_access_key|aws_access_key_id)\s*[:=]\s*["'`]?([A-Za-z0-9/+=]{40})["'`]?/gi,
 
   // Slack tokens
   /\bxox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*\b/g,
@@ -46,32 +51,36 @@ const REDACTION_PLACEHOLDER = "[REDACTED_SECRET]";
 /** Values shorter than this are too short to be a credential worth hiding. */
 const MIN_GENERIC_SECRET_LENGTH = 8;
 
-/** The keys whose value holds a secret. */
-const SECRET_KEYS =
-  "password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret";
-
 /**
- * The key of a generic secret / password assignment in code, JSON, YAML, and
- * .env, together with the separator that follows it. The value that comes
- * after the separator is read by the value reader, so the pattern stops at
- * the separator and the value is read as a whole before it is classified.
+ * The keys whose value holds a secret, longest first, already lower case.
+ * A key matches as a whole word, so secret_key is not read as secret.
+ * apiKey is stored lower case because the match is case insensitive.
  */
-const GENERIC_ASSIGNMENT_REGEX = new RegExp(
-  `(?:["']?(?:${SECRET_KEYS})["']?)\\s*[:=]\\s*`,
-  "gi"
-);
+const SECRET_KEY_NAMES = [
+  "connection_string",
+  "refresh_token",
+  "private_token",
+  "client_secret",
+  "database_url",
+  "access_token",
+  "private_key",
+  "secret_key",
+  "auth_token",
+  "api_secret",
+  "api-token",
+  "password",
+  "api_key",
+  "api-key",
+  "apikey",
+  "passwd",
+  "secret",
+  "token",
+];
 
-/**
- * The start of another secret assignment, such as "password = ". A value
- * that runs into another secret assignment has ended, so the text after it
- * belongs to the next statement and not to the value. The rule is sticky, so
- * it only matches at the position it is given and a value is read in one
- * pass.
- */
-const SECRET_ASSIGNMENT_REGEX = new RegExp(
-  `(?:["']?(?:${SECRET_KEYS})["']?)[^\\S\\r\\n]*[:=]`,
-  "gy"
-);
+/** secret_key is redacted at any length. The 8 character floor does not apply. */
+function redactsAtAnyLength(key: string): boolean {
+  return key === "secret_key";
+}
 
 /**
  * An environment accessor, such as process.env, os.environ, this.env,
@@ -140,50 +149,8 @@ const REFERENCE_ROOTS = new Set([
   "vault",
 ]);
 
-const CLOSING_TO_OPENING: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
-
 /** A name of this length or longer can hold a random token. */
 const MIN_TOKEN_LENGTH = 8;
-
-/**
- * Length of the punctuation that closes the statement around an unquoted
- * value, such as the ";" in "apiKey = abc12345;". A closing bracket only
- * counts when it has no opening partner inside the value, so the "]" of
- * [REDACTED_SECRET] or of config["key"] stays part of the value.
- *
- * The counts of the characters ahead of the end are kept while the end moves
- * back, so a value that is nothing but closing brackets is scanned once
- * instead of once per bracket.
- */
-function trailingPunctuationLength(value: string): number {
-  let ahead: Map<string, number> | null = null;
-  let end = value.length;
-  while (end > 0) {
-    const char = value[end - 1];
-    if (char === ";" || char === ",") {
-      end--;
-      continue;
-    }
-    const opening = CLOSING_TO_OPENING[char];
-    if (!opening) {
-      break;
-    }
-    if (ahead === null) {
-      ahead = new Map<string, number>();
-      for (let index = 0; index < end; index++) {
-        const aheadChar = value[index];
-        ahead.set(aheadChar, (ahead.get(aheadChar) ?? 0) + 1);
-      }
-    }
-    if ((ahead.get(char) ?? 0) > (ahead.get(opening) ?? 0)) {
-      ahead.set(char, (ahead.get(char) ?? 0) - 1);
-      end--;
-      continue;
-    }
-    break;
-  }
-  return value.length - end;
-}
 
 /**
  * A name of at least eight characters that is all lowercase and holds both a
@@ -201,9 +168,9 @@ function isToken(name: string): boolean {
 }
 
 /**
- * True when the value holds a random token. An environment variable is named
- * in upper case or in camel case, so a value such as env.abc12345 holds a
- * credential and not a name.
+ * True when the value holds a random token. A name in the source is written
+ * in upper case or in camel case, so a segment such as abc12345 is a
+ * credential on every reference root, not only on env.
  */
 function holdsTokenSegment(value: string): boolean {
   for (const segment of value.match(/[a-z0-9]+/g) ?? []) {
@@ -237,24 +204,92 @@ function isKnownCall(value: string): boolean {
 }
 
 /**
+ * A quoted argument that is not a name in the source. An identifier is a
+ * name (DB_PASSWORD, secret). A token, or any other long literal such as
+ * super-secret-value, is a credential passed into the call.
+ */
+function argumentIsLiteralSecret(inner: string): boolean {
+  if (isToken(inner)) {
+    return true;
+  }
+  if (inner.length < MIN_GENERIC_SECRET_LENGTH) {
+    return false;
+  }
+  return !/^[A-Za-z_][A-Za-z0-9_]*$/.test(inner);
+}
+
+/** True when a call passes a literal secret rather than a name. */
+function callHoldsLiteralSecret(value: string): boolean {
+  let index = 0;
+  while (index < value.length) {
+    const quote = value[index];
+    if (quote !== '"' && quote !== "'" && quote !== "`") {
+      index++;
+      continue;
+    }
+    let cursor = index + 1;
+    while (cursor < value.length) {
+      const char = value[cursor];
+      if (char === "\\") {
+        cursor += 2;
+        continue;
+      }
+      if (char === quote || char === "\n" || char === "\r") {
+        break;
+      }
+      cursor++;
+    }
+    if (
+      cursor < value.length &&
+      value[cursor] === quote &&
+      argumentIsLiteralSecret(value.slice(index + 1, cursor))
+    ) {
+      return true;
+    }
+    index = cursor + 1;
+  }
+  return false;
+}
+
+/**
+ * A bracket read whose root is an identifier, such as users[currentId] or
+ * items[100]. A root that contains a digit, such as hunter2["abc"], is a
+ * credential shaped root and is not code. The match has to cover the whole
+ * value, so a nested bracket such as config[a[b]] is not a bracket read.
+ */
+function isIdentifierBracketRead(value: string): boolean {
+  if (!value.includes("[")) {
+    return false;
+  }
+  const member = MEMBER_EXPRESSION_REGEX.exec(value);
+  if (member === null) {
+    return false;
+  }
+  return !/[0-9]/.test(member[1]);
+}
+
+/**
  * An unquoted value that points at configuration instead of holding a
  * credential, such as process.env.SECRET_KEY or config.apiKey, is code the
- * reviewer needs to see untouched.
+ * reviewer needs to see untouched. A reference whose any segment looks like
+ * a token is a secret. A known call that is handed a literal secret is a
+ * secret as well.
  */
 function isReferenceValue(value: string): boolean {
   if (isEnvironmentReference(value) || ENV_INTERPOLATION_REGEX.test(value)) {
     return true;
   }
   if (isKnownCall(value)) {
-    return true;
+    return !callHoldsLiteralSecret(value);
+  }
+  if (isIdentifierBracketRead(value)) {
+    return !holdsTokenSegment(value);
   }
   const member = MEMBER_EXPRESSION_REGEX.exec(value);
   if (member === null || !isReferenceRoot(member[1])) {
     return false;
   }
-  // The root env names environment variables, so the property that follows it
-  // has to be a name in the source and not a random token.
-  return member[1].toLowerCase() !== "env" || !holdsTokenSegment(value);
+  return !holdsTokenSegment(value);
 }
 
 function isReferenceRoot(root: string): boolean {
@@ -298,7 +333,7 @@ function isBrokenBracketLiteral(value: string): boolean {
   return depth !== 0 && material > 0;
 }
 
-/** The value of an assignment, read as a whole. */
+/** The value of an assignment, read as one span. */
 interface ValueSpan {
   /** The text of the value. */
   text: string;
@@ -306,8 +341,15 @@ interface ValueSpan {
   start: number;
   /** The index after the last character of the value. */
   end: number;
-  /** True when the value was written in quotes. */
-  quoted: boolean;
+}
+
+/** A secret key and the index where its value starts. */
+interface AssignmentHit {
+  key: string;
+  /** The index of the first value character, or text.length when there is none. */
+  valueStart: number;
+  /** The index just after the separator, used when the value is empty. */
+  resumeAt: number;
 }
 
 /**
@@ -318,161 +360,396 @@ function isSpace(char: string): boolean {
   return char === " " || char === "\t" || char === "\v" || char === "\f";
 }
 
-/**
- * The index of the first character after the white space at the given index,
- * or -1 when the white space ends the line.
- */
-function skipSpace(text: string, index: number): number {
+function isWordChar(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    char === "_"
+  );
+}
+
+function isLineBreak(char: string | undefined): boolean {
+  return char === "\n" || char === "\r";
+}
+
+/** Lower case comparison of a fixed key. The key list is already lower case. */
+function startsWithKey(text: string, index: number, key: string): boolean {
+  if (index + key.length > text.length) {
+    return false;
+  }
+  for (let offset = 0; offset < key.length; offset++) {
+    let char = text[index + offset];
+    const code = char.charCodeAt(0);
+    if (code >= 65 && code <= 90) {
+      char = String.fromCharCode(code + 32);
+    }
+    if (char !== key[offset]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function skipSpacesOnly(text: string, index: number): number {
   let cursor = index;
   while (cursor < text.length && isSpace(text[cursor])) {
     cursor++;
-  }
-  if (cursor >= text.length || text[cursor] === "\n" || text[cursor] === "\r") {
-    return -1;
   }
   return cursor;
 }
 
 /**
- * True when another secret assignment starts at the given index. The rule is
- * sticky, so it only matches at that index.
+ * A secret assignment at this index, or null. A quoted key has to be the
+ * whole quoted word, so a banner such as "password = " is not an assignment.
+ * The scan is forward only.
  */
-function startsSecretAssignment(text: string, index: number): boolean {
-  SECRET_ASSIGNMENT_REGEX.lastIndex = index;
-  return SECRET_ASSIGNMENT_REGEX.test(text);
+function matchAssignmentAt(text: string, index: number): AssignmentHit | null {
+  const quote = text[index];
+  const quoted = quote === '"' || quote === "'";
+  const keyStart = quoted ? index + 1 : index;
+  if (!quoted && index > 0 && isWordChar(text[index - 1])) {
+    return null;
+  }
+  let key: string | null = null;
+  for (const candidate of SECRET_KEY_NAMES) {
+    if (!startsWithKey(text, keyStart, candidate)) {
+      continue;
+    }
+    const after = keyStart + candidate.length;
+    if (quoted) {
+      if (text[after] !== quote) {
+        continue;
+      }
+    } else if (after < text.length && isWordChar(text[after])) {
+      continue;
+    }
+    key = candidate;
+    break;
+  }
+  if (key === null) {
+    return null;
+  }
+  let cursor = keyStart + key.length + (quoted ? 1 : 0);
+  cursor = skipSpacesOnly(text, cursor);
+  if (cursor >= text.length || (text[cursor] !== ":" && text[cursor] !== "=")) {
+    return null;
+  }
+  const resumeAt = cursor + 1;
+  return { key, valueStart: skipSpacesOnly(text, resumeAt), resumeAt };
 }
 
 /**
- * Reads the body of a value that is written in quotes. The body runs to the
- * matching close quote, so it may hold spaces, and it runs to the end of the
- * line when the close quote is missing.
+ * The index after a string that starts at index. The string ends at its
+ * close quote or at the line break. Used so a key inside a banner is not
+ * classified as its own assignment.
  */
-function readQuotedValue(text: string, start: number): ValueSpan {
+function skipString(text: string, start: number): number {
   const quote = text[start];
   let index = start + 1;
   while (index < text.length) {
     const char = text[index];
     if (char === "\\") {
-      const next = text[index + 1];
-      if (next === undefined || next === "\n" || next === "\r") {
-        break;
-      }
       index += 2;
       continue;
     }
     if (char === quote) {
-      return { text: text.slice(start + 1, index), start: start + 1, end: index, quoted: true };
+      return index + 1;
     }
-    if (char === "\n" || char === "\r") {
-      break;
+    if (isLineBreak(char)) {
+      return index;
     }
     index++;
   }
-  return { text: text.slice(start + 1, index), start: start + 1, end: index, quoted: true };
+  return index;
 }
 
 /**
- * Reads a value that is not written in quotes.
- *
- * The value runs to the end of the line, to a quote, or to the first space
- * that is not inside a bracket. A space inside a bracket belongs to the
- * value, so a bracket expression is read whole: a member expression such as
- * configuration["secretKey"] keeps its shape and a malformed bracket such as
- * [abcdefgh[i jkl] is read to the end of the value. The value ends where
- * another secret assignment starts, because the text after that belongs to
- * the next statement.
- *
- * Every character of the value is read once, so a value with many brackets
- * stays linear in time.
+ * True when the value opens a YAML block scalar. The indicator is | or >,
+ * with an optional chomp marker or indent number, and the line ends there.
  */
-function readUnquotedValue(text: string, start: number): ValueSpan {
+function isBlockScalarStart(text: string, start: number): boolean {
+  const indicator = text[start];
+  if (indicator !== "|" && indicator !== ">") {
+    return false;
+  }
+  let index = start + 1;
+  if (text[index] === "+" || text[index] === "-") {
+    index++;
+  }
+  while (index < text.length && text[index] >= "0" && text[index] <= "9") {
+    index++;
+  }
+  index = skipSpacesOnly(text, index);
+  if (text[index] === "#") {
+    while (index < text.length && !isLineBreak(text[index])) {
+      index++;
+    }
+  }
+  return index >= text.length || isLineBreak(text[index]);
+}
+
+/**
+ * The indented lines that follow a block scalar indicator. A less indented
+ * line ends the block. Each line is visited once.
+ */
+function readBlockScalar(text: string, start: number): ValueSpan {
   let index = start;
-  let depth = 0;
+  while (index < text.length && !isLineBreak(text[index])) {
+    index++;
+  }
+  if (text[index] === "\r") {
+    index++;
+  }
+  if (text[index] === "\n") {
+    index++;
+  }
+  let contentIndent = -1;
   while (index < text.length) {
-    const char = text[index];
-    if (char === "\n" || char === "\r") {
+    let line = index;
+    let indent = 0;
+    while (line < text.length && (text[line] === " " || text[line] === "\t")) {
+      indent++;
+      line++;
+    }
+    if (line >= text.length) {
+      index = line;
       break;
     }
-    if (isSpace(char)) {
-      if (depth === 0) {
-        break;
+    if (isLineBreak(text[line])) {
+      if (text[line] === "\r") {
+        line++;
       }
-      const next = skipSpace(text, index);
-      if (next < 0 || startsSecretAssignment(text, next)) {
-        break;
+      if (text[line] === "\n") {
+        line++;
       }
-      index = next;
+      index = line;
       continue;
     }
-    if (char === '"' || char === "'" || char === "`") {
-      if (depth === 0) {
+    if (contentIndent === -1) {
+      contentIndent = indent;
+    }
+    if (indent < contentIndent) {
+      break;
+    }
+    while (line < text.length && !isLineBreak(text[line])) {
+      line++;
+    }
+    if (text[line] === "\r") {
+      line++;
+    }
+    if (text[line] === "\n") {
+      line++;
+    }
+    index = line;
+  }
+  return { text: text.slice(start, index), start, end: index };
+}
+
+/** The body of a block scalar, without the indicator line or surrounding space. */
+function blockScalarContent(span: string): string {
+  const newline = span.indexOf("\n");
+  if (newline < 0) {
+    return "";
+  }
+  return span.slice(newline + 1).trim();
+}
+
+/**
+ * The interior of a span that is one quoted string, or null when the span is
+ * anything else. The quotes themselves stay in the output.
+ */
+function quotedInterior(span: string): string | null {
+  if (span.length < 2) {
+    return null;
+  }
+  const quote = span[0];
+  if ((quote !== '"' && quote !== "'" && quote !== "`") || span[span.length - 1] !== quote) {
+    return null;
+  }
+  for (let index = 1; index < span.length - 1; index++) {
+    if (span[index] === "\\") {
+      index++;
+      continue;
+    }
+    if (span[index] === quote || isLineBreak(span[index])) {
+      return null;
+    }
+  }
+  return span.slice(1, -1);
+}
+
+/**
+ * Reads one candidate value, forward only, until the newline that ends the
+ * statement or the next secret assignment. Quotes, calls and brackets are
+ * part of the span. A block scalar also includes its indented lines.
+ */
+function readValueSpan(text: string, start: number): ValueSpan {
+  if (start >= text.length) {
+    return { text: "", start, end: start };
+  }
+  if (isBlockScalarStart(text, start)) {
+    return readBlockScalar(text, start);
+  }
+  let index = start;
+  let depth = 0;
+  let quote: string | null = null;
+  while (index < text.length) {
+    const char = text[index];
+    if (quote !== null) {
+      if (char === "\\") {
+        index += index + 1 < text.length ? 2 : 1;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+        index++;
+        continue;
+      }
+      if (isLineBreak(char)) {
         break;
       }
       index++;
       continue;
     }
-    if (char === "[") {
+    if (isLineBreak(char)) {
+      break;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      index++;
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") {
       depth++;
-    } else if (char === "]") {
-      if (depth > 0) {
-        depth--;
+      index++;
+      continue;
+    }
+    if (char === ")" || char === "]" || char === "}") {
+      if (depth === 0) {
+        break;
       }
+      depth--;
+      index++;
+      continue;
+    }
+    if (depth === 0 && (char === ";" || char === ",")) {
+      break;
+    }
+    if (isSpace(char)) {
+      const next = skipSpacesOnly(text, index);
+      if (
+        next >= text.length ||
+        isLineBreak(text[next]) ||
+        matchAssignmentAt(text, next) !== null
+      ) {
+        break;
+      }
+      index = next;
+      continue;
     }
     index++;
   }
-  return { text: text.slice(start, index), start, end: index, quoted: false };
+  // A semicolon or comma after a broken bracket is statement punctuation.
+  // Depth stays above zero there, so it is not a stopping point above, and
+  // it has to be peeled off the end or the placeholder swallows it.
+  let end = index;
+  while (end > start && (text[end - 1] === ";" || text[end - 1] === ",")) {
+    end--;
+  }
+  return { text: text.slice(start, end), start, end };
+}
+
+function literalIsSecret(literal: string, key: string): boolean {
+  if (literal.length === 0 || literal === REDACTION_PLACEHOLDER) {
+    return false;
+  }
+  if (redactsAtAnyLength(key)) {
+    return true;
+  }
+  return literal.length >= MIN_GENERIC_SECRET_LENGTH;
 }
 
 /**
- * Reads the value of an assignment at the given index. The value is read as
- * a whole, so the classification of the value does not depend on where the
- * first space is.
+ * The range to replace, or null when the candidate is code or too short to
+ * be a credential. A quoted literal is replaced inside its quotes. Anything
+ * else is replaced as a whole span.
  */
-function readValue(text: string, start: number): ValueSpan | null {
-  if (start >= text.length) {
+function redactRange(span: ValueSpan, key: string): { start: number; end: number } | null {
+  const raw = span.text;
+  if (raw.length === 0 || raw === REDACTION_PLACEHOLDER) {
     return null;
   }
-  const char = text[start];
-  if (char === '"' || char === "'" || char === "`") {
-    return readQuotedValue(text, start);
+  if (isBlockScalarStart(raw, 0)) {
+    const content = blockScalarContent(raw);
+    if (
+      content.length === 0 ||
+      content === REDACTION_PLACEHOLDER ||
+      isReferenceValue(content) ||
+      ENV_INTERPOLATION_REGEX.test(content) ||
+      !literalIsSecret(content, key)
+    ) {
+      return null;
+    }
+    return { start: span.start, end: span.end };
   }
-  return readUnquotedValue(text, start);
+  const interior = quotedInterior(raw);
+  if (interior !== null) {
+    if (!literalIsSecret(interior, key)) {
+      return null;
+    }
+    return { start: span.start + 1, end: span.end - 1 };
+  }
+  if (isReferenceValue(raw)) {
+    return null;
+  }
+  if (isBrokenBracketLiteral(raw) || literalIsSecret(raw, key)) {
+    return { start: span.start, end: span.end };
+  }
+  return null;
 }
 
 /**
  * Replaces the value of each generic secret assignment with the placeholder.
- * A value that an earlier pattern already replaced is left as is, so each
- * secret is counted once.
+ * The scan walks forward once. A value is classified once, so a key inside
+ * a value is not a second assignment.
  */
 function redactGenericAssignments(input: string): { text: string; count: number } {
   let text = "";
   let lastIndex = 0;
   let count = 0;
+  let index = 0;
 
-  GENERIC_ASSIGNMENT_REGEX.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = GENERIC_ASSIGNMENT_REGEX.exec(input)) !== null) {
-    const value = readValue(input, match.index + match[0].length);
-    if (value === null) {
+  while (index < input.length) {
+    const char = input[index];
+    if ((char === '"' || char === "'" || char === "`") && matchAssignmentAt(input, index) === null) {
+      index = skipString(input, index);
       continue;
     }
-    // The scan continues after the value, so a key inside a value is not read
-    // a second time.
-    GENERIC_ASSIGNMENT_REGEX.lastIndex = value.end;
-    const core = value.quoted
-      ? value.text
-      : value.text.slice(0, value.text.length - trailingPunctuationLength(value.text));
-    const brokenBracket = !value.quoted && isBrokenBracketLiteral(core);
-    if (
-      core === REDACTION_PLACEHOLDER ||
-      (!value.quoted && isReferenceValue(core)) ||
-      (!brokenBracket && core.length < MIN_GENERIC_SECRET_LENGTH)
-    ) {
+    const assignment = matchAssignmentAt(input, index);
+    if (assignment === null) {
+      index++;
       continue;
     }
-    text += input.slice(lastIndex, value.start) + REDACTION_PLACEHOLDER;
-    lastIndex = value.start + core.length;
+    if (assignment.valueStart >= input.length || isLineBreak(input[assignment.valueStart])) {
+      index = Math.max(assignment.resumeAt, index + 1);
+      continue;
+    }
+    const span = readValueSpan(input, assignment.valueStart);
+    if (span.end <= index) {
+      index++;
+      continue;
+    }
+    const range = redactRange(span, assignment.key);
+    if (range === null) {
+      index = span.end;
+      continue;
+    }
+    text += input.slice(lastIndex, range.start) + REDACTION_PLACEHOLDER;
+    lastIndex = range.end;
     count++;
+    index = span.end;
   }
 
   text += input.slice(lastIndex);
