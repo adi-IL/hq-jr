@@ -67,7 +67,7 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(redactedCount).toBe(0);
   });
 
-  it("keeps a value that was already redacted intact", () => {
+  it("redacts a key once and does not count the placeholder again", () => {
     const raw = "apiKey = sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789;";
     const { scrubbed, redactedCount } = scrubSecrets(raw);
 
