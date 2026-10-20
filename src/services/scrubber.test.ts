@@ -715,3 +715,29 @@ describe("scrubber assignment operators", () => {
     expect(already.scrubbed).toBe("apiKey = [REDACTED_SECRET]");
   });
 });
+
+describe("scrubber literal chains", () => {
+  it("redacts a chain whose parts are each too short on their own", () => {
+    const chain = scrubSecrets('password = "pass" + "word123"');
+    expect(chain.scrubbed).toBe('password = "[REDACTED_SECRET]" + "[REDACTED_SECRET]"');
+    expect(chain.redactedCount).toBe(1);
+  });
+
+  it("redacts a chain whose secret is in the last fragment", () => {
+    const chain = scrubSecrets('password = "prefix" + "hunter2hunter2"');
+    expect(chain.scrubbed).not.toContain("hunter2hunter2");
+    expect(chain.redactedCount).toBe(1);
+  });
+
+  it("keeps a chain that is too short to be a credential", () => {
+    const chain = scrubSecrets('password = "a" + "b"');
+    expect(chain.scrubbed).toBe('password = "a" + "b"');
+    expect(chain.redactedCount).toBe(0);
+  });
+
+  it("keeps a chain that is not all literals", () => {
+    const chain = scrubSecrets("password = \"hunter2\" + suffix");
+    expect(chain.scrubbed).toBe("password = \"hunter2\" + suffix");
+    expect(chain.redactedCount).toBe(0);
+  });
+});

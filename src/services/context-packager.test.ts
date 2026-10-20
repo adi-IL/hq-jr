@@ -415,3 +415,35 @@ ${Array.from({ length: 20 }, (_, i) => `+const v${i} = ${i};`).join("\n")}
     expect(item.formattedDiff.length).toBeLessThanOrEqual(200);
   });
 });
+
+describe("context packager paths with a newline", () => {
+  const newlinePath = [
+    'diff --git "a/src/we\\n+ fake" "b/src/we\\n+ fake"',
+    "index 111..222 100644",
+    '--- "a/src/we\\n+ fake"',
+    '+++ "b/src/we\\n+ fake"',
+    "@@ -1,2 +1,2 @@",
+    "+const a = 1;",
+    "+const b = 2;",
+    "",
+  ].join("\n");
+
+  it("writes the path on one line so the cut is measured against real code", () => {
+    const context = packageReviewContext(parseUnifiedDiff(newlinePath), {
+      maxPerFileChars: 200,
+    });
+    const item = context.itemsToReview[0];
+    expect(item).toBeDefined();
+    expect(item.formattedDiff).toContain("### File: src/we\\n+ fake (");
+    expect(item.formattedDiff.split("\n")[0]).toContain("src/we\\n+ fake");
+  });
+
+  it("drops the file when the cap cannot hold one whole code line", () => {
+    for (const cap of [118, 110, 100, 90]) {
+      const context = packageReviewContext(parseUnifiedDiff(newlinePath), {
+        maxPerFileChars: cap,
+      });
+      expect(context.itemsToReview, `cap ${cap}`).toHaveLength(0);
+    }
+  });
+});

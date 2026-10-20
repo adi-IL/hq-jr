@@ -102,7 +102,7 @@ export function packageReviewContext(
   const prepared: PreparedItem[] = [];
   for (const { file, filter } of candidateItems) {
     const path = file.newPath || file.oldPath;
-    const scrubbedPath = scrubSecrets(path).scrubbed;
+    const scrubbedPath = scrubSecrets(singleLinePath(path)).scrubbed;
     // Scrub before measuring, so the caps apply to the text actually sent.
     let text = scrubSecrets(formatFileHunks(file)).scrubbed;
     const minimumLength = firstCodeLineEnd(text);
@@ -185,6 +185,15 @@ function unreviewableReason(file: DiffFile): string | null {
   return null;
 }
 
+/**
+ * A path on one line. A Git path can hold a newline, and the path is written
+ * into the payload verbatim, so a raw newline in it would break the line
+ * structure and the cut would be measured against the wrong line.
+ */
+function singleLinePath(path: string): string {
+  return path.replace(/[\r\n]/g, (char) => (char === "\r" ? "\\r" : "\\n"));
+}
+
 /** Index of the newline that ends the first code line, or the text length. */
 function firstCodeLineEnd(text: string): number {
   let start = 0;
@@ -212,7 +221,7 @@ function prefixThroughWholeLines(text: string, room: number, minimumLength: numb
 }
 
 function formatIgnoredLine(path: string, reason: string): string {
-  return `- ${scrubSecrets(path).scrubbed} (${scrubSecrets(reason).scrubbed})`;
+  return `- ${scrubSecrets(singleLinePath(path)).scrubbed} (${scrubSecrets(reason).scrubbed})`;
 }
 
 interface PayloadLayout {
@@ -321,7 +330,7 @@ function formatIgnoredList(lines: string[], maxChars: number): string[] {
 
 function formatFileHunks(file: DiffFile): string {
   const parts: string[] = [];
-  const filePath = file.newPath || file.oldPath;
+  const filePath = singleLinePath(file.newPath || file.oldPath);
   parts.push(`### File: ${filePath} (${file.addedLinesCount} additions, ${file.deletedLinesCount} deletions)`);
 
   for (const hunk of file.hunks) {
