@@ -4,7 +4,7 @@ Thanks for helping. Keep changes small and easy to review.
 
 ## Requirements
 
-- Node.js **22+**
+- Node.js **>= 22.12.0**
 - npm (lockfile is committed; use `npm ci`)
 - Google Cloud ADC only if you exercise live Vertex paths (most unit tests mock AI)
 

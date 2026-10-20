@@ -767,6 +767,9 @@ describe("sandbox dispatch network configuration", () => {
     const spy = vi
       .spyOn(ai.interactions, "create")
       .mockResolvedValue({ id: "ix-net" } as never);
+    // Vitest 5 returns the spy already on this method, so the previous
+    // command's call is still first until this history is dropped.
+    spy.mockClear();
 
     await dispatchSandboxVerification({
       ...sandboxParams,
