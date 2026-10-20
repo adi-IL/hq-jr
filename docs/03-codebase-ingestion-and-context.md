@@ -48,17 +48,30 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                |
                                v
 +-------------------------------------------------------------+
-| Multi-Turn Review Memory (src/services/review-memory.ts)    |
-| - Prefer unresolved hq-jr threads; review+SQLite fallback   |
-| - active_runs locks; verify prior issues resolved on push   |
+| Context Packager (src/services/context-packager.ts)         |
+| - Rank the files by risk, then fit the payload to the budget|
+| - Diff-text caps: 30,000/file, 120,000 total payload        |
+| - Emit the prompt payload that the model call receives      |
 +------------------------------+------------------------------+
                                |
                                v
 +-------------------------------------------------------------+
-| Context Packager & Vertex AI Evaluation (src/services/ai.ts)|
-| - Diff-text caps: 30,000/file, 120,000 total payload        |
-| - Tier 1: Flash + High Thinking (triage schema)             |
-| - Tier 2: Flash + High Thinking (deep review schema)        |
+| Tier 1: Flash + High Thinking (src/services/ai.ts)          |
+| - Triage schema: overall risk and shouldReview per file     |
++------------------------------+------------------------------+
+                               |
+                               v
++-------------------------------------------------------------+
+| Multi-Turn Review Memory (src/services/review-memory.ts)    |
+| - Prefer unresolved hq-jr threads; review+SQLite fallback   |
+| - Prior findings verify what a new push resolved            |
++------------------------------+------------------------------+
+                               |
+                               v
++-------------------------------------------------------------+
+| Tier 2: Deep Review (src/services/ai.ts)                    |
+| - Flash + High Thinking, or Gemini 4 Argon above the risk   |
+|   threshold                                                 |
 +-------------------------------------------------------------+
 ```
 

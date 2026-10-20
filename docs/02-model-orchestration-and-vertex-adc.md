@@ -98,14 +98,14 @@ The system splits operational responsibilities according to capabilities: direct
   - Budget must be governed via `agent_config.max_total_tokens`.
 - **Tasks:**
   - Clone the target repository into `/workspace/repo` (the dispatch uses `environment: "remote"` and sends no source bundle).
-  - Detect and execute baseline test suites (`cargo test`, `npm test`, `pytest`).
+  - Detect and execute baseline test suites (`cargo test`, `go test ./...`, `pytest`, `npm test`).
   - Synthesize **new adversarial reproduction tests** targeting Tier 2 findings using 4 archetypes: Unit Assertions, Property-Based Tests (PBT), Subprocess Boundary Probes, and Fault-Injection Scripts.
   - Execute dual-commit trials: prove unpatched code reproduces the failure (red), apply suggested patches, and confirm the fix passes with zero regressions (green).
   - Surface an **Adversarial Test Execution Matrix** in a dedicated GitHub Check Run (`hq-jr AI Sandbox Verification`).
   - Support 1-click maintainer test adoption via the `Commit Repro Test` action button (`check_run.requested_action`).
 
 > [!NOTE]
-> In production, Tier 1 and Tier 2 execute synchronously on incoming pull request webhooks and post results when the run completes. When Tier 2 detects critical boundary defects or concurrency hazards, it populates `sandboxProbes` and triggers the asynchronous Tier 3 Check Run via `src/services/sandbox-runner.ts`. After dispatch the check stays `in_progress` while `pollSandboxInteraction` polls `ai.interactions.get` (backoff, capped ~3 minutes). Conclusion mapping: `failure` when the agent hard-fails (`failed` / `budget_exceeded`) or when completed with reproduced and not cured; `success` when completed and not-reproduced or patch cured; `neutral` on incomplete, timeout, cancelled, or infra `interactions.get` failure. NOTE: On Cloud Run without a persistent volume, process death can leave checks `in_progress` until timeout/re-run; with a shared durable `HQ_JR_DB_PATH`, `resumeStaleSandboxJobs` claims jobs whose heartbeat is older than 45 seconds and finishes the poll. Each claim writes a `lease_token`. Heartbeats, status writes and check-run closes only land while that token still matches, and the original worker stops once recovery holds the job, so two workers never conclude the same check. Tier 3 can also be tested on demand via CLI: `hq-jr sandbox-test --repo <url> --branch <name> --cmd <test_cmd>`.
+> In production, Tier 1 and Tier 2 execute synchronously on incoming pull request webhooks and post results when the run completes. When the deep review sets `requiresSandboxVerification`, it populates `sandboxProbes` and hq-jr triggers the asynchronous Tier 3 Check Run via `src/services/sandbox-runner.ts`. After dispatch the check stays `in_progress` while `pollSandboxInteraction` polls `ai.interactions.get` (backoff, capped ~3 minutes). Conclusion mapping: `failure` when the agent hard-fails (`failed` / `budget_exceeded`) or when completed with reproduced and not cured; `success` when completed and not-reproduced or patch cured; `neutral` on incomplete, timeout, cancelled, or infra `interactions.get` failure. NOTE: On Cloud Run without a persistent volume, process death can leave checks `in_progress` until timeout/re-run; with a shared durable `HQ_JR_DB_PATH`, `resumeStaleSandboxJobs` claims jobs whose heartbeat is older than 45 seconds and finishes the poll. Each claim writes a `lease_token`. Heartbeats, status writes and check-run closes only land while that token still matches, and the original worker stops once recovery holds the job, so two workers never conclude the same check. Tier 3 can also be tested on demand via CLI: `hq-jr sandbox-test --repo <url> --branch <name> --cmd <test_cmd>`.
 
 ### Model routing and configuration
 
@@ -120,10 +120,10 @@ The system splits operational responsibilities according to capabilities: direct
 | `HQ_JR_MODEL_DISCUSSION` | `gemini-3.8-flash` | Replies in review discussion threads. |
 | `HQ_JR_MODEL_REMEDIATION` | `gemini-3.8-flash` | Autonomous remediation synthesis. |
 | `HQ_JR_MODEL_HEALTH` | `gemini-3.8-flash` | Health probe (`/healthz`, `hq-jr health`). |
-| `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | `32768` | Output token cap sent only on the escalation model call. |
+| `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | `32768` | Output token cap sent on a call that runs on `HQ_JR_MODEL_ESCALATION`. |
 
-- **Output cap.** `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on the escalation model call only. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice. Triage, the Tier 2 deep review, the discussion replies, the remediation synthesis and the health probe are uncapped, exactly as before the escalation tier was added.
-- **Visibility.** `hq-jr health`, `hq-jr review`, and the app logs print the resolved model for every tier, so a local run shows which model actually served each stage.
+- **Output cap.** `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on the escalation model call only. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice. The cap is keyed on the escalation model id, so it applies to whichever deep review call runs on `HQ_JR_MODEL_ESCALATION`. Triage, the discussion replies, the remediation synthesis and the health probe never send a cap, and the Tier 2 deep review stays uncapped while it runs on `HQ_JR_MODEL_TIER2`.
+- **Visibility.** `hq-jr health` and `hq-jr review` print the resolved model for every tier, so a local run shows which model actually served each stage. The app logs the resolved deep review model when a review starts.
 - **Compatibility.** `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` keep their names and defaults, but `HQ_JR_MODEL_TIER1` no longer drives the discussion, remediation and health calls. A deployment that set `HQ_JR_MODEL_TIER1` to anything other than `gemini-3.8-flash` sees those three call sites move to `gemini-3.8-flash` after this change. To keep the previous behavior, set `HQ_JR_MODEL_DISCUSSION`, `HQ_JR_MODEL_REMEDIATION` and `HQ_JR_MODEL_HEALTH` to the same value that `HQ_JR_MODEL_TIER1` used to hold. `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is new in this release and caps the escalation model only, so no existing call gains a cap.
 
 ## Pipeline Flow
@@ -132,8 +132,10 @@ The system splits operational responsibilities according to capabilities: direct
 GitHub Webhook Event (pull_request.opened / synchronize)
        │
        ▼
+[ Heuristic filter: drop generated files & lockfiles ]
+       │
+       ▼
 [ Tier 1: Flash + High Thinking (triage schema) ]
-  ├─ Drop generated files & lockfiles in the heuristic filter
   ├─ Model-based risk classification (Low / Medium / High)
   └─ Output: Strict JSON triage report
        │
@@ -234,8 +236,8 @@ import { resolveDeepReviewModel } from "./services/ai.js";
 
 const ai = new GoogleGenAI({
   vertexai: true,
-  project: process.env.GOOGLE_CLOUD_PROJECT || "test-gcp-project",
-  location: process.env.GOOGLE_CLOUD_LOCATION || "global",
+  project: config.GOOGLE_CLOUD_PROJECT,
+  location: config.GOOGLE_CLOUD_LOCATION,
 });
 
 export async function runTriage(diffText: string) {
@@ -276,7 +278,7 @@ export async function dispatchSandboxVerification(params: {
   instructions: string;
 }) {
   const interaction = await ai.interactions.create({
-    agent: "antigravity-preview-05-2026",
+    agent: config.HQ_JR_AGENT_TIER3,
     input: `You are the Tier 3 verification agent.
 Clone ${params.repoUrl} on branch ${params.branch} into /workspace/repo,
 run "${params.testCommand}", and write the verdict to

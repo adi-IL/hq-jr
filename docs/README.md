@@ -8,7 +8,7 @@ This directory contains architecture, implementation, and operations documentati
    Core event loop, webhook handling, review memory across commits, privileged command gating, sandbox verification, Octokit REST and GraphQL integration, GitHub CLI workflow integration, and the tag-driven release and deployment flow.
 
 2. [Model Orchestration and Vertex AI ADC](02-model-orchestration-and-vertex-adc.md)
-   Application Default Credentials (ADC) setup, multi-tier routing (Flash + High Thinking for triage and deep review, antigravity-preview-05-2026 for experimental sandbox verification), token budgeting, and the Tier 1 and Tier 2 JSON schemas.
+   Application Default Credentials (ADC) setup, multi-tier routing (Flash + High Thinking for triage and deep review, Gemini 4 Argon for the risk-gated escalation review, antigravity-preview-05-2026 for experimental sandbox verification), token budgeting, and the Tier 1 and Tier 2 JSON schemas.
 
 3. [Codebase Ingestion and Context Pipeline](03-codebase-ingestion-and-context.md)
    The active incremental PR diff pipeline, heuristic filters, review memory, and the planned whole-repository ingestion and AST indexing roadmap.

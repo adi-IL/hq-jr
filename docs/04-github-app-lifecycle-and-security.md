@@ -95,5 +95,5 @@ For automated remediation and privileged actions (`@hq-jr fix`, `patch`, `remedi
 - The bot only replies without a mention when hq-jr authored the thread root. Being a later participant is not enough, so human-to-human peer reviews stay quiet.
 
 ### 5. Memory Management and Denial-of-Service Defense
-- In-flight reviews are gated via SQLite `active_runs` (`acquireRunLock` / `releaseRunLock`) inside `try ... finally` so concurrent webhooks for the same PR/SHA do not double-run.
+- In-flight reviews are gated via SQLite `active_runs` (`acquireRunLock` / `releaseRunLock`) inside `try ... finally` so concurrent webhooks for the same pull request do not double-run. The lock key is `owner/repo#pullNumber`, not the head SHA, so a webhook that arrives while the lock is held is dropped with a warning instead of queued.
 - Historical remediation commit hashes are stored in SQLite `remediation_commits` (pruned retention) so they survive process restarts and stay bounded.

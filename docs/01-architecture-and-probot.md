@@ -6,8 +6,8 @@
 
 The system uses Google Cloud Vertex AI via Application Default Credentials (ADC) for all model interactions. It distributes review tasks across three model tiers:
 - Gemini 3.8 Flash with High Thinking for triage (narrow schema: overall risk `LOW`/`MEDIUM`/`HIGH`, `shouldReview`).
-- Gemini 3.8 Flash with High Thinking for deep semantic review (finding severity `CRITICAL`/`WARNING`/`SUGGESTION`), memory-backed audits, and inline comments.
-- antigravity-preview-05-2026 for asynchronous sandbox verification and test execution. Remediation synthesis is not Tier 3; it uses Tier 1 Flash through `synthesizeFileFix`.
+- Gemini 3.8 Flash with High Thinking for deep semantic review (finding severity `CRITICAL`/`WARNING`/`SUGGESTION`), memory-backed audits, and inline comments. When the triage overall risk reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), the same deep review runs on Gemini 4 Argon (`gemini-4-argon`) and falls back to the Tier 2 model if the escalated call fails.
+- antigravity-preview-05-2026 for asynchronous sandbox verification and test execution. Remediation synthesis is not Tier 3; it uses `HQ_JR_MODEL_REMEDIATION` through `synthesizeFileFix`.
 
 ## Probot Core Mechanics
 
@@ -51,6 +51,7 @@ Probot abstracts webhook verification, GitHub App authentication, and Octokit cl
 |  | AI Execution Engine (Vertex AI via ADC)                          |  |
 |  | - Tier 1: Flash + High Thinking (triage schema)                  |  |
 |  | - Tier 2: Flash + High Thinking (deep review schema)             |  |
+|  | - Tier 2 escalation: Gemini 4 Argon (risk-gated deep review)     |  |
 |  | - Tier 3: antigravity-preview-05-2026 (Sandbox Verification)     |  |
 |  +---------------------------------+--------------------------------+  |
 |                                    |                                   |
@@ -86,11 +87,11 @@ Probot attaches a pre-authenticated `context.octokit` to each event:
 
 ## GitHub CLI (gh) Integration
 
-The bot pairs with the host's existing `gh` CLI for administrative workflows, local simulation, and headless execution:
+The host's existing `gh` CLI covers the administrative workflows around hq-jr:
 
 1. **Manifest Registration.** Automated app creation using `gh api` and Probot app manifests.
 2. **Local Token Verification.** Testing repository permissions via `gh auth status` and `gh api /installation/repositories`.
-3. **Direct PR Review Triggering.** Running `hq-jr review --pr <number>` locally using the user's active GitHub credentials without waiting for webhooks.
+3. **Direct PR Review Triggering.** Running `hq-jr review --pr <number>` locally using the user's active GitHub credentials without waiting for webhooks. The CLI shells out to `gh pr diff` to fetch the diff, so it needs no App token.
 
 ## Concurrency, Idempotency, and Deadlock Prevention
 
@@ -99,7 +100,7 @@ GitHub webhooks deliver at least once and can arrive out of order:
 - In-flight runs are guarded inside a strict `try ... finally` so the lock is always released, even on GitHub API 403, 429, or network timeouts.
 - Known remediation commits synthesized by `hq-jr` are recorded in the SQLite `remediation_commits` table (pruned to a recent window) to prevent self-trigger feedback loops across process restarts.
 - Prior review findings prefer unresolved GitHub review threads opened by hq-jr. When thread state is unavailable, the latest hq-jr review comments and SQLite `review_findings` are merged as fallback.
-- If a newer commit arrives on the same PR branch, subsequent webhooks review the newest SHA.
+- If a newer commit arrives on the same PR branch, a later webhook reviews the newest SHA. A webhook that arrives while a review for that pull request is still running is dropped, because the run lock is keyed by `owner/repo#pullNumber` and not by the head SHA.
 
 ## Release and Deployment
 

@@ -31,7 +31,7 @@
 
 Junior sits on your webhook path. Humans skim diffs and type LGTM. Junior does not skim.
 
-It filters noise, scrubs credentials from diff text, then runs a two-step Gemini Flash path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. Prior findings prefer unresolved hq-jr review threads, with the latest hq-jr review and SQLite WAL as fallback when thread state is unavailable. When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
+It filters noise, scrubs credentials from diff text, then runs a two-step review path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. The deep review runs on `gemini-4-argon` instead of `gemini-3.8-flash` when the triage risk reaches the escalation threshold. Prior findings prefer unresolved hq-jr review threads, with the latest hq-jr review and SQLite WAL as fallback when thread state is unavailable. When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
 
 ### Generic AI review bots vs hq-jr
 
@@ -58,17 +58,22 @@ flowchart TD
     Disc --> PostReply["Post PR Thread Reply"]
     AntiHijack -->|"No"| Ignore["Ignore (Human Peer Review)"]
     
-    Route -->|"PR Sync, Open, or @hq-jr review"| Filter["Diff Parser & Heuristic Filter"]
+    Route -->|"PR Open, Sync, Reopen, @hq-jr review, or a Checks re-run"| Filter["Diff Parser & Heuristic Filter"]
     Filter -->|"Zero Reviewable Hunks"| FastPass["Complete Check Run: Neutral"]
+    Filter -->|"Every File Excluded by the Noise Filter"| ExcludedPass["Complete Check Run: Success"]
     Filter -->|"Reviewable Diffs"| Scrubber["Secret & Credential Scrubber"]
     Scrubber --> Tier1["Tier 1: Triage + High Thinking"]
     
     Tier1 --> TriageDecision{"Any shouldReview files?"}
-    TriageDecision -->|"No"| LowRiskExit["Complete Check Run: Low Risk"]
+    TriageDecision -->|"No"| LowRiskExit["Complete Check Run: Success (Low Risk)"]
     TriageDecision -->|"Yes"| Memory["Prior Review Memory: review-memory.ts"]
-    Memory --> Tier2["Tier 2: Deep Review + High Thinking"]
+    Memory --> Gate{"Triage risk >= HQ_JR_ESCALATION_MIN_RISK?"}
+    Gate -->|"Yes"| Argon["Tier 2 Escalation: Gemini 4 Argon"]
+    Gate -->|"No"| Tier2["Tier 2: Deep Review + High Thinking"]
     
-    Tier2 --> Output["Post Line Comments (with HTTP 422 Fallback) & Complete Check Run"]
+    Argon --> Output["Post Line Comments (with HTTP 422 Fallback) & Complete Check Run"]
+    Tier2 --> Output
+    Output -->|"requiresSandboxVerification"| Tier3["Tier 3: Antigravity Sandbox (experimental)"]
     
     Route -->|"@hq-jr fix / merge"| RBAC{"Caller write or admin?"}
     RBAC -->|"Yes"| Remediate["Autonomous Remediation: synthesizeFileFix & Branch Commit"]
@@ -95,7 +100,7 @@ Defaults match [`src/config.ts`](src/config.ts). Tier 1 and Tier 2 use `gemini-3
    - When the triage **overall risk** reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), the deep review runs on `gemini-4-argon` instead (`HQ_JR_MODEL_ESCALATION`).
    - Argon costs roughly 2.7x Flash per token, so the gate keeps it off low-risk changes.
    - If the escalation call fails, the review retries once on `HQ_JR_MODEL_TIER2` and logs the fallback. A model-access or quota failure never fails the review.
-   - The escalation model runs with an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). Tier 1 and Tier 2 keep their previous uncapped behavior.
+   - The escalation model runs with an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). The cap is keyed on the escalation model id, so it applies to whichever deep review call runs on `HQ_JR_MODEL_ESCALATION`.
 5. **Tier 3: Sandbox Verification (experimental)** (CLI & runner):
    - Antigravity agent (`HQ_JR_AGENT_TIER3`, default `antigravity-preview-05-2026`) for empirical reproduction in isolated containers via `src/cli.ts` / [`src/services/sandbox-runner.ts`](src/services/sandbox-runner.ts).
    - After dispatch the Check Run stays `in_progress` while `pollSandboxInteraction` waits for a verdict; conclusion is success/failure/neutral from that result (not success-on-dispatch).
@@ -110,7 +115,7 @@ Each workload picks its own model, so raising one does not raise the others: tri
 - **Inline Diff Comments**: Comments and suggested replacements on the **Files changed** tab.
 - **GitHub Check Runs**: Status via `hq-jr AI Code Review`.
 - **Interactive PR Chat**: Mention `@hq-jr` to ask questions. Human-to-human threads stay quiet.
-- **On-Demand Review**: `@hq-jr review`, `@hq-jr audit`, or `@hq-jr scan`.
+- **On-Demand Review**: `@hq-jr review`, `@hq-jr audit`, `@hq-jr scan`, or `@hq-jr diff`.
 - **Remediation with RBAC**: Explicit `@hq-jr fix` / `@hq-jr patch` / `@hq-jr remediate` (optional `and merge`) only; loose wording like "how to fix naming" does not trigger. Synthesizes branch `hq-jr/fix-pr-<id>`. Requires collaborator `admin` or `write`.
 - **Commit repro test**: Check action **Commit Repro Test** or `@hq-jr commit-repro` commits the synthesized test from the sandbox check summary. Requires collaborator `admin` or `write`.
 - **Re-run sandbox**: Check action **Re-run Sandbox** re-dispatches Tier 3 with prior probes when available. Requires collaborator `admin` or `write`.
