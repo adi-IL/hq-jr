@@ -31,6 +31,9 @@ jobs:
       - name: TruffleHog OSS Secret Scan
         uses: trufflesecurity/trufflehog@v3.88.5
         with:
+          # The action pins the scanner image separately. Left unset it pulls
+          # latest, so the scanner would change under the pinned action.
+          version: 3.88.5
           path: ./
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           head: ${{ github.sha }}
