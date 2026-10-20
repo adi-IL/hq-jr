@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { readFile } from "node:fs/promises";
+import { Request as UndiciRequest } from "undici";
 import { z } from "zod";
 import { Type } from "@google/genai";
 import {
@@ -256,7 +257,7 @@ describe("AI request timeouts", () => {
     const { createServer } = await import("node:http");
     const { createHash } = await import("node:crypto");
     const { setGlobalDispatcher, getGlobalDispatcher } = await import("undici");
-    const { aiFetch } = await import("./ai.js");
+    const { aiFetch, toAiFetchInit } = await import("./ai.js");
 
     const server = createServer(async (req, res) => {
       const chunks: Buffer[] = [];
@@ -269,6 +270,10 @@ describe("AI request timeouts", () => {
           method: req.method,
           url: req.url,
           header: req.headers["x-test-header"],
+          cacheControl: req.headers["cache-control"],
+          pragma: req.headers["pragma"],
+          secFetchMode: req.headers["sec-fetch-mode"],
+          referer: req.headers["referer"] ?? null,
           body: Buffer.concat(chunks).toString("utf8"),
         })
       );
@@ -294,6 +299,10 @@ describe("AI request timeouts", () => {
         method: "POST",
         url: "/v1beta/interactions",
         header: "tier3",
+        cacheControl: "no-cache",
+        pragma: "no-cache",
+        secFetchMode: "same-origin",
+        referer: "https://example.com/",
         body: '{"agent":"antigravity"}',
       });
       const postIntegrity = `sha256-${createHash("sha256").update(expectedPostPayload).digest("base64")}`;
@@ -309,14 +318,26 @@ describe("AI request timeouts", () => {
         integrity: postIntegrity,
         keepalive: true,
         mode: "same-origin",
-        referrer: "https://example.com/ref",
-        referrerPolicy: "no-referrer",
+        referrer: "https://example.com/secret/path?token=1",
+        referrerPolicy: "origin",
       });
+      const uReq = new UndiciRequest(req.url, toAiFetchInit(req));
+      expect(uReq.cache).toBe("no-store");
+      expect(uReq.credentials).toBe("omit");
+      expect(uReq.mode).toBe("same-origin");
+      expect(uReq.referrer).toBe("https://example.com/secret/path?token=1");
+      expect(uReq.referrerPolicy).toBe("origin");
+      expect(uReq.integrity).toBe(postIntegrity);
+
       const res = await aiFetch(req);
       expect(await res.json()).toEqual({
         method: "POST",
         url: "/v1beta/interactions",
         header: "tier3",
+        cacheControl: "no-cache",
+        pragma: "no-cache",
+        secFetchMode: "same-origin",
+        referer: "https://example.com/",
         body: '{"agent":"antigravity"}',
       });
 
@@ -335,6 +356,10 @@ describe("AI request timeouts", () => {
         method: "GET",
         url: "/v1beta/interactions/ix-1",
         header: "poll",
+        cacheControl: "no-cache",
+        pragma: "no-cache",
+        secFetchMode: "same-origin",
+        referer: null,
         body: "",
       });
 
