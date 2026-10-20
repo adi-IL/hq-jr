@@ -49,17 +49,30 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                |
                                v
 +-------------------------------------------------------------+
-| Multi-Turn Review Memory (src/services/review-memory.ts)    |
-| - Prefer unresolved hq-jr threads; review+SQLite fallback   |
-| - active_runs locks; verify prior issues resolved on push   |
+| Context Packager (src/services/context-packager.ts)         |
+| - Rank the files by risk, then fit the payload to the budget|
+| - Diff-text caps: 30,000/file, 120,000 total payload        |
+| - Emit the prompt payload that the model call receives      |
 +------------------------------+------------------------------+
                                |
                                v
 +-------------------------------------------------------------+
-| Context Packager & Vertex AI Evaluation (src/services/ai.ts)|
-| - Diff-text caps: 30,000/file, 120,000 total payload        |
-| - Tier 1: Flash + High Thinking (triage schema)             |
-| - Tier 2: Flash + High Thinking (deep review schema)        |
+| Tier 1: Flash + High Thinking (src/services/ai.ts)          |
+| - Triage schema: overall risk and shouldReview per file     |
++------------------------------+------------------------------+
+                               |
+                               v
++-------------------------------------------------------------+
+| Multi-Turn Review Memory (src/services/review-memory.ts)    |
+| - Prefer unresolved hq-jr threads; review+SQLite fallback   |
+| - Prior findings verify what a new push resolved            |
++------------------------------+------------------------------+
+                               |
+                               v
++-------------------------------------------------------------+
+| Tier 2: Deep Review (src/services/ai.ts)                    |
+| - Flash + High Thinking, or Gemini 4 Argon above the risk   |
+|   threshold                                                 |
 +-------------------------------------------------------------+
 ```
 
@@ -77,7 +90,7 @@ Large pull requests can exceed model limits. `hq-jr` applies character budgets a
    - Generated directories (`node_modules/`, `dist/`, `build/`, `out/`, `target/`, `.next/`, `vendor/`, `coverage/`).
    - Minified bundles (`*.min.*`, `*.bundle.js`).
    - The filter does not read `.gitignore`; it uses the fixed rules above.
-   - Risk categories are decided from path words. A security root (`auth`, `credential`, `crypto`, `jwt`, `middleware`, `permission`, `rbac`, `secret`, `token`) counts anywhere inside a word, so `src/authservice.ts`, `src/basicauth.go` and `src/UnauthorizedError.ts` are treated as security code. Look-alike words such as `author`, `authority`, `tokenizer` and `secretary` do not count, so `src/AuthorProfile.tsx` is not treated as authentication code. Frontend terms must be whole words, so `src/server/reviewer.ts` is not treated as a frontend view.
+   - Risk categories are decided from path words. A security root (`auth`, `credential`, `crypto`, `jwt`, `middleware`, `permission`, `rbac`, `secret`, `token`) counts anywhere inside a word, so `authservice.ts`, `basicauth.go` and `UnauthorizedError.ts` are treated as security code. Look-alike words such as `author`, `authority`, `tokenizer` and `secretary` do not count, so `AuthorProfile.tsx` is not treated as authentication code. Frontend terms must be whole words, so `server/reviewer.ts` is not treated as a frontend view.
 
 2. **Truncation and Character Budgeting:**
    - Each formatted file diff is capped at 30,000 characters, and the truncation notice is part of that cap, so the room for the notice is taken off before the cut. The cut lands on a line boundary. A per-file cap that cannot hold one whole code line drops the file ("Per-file size limit leaves no whole line"). Secret replacement runs before the budget is measured, because the cap has to apply to the text that is actually emitted.
