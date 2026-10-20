@@ -614,6 +614,66 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     );
     expect(redactedCount).toBe(1);
   });
+
+  it("leaves comparisons, arrows, and non-secret operators intact", () => {
+    const samples = [
+      "if (password === confirmPassword) { check(); }",
+      "if (token == validToken) { check(); }",
+      "if (password !== confirmPassword) { check(); }",
+      "if (password != confirmPassword) { check(); }",
+      "if (password >= confirmPassword) { check(); }",
+      "if (password <= confirmPassword) { check(); }",
+      "const f = token => process(token);",
+      "const f = (token) => process(token);",
+      "function checkPassword(token) {",
+      'count += "secretvalue"',
+      'name := "secretvalue"',
+    ];
+    for (const sample of samples) {
+      const { scrubbed, redactedCount } = scrubSecrets(sample);
+      expect(scrubbed, sample).toBe(sample);
+      expect(redactedCount, sample).toBe(0);
+    }
+  });
+
+  it("redacts a real assignment without eating the operator", () => {
+    const cases: Array<[string, string]> = [
+      ['password = "secretvalue"', 'password = "[REDACTED_SECRET]"'],
+      ["DB_PASSWORD=hunter2hunter2", "DB_PASSWORD=[REDACTED_SECRET]"],
+      ['const apiKey = "secretvalue"', 'const apiKey = "[REDACTED_SECRET]"'],
+      ["api_key: secretvalue", "api_key: [REDACTED_SECRET]"],
+      ['api_key: "secretvalue"', 'api_key: "[REDACTED_SECRET]"'],
+      ['secret_key: "value"', 'secret_key: "[REDACTED_SECRET]"'],
+      ['password += "secretvalue"', 'password += "[REDACTED_SECRET]"'],
+      ['password -= "secretvalue"', 'password -= "[REDACTED_SECRET]"'],
+      ['password *= "secretvalue"', 'password *= "[REDACTED_SECRET]"'],
+      ['password /= "secretvalue"', 'password /= "[REDACTED_SECRET]"'],
+      ['password %= "secretvalue"', 'password %= "[REDACTED_SECRET]"'],
+      ['password &= "secretvalue"', 'password &= "[REDACTED_SECRET]"'],
+      ['password |= "secretvalue"', 'password |= "[REDACTED_SECRET]"'],
+      ['password ^= "secretvalue"', 'password ^= "[REDACTED_SECRET]"'],
+      ['password <<= "secretvalue"', 'password <<= "[REDACTED_SECRET]"'],
+      ['password >>= "secretvalue"', 'password >>= "[REDACTED_SECRET]"'],
+      ['password >>>= "secretvalue"', 'password >>>= "[REDACTED_SECRET]"'],
+      ['password **= "secretvalue"', 'password **= "[REDACTED_SECRET]"'],
+      ['password &&= "secretvalue"', 'password &&= "[REDACTED_SECRET]"'],
+      ['password ||= "secretvalue"', 'password ||= "[REDACTED_SECRET]"'],
+      ['password ??= "secretvalue"', 'password ??= "[REDACTED_SECRET]"'],
+      ['password := "secretvalue"', 'password := "[REDACTED_SECRET]"'],
+    ];
+    for (const [raw, expected] of cases) {
+      const { scrubbed, redactedCount } = scrubSecrets(raw);
+      expect(scrubbed, raw).toBe(expected);
+      expect(redactedCount, raw).toBe(1);
+    }
+  });
+
+  it("does not count a value that is already the placeholder", () => {
+    const raw = "password = [REDACTED_SECRET]";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
 });
 
 describe("scrubber assignment operators", () => {
@@ -635,7 +695,7 @@ describe("scrubber assignment operators", () => {
 
   it("redacts the value of a Go short declaration", () => {
     const go = scrubSecrets('password := "secretvalue"');
-    expect(go.scrubbed).not.toContain("secretvalue");
+    expect(go.scrubbed).toBe('password := "[REDACTED_SECRET]"');
     expect(go.redactedCount).toBe(1);
   });
 

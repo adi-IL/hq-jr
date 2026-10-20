@@ -101,11 +101,11 @@ describe("File Filter & Noise Exclusion", () => {
   it("reviews source files in a docs directory", () => {
     const helper = evaluateFile("src/docs/helper.ts");
     expect(helper.shouldIgnore).toBe(false);
-    expect(helper.category).not.toBe("DOCUMENTATION");
+    expect(helper.category).toBe("BACKEND");
 
     const script = evaluateFile("docs/setup.js");
     expect(script.shouldIgnore).toBe(false);
-    expect(script.category).not.toBe("DOCUMENTATION");
+    expect(script.category).toBe("BACKEND");
   });
 
   it("finds security roots inside compound words", () => {

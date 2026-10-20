@@ -20,6 +20,8 @@
  * A quoted string is scanned for an assignment. A quote in a comment, and an
  * unpaired quote, does not hide the rest of the line. A block scalar keeps
  * the line break after its body, and an empty scalar does not take the next key.
+ * ==, ===, !=, !==, <=, >= and => are not assignments. := and a compound
+ * operator such as += assign when the key is a secret, and the operator stays.
  */
 const SECRET_PATTERNS = [
   // Private keys (RSA, EC, PGP, OPENSSH)
@@ -419,6 +421,65 @@ function closingQuoteEnd(text: string, after: number, quote: string, limit: numb
 }
 
 /**
+ * The index after "=" when that "=" ends an assignment. "=" or ">" after it
+ * is a comparison or an arrow (==, ===, =>), so those are not assignments.
+ * The same check applies to the "=" at the end of := and +=.
+ */
+function equalsAssignEnd(text: string, index: number, limit: number): number {
+  const next = index + 1 < limit ? text[index + 1] : "";
+  if (next === "=" || next === ">") {
+    return -1;
+  }
+  return index + 1;
+}
+
+/**
+ * The index after an assignment operator, or -1 when the token is a comparison
+ * or an arrow. The character after the operator decides: a value follows :=
+ * and +=, while another "=" or a ">" follows == and =>.
+ */
+function assignmentOperatorEnd(text: string, index: number, limit: number): number {
+  if (index >= limit) {
+    return -1;
+  }
+  const char = text[index];
+  if (char === "=") {
+    return equalsAssignEnd(text, index, limit);
+  }
+  if (char === ":") {
+    if (index + 1 < limit && text[index + 1] === "=") {
+      return equalsAssignEnd(text, index + 1, limit);
+    }
+    return index + 1;
+  }
+  const doubled =
+    char === "<" || char === ">" || char === "*" || char === "|" || char === "&" || char === "?";
+  if (doubled && index + 1 < limit && text[index + 1] === char) {
+    let cursor = index + 2;
+    if (char === ">" && cursor < limit && text[cursor] === ">") {
+      cursor++;
+    }
+    if (cursor < limit && text[cursor] === "=") {
+      return equalsAssignEnd(text, cursor, limit);
+    }
+    return -1;
+  }
+  const single =
+    char === "+" ||
+    char === "-" ||
+    char === "*" ||
+    char === "/" ||
+    char === "%" ||
+    char === "&" ||
+    char === "|" ||
+    char === "^";
+  if (single && index + 1 < limit && text[index + 1] === "=") {
+    return equalsAssignEnd(text, index + 1, limit);
+  }
+  return -1;
+}
+
+/**
  * A secret assignment at this index, or null. A quoted key has to be the
  * whole quoted word, so a banner such as "password = " is not an assignment.
  * The scan is forward only.
@@ -459,38 +520,11 @@ function matchAssignmentAt(text: string, index: number, limit: number = text.len
     return null;
   }
   cursor = skipSpacesOnly(text, cursor, limit);
-  if (cursor >= limit || !isAssignmentOperator(text, cursor, limit)) {
+  const operatorEnd = assignmentOperatorEnd(text, cursor, limit);
+  if (operatorEnd < 0) {
     return null;
   }
-  const resumeAt = cursor + operatorLength(text, cursor);
-  return { key, valueStart: skipSpacesOnly(text, resumeAt, limit), resumeAt };
-}
-
-/**
- * True when the text at index starts an assignment.
- *
- * A bare equals sign is an assignment. A comparison is not: `==` and `===` are
- * comparisons, and an arrow function `=>` is not an assignment either. A colon
- * is an assignment only when it is a YAML key separator, so `:=` is a Go short
- * variable declaration and not an assignment.
- */
-function operatorLength(text: string, index: number): number {
-  return text[index] === ":" && text[index + 1] === "=" ? 2 : 1;
-}
-
-function isAssignmentOperator(text: string, index: number, limit: number): boolean {
-  const char = text[index];
-  if (char === "=") {
-    const next = text[index + 1];
-    if (next === "=" || next === ">") return false;
-    return true;
-  }
-  if (char === ":") {
-    // A Go short variable declaration assigns, so its value is still a value.
-    // A bare colon is a YAML key separator, which also introduces a value.
-    return true;
-  }
-  return false;
+  return { key, valueStart: skipSpacesOnly(text, operatorEnd, limit), resumeAt: operatorEnd };
 }
 
 /**
