@@ -53,6 +53,11 @@ const MAX_SUMMARY_PATH_CHARS = 2000;
 const SUMMARY_TRUNCATION_MARKER = "...[truncated]";
 /** Notice that marks model supplied text as cut for the check summary. */
 const SUMMARY_TEXT_TRUNCATION_NOTICE = "\n\n... [model summary truncated to fit the check output limit]";
+/**
+ * Short marker that marks cut text when the full notice does not fit in the
+ * allowance. It keeps the cut visible instead of dropping the marker.
+ */
+const SHORT_TEXT_TRUNCATION_NOTICE = "\n...[cut]";
 
 /** Cuts a path that is too long to render and marks it as truncated. */
 function shortenSummaryPath(path: string): string {
@@ -138,6 +143,10 @@ export function buildExcludedFilesSummary(
 /**
  * Cuts model supplied text to the check summary budget and marks it as
  * truncated, so a reader can tell a cut summary from a short one.
+ *
+ * The marker is cut to the budget as well, so the result never grows past the
+ * allowance it was given. A budget too small for the full notice gets the
+ * short marker instead, so a cut text is still marked as cut.
  */
 function capSummaryText(
   text: string,
@@ -145,8 +154,15 @@ function capSummaryText(
   notice: string = SUMMARY_TEXT_TRUNCATION_NOTICE
 ): string {
   if (text.length <= maxChars) return text;
-  const room = Math.max(0, maxChars - notice.length);
-  return text.slice(0, room) + notice;
+  if (maxChars <= 0) return "";
+  const boundedNotice =
+    notice.length <= maxChars
+      ? notice
+      : SHORT_TEXT_TRUNCATION_NOTICE.length <= maxChars
+        ? SHORT_TEXT_TRUNCATION_NOTICE
+        : SHORT_TEXT_TRUNCATION_NOTICE.slice(0, maxChars);
+  const room = Math.max(0, maxChars - boundedNotice.length);
+  return text.slice(0, room) + boundedNotice;
 }
 
 /**
@@ -205,6 +221,25 @@ export interface DeepReviewBodyInput {
 }
 
 /**
+ * Keeps the review body inside its budget. The heading, the verdict line and
+ * the section headings are the fixed part of the body, and they can already be
+ * longer than a small budget, so the body is cut as a last resort. The cut is
+ * marked, so the body never grows past the cap it was given and a reader can
+ * still tell a cut review from a short one.
+ */
+function capReviewBody(body: string, maxChars: number): string {
+  if (body.length <= maxChars) return body;
+  if (maxChars <= 0) return "";
+  const marker =
+    REVIEW_TEXT_TRUNCATION_NOTICE.length <= maxChars
+      ? REVIEW_TEXT_TRUNCATION_NOTICE
+      : SHORT_TEXT_TRUNCATION_NOTICE.length <= maxChars
+        ? SHORT_TEXT_TRUNCATION_NOTICE
+        : SHORT_TEXT_TRUNCATION_NOTICE.slice(0, maxChars);
+  return body.slice(0, Math.max(0, maxChars - marker.length)) + marker;
+}
+
+/**
  * Builds the pull request review body. The model supplied text is cut to the
  * review body budget, so a verbose answer cannot push the body past the
  * character limit GitHub accepts. The heading, the summary, the verdict line
@@ -260,7 +295,7 @@ export function buildDeepReviewBody(input: DeepReviewBodyInput): string {
   for (const section of cutSections) {
     body += `\n\n${section.heading}\n${section.text}`;
   }
-  return body;
+  return capReviewBody(body, maxChars);
 }
 
 export function buildReviewPrompt(params: {

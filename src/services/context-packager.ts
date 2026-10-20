@@ -127,9 +127,11 @@ export function packageReviewContext(
       isTruncated = true;
     }
 
-    // The room that is left for this file, once its review line and its
-    // separator are paid for.
-    const available = maxTotalChars - used - lineCost - DIFF_SEPARATOR.length - 1;
+    // The room that is left for this file, once its review line and the two
+    // join delimiters around its separator are paid for. The diff sections
+    // are joined with a newline on each side of the separator, so a file
+    // costs two delimiters, not one.
+    const available = maxTotalChars - used - lineCost - DIFF_SEPARATOR.length - 2;
     if (fileDiffText.length > available) {
       if (available < TOTAL_TRUNCATION_NOTICE.length) {
         // Even the notice does not fit next to the content. The file keeps
@@ -138,7 +140,12 @@ export function packageReviewContext(
         fileDiffText = "";
         isTruncated = true;
         emitDiffSection = false;
-        payloadNotice = TOTAL_TRUNCATION_NOTICE;
+        if (!payloadNotice) {
+          payloadNotice = TOTAL_TRUNCATION_NOTICE;
+          // The notice travels with the payload, so its room is taken from
+          // the budget as soon as it is known.
+          used += TOTAL_TRUNCATION_NOTICE.length;
+        }
       } else {
         // The room for the notice is taken off the content before the cut, so
         // the payload with the notice stays inside the budget.
@@ -149,7 +156,7 @@ export function packageReviewContext(
       }
     }
 
-    used += lineCost + fileDiffText.length + DIFF_SEPARATOR.length + 1;
+    used += lineCost + fileDiffText.length + DIFF_SEPARATOR.length + 2;
     totalReviewableAdditions += item.file.addedLinesCount;
     totalReviewableDeletions += item.file.deletedLinesCount;
 

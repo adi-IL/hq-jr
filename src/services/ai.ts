@@ -380,7 +380,10 @@ export interface EscalatedDeepReviewOutcome {
 
 /**
  * Runs the deep review on the model the escalation gate selects and falls back
- * to the Tier 2 model once when the escalation model fails.
+ * to the Tier 2 model once when the escalation model fails. The fallback is a
+ * Tier 2 review, so it keeps the Tier 2 role and stays uncapped. The cap
+ * follows the role of the call, never the model id, so an operator who points
+ * both tiers at one model does not silently change what is capped.
  */
 export async function runEscalatedDeepReview(
   params: EscalatedDeepReviewParams
@@ -400,12 +403,11 @@ export async function runEscalatedDeepReview(
       },
       "Escalated deep review failed, retrying deep review on the Tier 2 model"
     );
-    // The fallback is the Tier 2 model. It carries the escalation budget only
-    // when both tiers point at the same model, so one review is never billed
-    // twice on the escalation model. On a different model the fallback stays
-    // uncapped, so a truncated escalated answer can still be retried in full.
-    const fallbackRole: DeepReviewRole =
-      config.HQ_JR_MODEL_TIER2 === config.HQ_JR_MODEL_ESCALATION ? "escalation" : "tier2";
+    // The fallback is the Tier 2 deep review, so it keeps the Tier 2 role and
+    // stays uncapped. The cap follows the role of the call, not the model id,
+    // so pointing both tiers at one model changes nothing about what is
+    // capped, and a truncated escalated answer can still be retried in full.
+    const fallbackRole: DeepReviewRole = "tier2";
     const result = await params.run(config.HQ_JR_MODEL_TIER2, fallbackRole);
     return {
       result,
@@ -504,9 +506,15 @@ export interface DispatchSandboxParams {
 }
 
 export async function dispatchSandboxVerification(params: DispatchSandboxParams) {
-  const networkConfig = params.base64AuthToken
+  const networkConfig: Interactions.Environment["network"] = params.base64AuthToken
     ? {
         allowlist: [
+          // The wildcard entry keeps every domain reachable, so the agent can
+          // install a toolchain and download packages. It carries no
+          // transform, so it injects no header.
+          { domain: "*" },
+          // The installation token is injected on github.com only, which is
+          // what lets the agent clone the private repository.
           {
             domain: "github.com",
             transform: [{ Authorization: `Basic ${params.base64AuthToken}` }],
@@ -515,7 +523,8 @@ export async function dispatchSandboxVerification(params: DispatchSandboxParams)
       }
     : undefined;
   // The network rules travel with the environment, so the agent reaches
-  // github.com with the installation token and nothing else.
+  // github.com with the installation token and keeps every other host
+  // reachable without a credential.
   const environment: Interactions.Environment | "remote" = networkConfig
     ? { type: "remote", network: networkConfig }
     : "remote";

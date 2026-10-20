@@ -149,4 +149,60 @@ index 111..222 100644
     expect(context.promptPayload.length).toBeLessThanOrEqual(120000);
     expect(context.promptPayload).toContain("export const version = 2;");
   });
+
+  describe("payload budget boundary", () => {
+    /** One file diff with a fixed number of added lines. */
+    const fileDiff = (path: string, addedLines: number) => {
+      const added = Array.from(
+        { length: addedLines },
+        (_, index) => `+const added${index} = ${index};`
+      ).join("\n");
+      return `diff --git a/${path} b/${path}
+index 111..222 100644
+--- a/${path}
++++ b/${path}
+@@ -1,3 +1,${3 + addedLines} @@
+ const value = 1;
+${added}
+ export default value;
+`;
+    };
+
+    // Three ignored files, so the ignored list uses the room it reserved from
+    // the budget, and four reviewable files.
+    const ignoredPaths = [
+      "docs/generated/long/path/one.md",
+      "docs/generated/long/path/two.md",
+      "docs/generated/long/path/three.md",
+    ];
+    const reviewablePaths = ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"];
+    const boundaryDiff = [
+      ...ignoredPaths.map((path) => fileDiff(path, 2)),
+      ...reviewablePaths.map((path) => fileDiff(path, 8)),
+    ].join("");
+
+    it("keeps the diff sections when the budget fits them", () => {
+      const parsed = parseUnifiedDiff(boundaryDiff);
+      // 1350 characters hold the review list, the ignored list and three diff
+      // sections. The diff sections are joined with a newline on each side of
+      // the separator, so a file costs two delimiters. Counting only one
+      // made the payload one character per file too long, which pushed it past
+      // the cap and dropped every diff section.
+      const context = packageReviewContext(parsed, { maxTotalChars: 1350 });
+
+      expect(context.promptPayload.length).toBeLessThanOrEqual(1350);
+      expect(context.promptPayload).toContain("### File: src/a.ts");
+      expect(context.promptPayload).toContain("### File: src/b.ts");
+      expect(context.promptPayload).toContain("### File: src/c.ts");
+    });
+
+    it("keeps the payload inside the budget around the boundary", () => {
+      const parsed = parseUnifiedDiff(boundaryDiff);
+
+      for (const budget of [1300, 1320, 1340, 1350, 1370, 1380, 1400]) {
+        const context = packageReviewContext(parsed, { maxTotalChars: budget });
+        expect(context.promptPayload.length).toBeLessThanOrEqual(budget);
+      }
+    });
+  });
 });

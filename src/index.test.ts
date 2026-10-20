@@ -1299,6 +1299,24 @@ describe("deep review body budget", () => {
       "## hq-jr Automated Code Review\n\nshort\n\n**Verdict:** `APPROVE`"
     );
   });
+
+  it("keeps a small body budget inside the cap and still marks the cut", () => {
+    for (const maxChars of [20, 50, 80, 120, 200, 400]) {
+      const body = buildDeepReviewBody({
+        summary: "verbose model answer ".repeat(50),
+        verdict: "REQUEST_CHANGES",
+        resolvedPriorIssues: ["fixed the race"],
+        unresolvedPriorIssues: ["the lock is still missing"],
+        orphanComments: ["- **src/auth.ts:9** [WARNING]: note outside the diff"],
+        inlineComments: [{ path: "src/auth.ts", line: 2, side: "RIGHT", body: "fix this" }],
+        maxChars,
+      });
+
+      expect(body.length).toBeLessThanOrEqual(maxChars);
+      // The cut is marked, so a reader can tell a cut review from a short one.
+      expect(body).toMatch(/truncated|\.\.\.\[cut\]/);
+    }
+  });
 });
 
 describe("CLI deep review output", () => {

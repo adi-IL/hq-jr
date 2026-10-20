@@ -629,6 +629,28 @@ describe("escalated deep review policy", () => {
     expect(calls).toEqual([{ model: config.HQ_JR_MODEL_ESCALATION, role: "escalation" }]);
   });
 
+  it("falls back with the Tier 2 role, because the fallback is a Tier 2 review", async () => {
+    const calls: Array<{ model: string; role: string }> = [];
+
+    await runEscalatedDeepReview({
+      overallRisk: "HIGH",
+      minRisk: "HIGH",
+      run: async (model, role) => {
+        calls.push({ model, role });
+        if (calls.length === 1) throw new Error("argon unavailable");
+        return { summary: "s", verdict: "APPROVE", comments: [] } as never;
+      },
+    });
+
+    // The role follows the intent of the call, not the model id: the
+    // escalation call is the escalated review, the fallback is the Tier 2
+    // review.
+    expect(calls).toEqual([
+      { model: config.HQ_JR_MODEL_ESCALATION, role: "escalation" },
+      { model: config.HQ_JR_MODEL_TIER2, role: "tier2" },
+    ]);
+  });
+
   it("names the model that produced the verdict in the deep review header", async () => {
     const spy = vi
       .spyOn(ai.models, "generateContent")
@@ -703,10 +725,50 @@ describe("sandbox dispatch network configuration", () => {
     instructions: "reproduce the flagged defect",
   };
 
-  it("lets the agent reach github.com with the installation token and nothing else", async () => {
+  it("keeps every domain reachable and injects the installation token on github.com only", async () => {
     const spy = vi
       .spyOn(ai.interactions, "create")
       .mockResolvedValue({ id: "ix-net-1" } as never);
+
+    await dispatchSandboxVerification({
+      ...sandboxParams,
+      base64AuthToken: "eC1hY2Nlc3MtdG9rZW46dG9rZW4=",
+    });
+
+    const environment = spy.mock.calls[0][0].environment as {
+      type: string;
+      network?: { allowlist?: Array<{ domain: string; transform?: unknown }> };
+    };
+    expect(environment.type).toBe("remote");
+    const allowlist = environment.network?.allowlist ?? [];
+
+    // Every domain stays reachable, so the agent can install a toolchain and
+    // download packages. The wildcard entry carries no transform.
+    expect(allowlist.some((entry) => entry.domain === "*")).toBe(true);
+    expect(allowlist.find((entry) => entry.domain === "*")?.transform).toBeUndefined();
+
+    // The token is injected on github.com, which is what lets the agent clone
+    // the private repository.
+    const github = allowlist.find((entry) => entry.domain === "github.com");
+    expect(github?.transform).toEqual([
+      { Authorization: "Basic eC1hY2Nlc3MtdG9rZW46dG9rZW4=" },
+    ]);
+
+    // The allowlist is not a github.com only list, and no other domain
+    // receives the credential.
+    expect(allowlist.length).toBeGreaterThan(1);
+    expect(allowlist.filter((entry) => entry.domain === "github.com")).toHaveLength(1);
+    for (const entry of allowlist) {
+      if (entry.domain !== "github.com") {
+        expect(entry.transform).toBeUndefined();
+      }
+    }
+  });
+
+  it("sends the allowlist shape the SDK documents: a wildcard and a github.com entry", async () => {
+    const spy = vi
+      .spyOn(ai.interactions, "create")
+      .mockResolvedValue({ id: "ix-net-3" } as never);
 
     await dispatchSandboxVerification({
       ...sandboxParams,
@@ -717,6 +779,7 @@ describe("sandbox dispatch network configuration", () => {
       type: "remote",
       network: {
         allowlist: [
+          { domain: "*" },
           {
             domain: "github.com",
             transform: [{ Authorization: "Basic eC1hY2Nlc3MtdG9rZW46dG9rZW4=" }],
@@ -773,7 +836,29 @@ describe("deep review output cap scoping", () => {
     expect(spy.mock.calls[0][0].config?.maxOutputTokens).toBeUndefined();
   });
 
-  it("caps the escalated call and its fallback when both tiers share one model id", async () => {
+  it("keeps the fallback on the Tier 2 role when both tiers share one model id", async () => {
+    const fresh = await loadSharedModelModule();
+    const calls: Array<{ model: string; role: string }> = [];
+
+    await fresh.runEscalatedDeepReview({
+      overallRisk: "HIGH",
+      minRisk: "HIGH",
+      run: async (model, role) => {
+        calls.push({ model, role });
+        if (calls.length === 1) throw new Error("argon unavailable");
+        return { summary: "s", verdict: "APPROVE", comments: [] } as never;
+      },
+    });
+
+    // Sharing one model id does not change the role of either call, so it
+    // does not change what is capped.
+    expect(calls).toEqual([
+      { model: sharedModel, role: "escalation" },
+      { model: sharedModel, role: "tier2" },
+    ]);
+  });
+
+  it("keeps the fallback uncapped when both tiers share one model id", async () => {
     const fresh = await loadSharedModelModule();
     const spy = vi
       .spyOn(fresh.ai.models, "generateContent")
@@ -793,12 +878,14 @@ describe("deep review output cap scoping", () => {
 
     expect(outcome.escalated).toBe(true);
     expect(outcome.fellBack).toBe(true);
+    // The escalated call carries the escalation budget.
     expect(spy.mock.calls[0][0].config?.maxOutputTokens).toBe(
       config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS
     );
-    expect(spy.mock.calls[1][0].config?.maxOutputTokens).toBe(
-      config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS
-    );
+    // The fallback is the Tier 2 review, so it stays uncapped. The cap
+    // follows the role of the call, not the model id, so sharing one model id
+    // does not change what is capped.
+    expect(spy.mock.calls[1][0].config?.maxOutputTokens).toBeUndefined();
   });
 });
 
