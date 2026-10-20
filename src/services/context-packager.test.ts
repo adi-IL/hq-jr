@@ -79,15 +79,14 @@ ${Array.from({ length: 200 }, (_, index) => `+export const entry${index} = "valu
   });
 
   it("enforces maxTotalChars budget and flags truncation", () => {
-    const parsed = parseUnifiedDiff(multiFileDiff);
-    // The metadata of this diff is larger than a tiny budget, so the budget
-    // has to leave room for the file list before any diff content is added.
-    const context = packageReviewContext(parsed, { maxTotalChars: 400 });
+    const parsed = parseUnifiedDiff(`${multiFileDiff}${largeFileDiff}`);
+    // Room for the metadata and part of the diff content only
+    const context = packageReviewContext(parsed, { maxTotalChars: 1000 });
 
     expect(context.promptPayload.length).toBeGreaterThan(0);
-    expect(context.promptPayload.length).toBeLessThanOrEqual(400);
+    expect(context.promptPayload.length).toBeLessThanOrEqual(1000);
     expect(context.itemsToReview.length).toBeGreaterThanOrEqual(1);
-    expect(context.itemsToReview[0].isTruncated).toBe(true);
+    expect(context.itemsToReview.some((item) => item.isTruncated)).toBe(true);
   });
 
   it("enforces the character cap on the scrubbed payload", () => {
@@ -158,5 +157,63 @@ ${secretLines}`;
     expect(context.promptPayload.length).toBeLessThanOrEqual(2000);
     expect(context.promptPayload).toContain("[diff truncated to preserve context budget]");
     expect(context.itemsToReview[0].isTruncated).toBe(true);
+  });
+
+  it("ends every budget cut with a truncation notice", () => {
+    const parsed = parseUnifiedDiff(`${multiFileDiff}${largeFileDiff}`);
+    const context = packageReviewContext(parsed, { maxTotalChars: 1500 });
+
+    const truncated = context.itemsToReview.filter((item) => item.isTruncated);
+    expect(truncated.length).toBeGreaterThan(0);
+    for (const item of truncated) {
+      expect(item.formattedDiff.endsWith("... [diff truncated to preserve context budget]")).toBe(true);
+      expect(context.promptPayload).toContain(item.formattedDiff);
+    }
+    expect(context.promptPayload.length).toBeLessThanOrEqual(1500);
+  });
+
+  it("keeps at least one line of code for every file it offers for review", () => {
+    const parsed = parseUnifiedDiff(multiFileDiff);
+    for (let cap = 150; cap <= 700; cap++) {
+      const context = packageReviewContext(parsed, { maxTotalChars: cap });
+
+      expect(context.promptPayload.length, `cap ${cap}`).toBeLessThanOrEqual(cap);
+      expect(listedReviewPaths(context.promptPayload), `cap ${cap}`).toEqual(
+        context.itemsToReview.map((item) => item.file.newPath)
+      );
+      for (const item of context.itemsToReview) {
+        expect(item.formattedDiff, `cap ${cap}`).toContain("+ L1");
+        expect(context.promptPayload, `cap ${cap}`).toContain(item.formattedDiff);
+      }
+    }
+  });
+
+  it("moves a file with no room for code to the ignored list", () => {
+    const parsed = parseUnifiedDiff(multiFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 400 });
+
+    expect(context.itemsToReview.map((item) => item.file.newPath)).toEqual(["src/auth/jwt.ts"]);
+    expect(context.ignoredItems).toContainEqual({
+      path: "src/controllers/items.ts",
+      reason: "Context window budget limit reached",
+    });
+    expect(context.totalReviewableAdditions).toBe(3);
+  });
+
+  it("summarizes a long ignored list so code still fits", () => {
+    const assets = Array.from(
+      { length: 500 },
+      (_, i) => `diff --git a/assets/image_${i}.png b/assets/image_${i}.png
+index 1111111..2222222 100644
+Binary files a/assets/image_${i}.png and b/assets/image_${i}.png differ`
+    ).join("\n");
+    const parsed = parseUnifiedDiff(`${multiFileDiff}${assets}\n`);
+    const context = packageReviewContext(parsed, { maxTotalChars: 4000 });
+
+    expect(context.promptPayload.length).toBeLessThanOrEqual(4000);
+    expect(context.itemsToReview).toHaveLength(2);
+    expect(context.promptPayload).toContain("verifyToken");
+    expect(context.promptPayload).toMatch(/- \.\.\. \(\d+ more ignored files not listed\)/);
+    expect(context.ignoredItems).toHaveLength(501);
   });
 });
