@@ -246,6 +246,97 @@ index 123..456 100644
     expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({ status: "completed", conclusion: "failure" });
   });
 
+  it("keeps the check run neutral when a REQUEST_CHANGES review reports no comments", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "The review found no issues.",
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 81, state: "open", head: { sha: "sha-81", ref: "c" }, title: "PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    expect(finalUpdate.output.title).toBe("Review Completed: COMMENT");
+    expect(finalUpdate.output.summary).toContain("Found **0** observation(s).");
+    expect(mockApp.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ verdict: "REQUEST_CHANGES", effectiveVerdict: "COMMENT" }),
+      expect.stringContaining("REQUEST_CHANGES")
+    );
+  });
+
+  it("still fails the check when a REQUEST_CHANGES review reports a comment", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "One blocker.",
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        { path: "src/auth.ts", line: 2, side: "RIGHT", severity: "CRITICAL", category: "SECURITY", title: "Logs a credential", body: "Remove the log." },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 82, state: "open", head: { sha: "sha-82", ref: "c" }, title: "PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(octokitMock.checks.update.mock.calls.at(-1)?.[0]).toMatchObject({ status: "completed", conclusion: "failure" });
+    const reviewCall = octokitMock.pulls.createReview.mock.calls.at(-1)?.[0];
+    expect(reviewCall.event).toBe("REQUEST_CHANGES");
+    expect(reviewCall.body).toContain("**Verdict:** `REQUEST_CHANGES`");
+    expect(reviewCall.body).toContain("Found **1** observation(s).");
+  });
+
   it("escalates the deep review to the escalation model on high risk pull requests", async () => {
     vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
       summary: "Auth rewrite",
@@ -1276,6 +1367,7 @@ describe("deep review body budget", () => {
     const body = buildDeepReviewBody({
       summary: "verbose model answer ".repeat(12000),
       verdict: "REQUEST_CHANGES",
+      commentCount: 1,
       resolvedPriorIssues: ["fixed the race"],
       unresolvedPriorIssues: ["the lock is still missing"],
       orphanComments: ["- **src/auth.ts:9** [WARNING]: note outside the diff"],
@@ -1285,6 +1377,7 @@ describe("deep review body budget", () => {
     expect(body.length).toBeLessThan(65535);
     expect(body).toContain("## hq-jr Automated Code Review");
     expect(body).toContain("**Verdict:** `REQUEST_CHANGES`");
+    expect(body).toContain("Found **1** observation(s).");
     expect(body).toContain("### ✅ Resolved Issues from Prior Review");
     expect(body).toContain("### ⚠️ Remaining Open Issues from Prior Review");
     expect(body).toContain("### Additional File Observations (Outside Modified Diff Lines)");
@@ -1295,9 +1388,19 @@ describe("deep review body budget", () => {
   });
 
   it("leaves a short review body untouched", () => {
-    expect(buildDeepReviewBody({ summary: "short", verdict: "APPROVE" })).toBe(
-      "## hq-jr Automated Code Review\n\nshort\n\n**Verdict:** `APPROVE`"
+    expect(buildDeepReviewBody({ summary: "short", verdict: "APPROVE", commentCount: 0 })).toBe(
+      "## hq-jr Automated Code Review\n\nshort\n\n**Verdict:** `APPROVE`\n\nFound **0** observation(s)."
     );
+  });
+
+  it("states the same count of findings that the check run reports", () => {
+    const body = buildDeepReviewBody({
+      summary: "two findings",
+      verdict: "COMMENT",
+      commentCount: 2,
+    });
+
+    expect(body).toContain("Found **2** observation(s).");
   });
 
   it("keeps a small body budget inside the cap and still marks the cut", () => {
@@ -1305,6 +1408,7 @@ describe("deep review body budget", () => {
       const body = buildDeepReviewBody({
         summary: "verbose model answer ".repeat(50),
         verdict: "REQUEST_CHANGES",
+        commentCount: 1,
         resolvedPriorIssues: ["fixed the race"],
         unresolvedPriorIssues: ["the lock is still missing"],
         orphanComments: ["- **src/auth.ts:9** [WARNING]: note outside the diff"],

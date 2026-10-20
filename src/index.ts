@@ -1,5 +1,5 @@
 import { Probot } from "probot";
-import { checkAiHealth, runTriage, runDeepReview, isAiInfraError, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags } from "./services/ai.js";
+import { checkAiHealth, runTriage, runDeepReview, isAiInfraError, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags, resolveVerdict } from "./services/ai.js";
 import { config } from "./config.js";
 import { parseUnifiedDiff, isLineInDiff, DiffFile } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
@@ -206,8 +206,10 @@ const REVIEW_SECTION_MIN_CHARS = 240;
 export interface DeepReviewBodyInput {
   /** Model supplied review summary. */
   summary: string;
-  /** Model supplied verdict. */
+  /** Effective verdict of the review. */
   verdict: string;
+  /** Number of findings the review reports. */
+  commentCount: number;
   /** Prior issues that are fixed. */
   resolvedPriorIssues?: string[];
   /** Prior issues that are still open. */
@@ -242,9 +244,9 @@ function capReviewBody(body: string, maxChars: number): string {
 /**
  * Builds the pull request review body. The model supplied text is cut to the
  * review body budget, so a verbose answer cannot push the body past the
- * character limit GitHub accepts. The heading, the summary, the verdict line
- * and the issue sections keep their place, and every cut is marked so a reader
- * can tell a cut review from a short one.
+ * character limit GitHub accepts. The heading, the summary, the verdict line,
+ * the count of findings and the issue sections keep their place, and every cut
+ * is marked so a reader can tell a cut review from a short one.
  */
 export function buildDeepReviewBody(input: DeepReviewBodyInput): string {
   const maxChars = input.maxChars ?? MAX_REVIEW_BODY_CHARS;
@@ -262,12 +264,23 @@ export function buildDeepReviewBody(input: DeepReviewBodyInput): string {
   if (inline.length > 0) sections.push({ heading: INLINE_COMMENTS_HEADING, lines: inline });
 
   const verdictLine = `**Verdict:** \`${input.verdict}\``;
-  // The heading, the verdict line and the section headings are the fixed part
-  // of the body. Everything else is model supplied text that can be cut.
+  // The count of findings is the same one the check run reports, so a reader of
+  // the review sees the same number of observations as a reader of the check.
+  const countLine = `Found **${input.commentCount}** observation(s).`;
+  // The heading, the verdict line, the count line and the section headings are
+  // the fixed part of the body. Everything else is model supplied text that
+  // can be cut.
   const headingsLength = sections.reduce((sum, section) => sum + section.heading.length + 3, 0);
   let budget = Math.max(
     0,
-    maxChars - REVIEW_BODY_HEADING.length - 2 - verdictLine.length - 2 - headingsLength
+    maxChars -
+      REVIEW_BODY_HEADING.length -
+      2 -
+      verdictLine.length -
+      2 -
+      countLine.length -
+      2 -
+      headingsLength
   );
 
   // The summary carries the verdict, so it keeps the largest share of the
@@ -291,7 +304,7 @@ export function buildDeepReviewBody(input: DeepReviewBodyInput): string {
     return { heading: section.heading, text };
   });
 
-  let body = `${REVIEW_BODY_HEADING}\n\n${summary}\n\n${verdictLine}`;
+  let body = `${REVIEW_BODY_HEADING}\n\n${summary}\n\n${verdictLine}\n\n${countLine}`;
   for (const section of cutSections) {
     body += `\n\n${section.heading}\n${section.text}`;
   }
@@ -728,6 +741,16 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         log: (payload, message) => app.log.warn({ ...payload, pullNumber }, message),
       });
       const review = await verifyReviewActionRefs(octokit, deepReview.result);
+      // The verdict follows the findings the review reports. A REQUEST_CHANGES
+      // with no comments blocks a merge without pointing at a single finding,
+      // so it is treated as COMMENT and the check run stays neutral.
+      const verdict = resolveVerdict(review);
+      if (verdict !== review.verdict) {
+        app.log.warn(
+          { pullNumber, verdict: review.verdict, effectiveVerdict: verdict },
+          "Downgraded a REQUEST_CHANGES verdict with no comments to COMMENT"
+        );
+      }
 
       // 6. Post inline review comments via Octokit REST (with line anchor validation)
       const normalizePath = (p: string) => p.replace(/^[./]+/, "").replace(/\\/g, "/");
@@ -774,7 +797,8 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
       // body budget, so a verbose answer cannot make GitHub reject the review.
       const reviewBody = buildDeepReviewBody({
         summary: review.summary,
-        verdict: review.verdict,
+        verdict,
+        commentCount: review.comments.length,
         resolvedPriorIssues: review.resolvedPriorIssues,
         unresolvedPriorIssues: review.unresolvedPriorIssues,
         orphanComments,
@@ -787,7 +811,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             repo: repoName,
             pull_number: pullNumber,
             commit_id: pr.head.sha,
-            event: review.verdict === "REQUEST_CHANGES" ? "REQUEST_CHANGES" : "COMMENT",
+            event: verdict === "REQUEST_CHANGES" ? "REQUEST_CHANGES" : "COMMENT",
             body: reviewBody,
             comments: validComments,
           });
@@ -801,7 +825,8 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             // from the same budget instead of appending to the review body.
             const fallbackBody = buildDeepReviewBody({
               summary: review.summary,
-              verdict: review.verdict,
+              verdict,
+              commentCount: review.comments.length,
               resolvedPriorIssues: review.resolvedPriorIssues,
               unresolvedPriorIssues: review.unresolvedPriorIssues,
               orphanComments,
@@ -817,7 +842,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
               repo: repoName,
               pull_number: pullNumber,
               commit_id: pr.head.sha,
-              event: review.verdict === "REQUEST_CHANGES" ? "REQUEST_CHANGES" : "COMMENT",
+              event: verdict === "REQUEST_CHANGES" ? "REQUEST_CHANGES" : "COMMENT",
               body: fallbackBody,
             });
           } else {
@@ -863,10 +888,12 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
 
       // 7. Complete Check Run
       if (checkRun?.data?.id) {
+        // The conclusion follows the effective verdict, so a review that
+        // reports no finding can never fail the check run.
         const conclusion =
-          review.verdict === "REQUEST_CHANGES"
+          verdict === "REQUEST_CHANGES"
             ? "failure"
-            : review.verdict === "APPROVE"
+            : verdict === "APPROVE"
               ? "success"
               : "neutral";
 
@@ -881,7 +908,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           status: "completed",
           conclusion,
           output: {
-            title: `Review Completed: ${review.verdict}`,
+            title: `Review Completed: ${verdict}`,
             summary: `${summaryHeader}${capSummaryText(
               review.summary,
               MAX_CHECK_SUMMARY_CHARS - summaryHeader.length - summaryFooter.length

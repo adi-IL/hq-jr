@@ -25,6 +25,7 @@ import {
   runEscalatedDeepReview,
   resolveDeepReviewRouting,
   shouldEscalate,
+  resolveVerdict,
 } from "./ai.js";
 import { config, parseEnv, riskRank, riskAtLeast, type RiskLevel } from "../config.js";
 import { detectTestCommand } from "./sandbox-runner.js";
@@ -1266,5 +1267,124 @@ describe("model routing", () => {
     });
 
     expect(spy.mock.calls[0][0].model).toBe("remediation-model");
+  });
+});
+
+describe("deep review verdict contract", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const systemInstructionOf = (spy: any): string =>
+    String(spy.mock.calls[0][0].config?.systemInstruction ?? "");
+
+  it("defines what each verdict means in the prompt", async () => {
+    const spy = vi.spyOn(ai.models, "generateContent").mockResolvedValue({
+      text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+    } as never);
+
+    await runDeepReview("context");
+
+    const instruction = systemInstructionOf(spy);
+    expect(instruction).toContain(
+      "APPROVE means the review found no issue worth raising. It is the default when the comments list is empty and nothing needs verification."
+    );
+    expect(instruction).toContain(
+      "COMMENT means the review has observations worth surfacing, but none of them should block a merge."
+    );
+    expect(instruction).toContain(
+      "REQUEST_CHANGES means at least one finding is serious enough to block a merge. It requires at least one comment."
+    );
+  });
+
+  it("forbids REQUEST_CHANGES with an empty comment list in the prompt", async () => {
+    const spy = vi.spyOn(ai.models, "generateContent").mockResolvedValue({
+      text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+    } as never);
+
+    await runDeepReview("context");
+
+    expect(systemInstructionOf(spy)).toContain(
+      "Never return REQUEST_CHANGES with an empty comments list."
+    );
+  });
+
+  it("ties the verdict to the reported findings, not to the severity of the change", async () => {
+    const spy = vi.spyOn(ai.models, "generateContent").mockResolvedValue({
+      text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+    } as never);
+
+    await runDeepReview("context");
+
+    const instruction = systemInstructionOf(spy);
+    expect(instruction).toContain(
+      "Choose the verdict from the findings you report, not from how risky the change looks in the abstract."
+    );
+  });
+
+  it("asks for a summary that agrees with the comments and says so when there are none", async () => {
+    const spy = vi.spyOn(ai.models, "generateContent").mockResolvedValue({
+      text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+    } as never);
+
+    await runDeepReview("context");
+
+    const instruction = systemInstructionOf(spy);
+    expect(instruction).toContain("The summary must agree with the comments you report.");
+    expect(instruction).toContain(
+      "when the comments list is empty, say plainly that the review found no issues."
+    );
+  });
+
+  it("lowers a REQUEST_CHANGES answer that carries no comments to COMMENT", async () => {
+    vi.spyOn(ai.models, "generateContent").mockResolvedValue({
+      text: JSON.stringify({ summary: "Nothing found.", verdict: "REQUEST_CHANGES", comments: [] }),
+    } as never);
+
+    await expect(runDeepReview("context")).resolves.toMatchObject({ verdict: "COMMENT" });
+  });
+
+  it("keeps REQUEST_CHANGES when the review reports a comment", async () => {
+    vi.spyOn(ai.models, "generateContent").mockResolvedValue({
+      text: JSON.stringify({
+        summary: "One blocker.",
+        verdict: "REQUEST_CHANGES",
+        comments: [
+          {
+            path: "src/auth.ts",
+            line: 2,
+            side: "RIGHT",
+            severity: "CRITICAL",
+            category: "SECURITY",
+            title: "Logs a credential",
+            body: "Remove the log.",
+          },
+        ],
+      }),
+    } as never);
+
+    await expect(runDeepReview("context")).resolves.toMatchObject({ verdict: "REQUEST_CHANGES" });
+  });
+
+  it("keeps the verdict of a review that reports comments", () => {
+    expect(resolveVerdict({ verdict: "APPROVE", comments: [] })).toBe("APPROVE");
+    expect(resolveVerdict({ verdict: "COMMENT", comments: [] })).toBe("COMMENT");
+    expect(resolveVerdict({ verdict: "REQUEST_CHANGES", comments: [] })).toBe("COMMENT");
+    expect(
+      resolveVerdict({
+        verdict: "REQUEST_CHANGES",
+        comments: [
+          {
+            path: "src/auth.ts",
+            line: 2,
+            side: "RIGHT",
+            severity: "WARNING",
+            category: "BUG",
+            title: "Off by one",
+            body: "Fix the bound.",
+          },
+        ],
+      })
+    ).toBe("REQUEST_CHANGES");
   });
 });
