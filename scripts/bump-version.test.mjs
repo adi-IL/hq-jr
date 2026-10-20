@@ -8,6 +8,7 @@ import {
   assertSameRepository,
   computeNextVersion,
   githubRepositorySlug,
+  pickLastLine,
   pickNpmLatest,
   remoteTagExists,
   setLockfileVersion,
@@ -15,6 +16,7 @@ import {
 } from "./bump-version.mjs";
 
 const scriptPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "bump-version.mjs");
+const repoRoot = path.dirname(path.dirname(scriptPath));
 
 describe("computeNextVersion", () => {
   it("bumps the package.json version when npm is behind or unpublished", () => {
@@ -37,6 +39,43 @@ describe("pickNpmLatest", () => {
     expect(pickNpmLatest("\n")).toBeNull();
     expect(pickNpmLatest("0.1.8\n")).toBe("0.1.8");
     expect(pickNpmLatest("0.1.10\n0.1.9\n")).toBe("0.1.10");
+  });
+});
+
+describe("pickLastLine", () => {
+  it("returns the last value the registry printed", () => {
+    expect(pickLastLine("git+https://github.com/adi-IL/hq-jr.git\n")).toBe(
+      "git+https://github.com/adi-IL/hq-jr.git"
+    );
+    expect(pickLastLine("first\nsecond\n")).toBe("second");
+  });
+
+  it("strips a matching pair of quotes around the value", () => {
+    expect(pickLastLine("'git+https://github.com/adi-IL/hq-jr.git'")).toBe(
+      "git+https://github.com/adi-IL/hq-jr.git"
+    );
+    expect(pickLastLine('"git+https://github.com/adi-IL/hq-jr.git"')).toBe(
+      "git+https://github.com/adi-IL/hq-jr.git"
+    );
+    expect(pickLastLine("`git+https://github.com/adi-IL/hq-jr.git`")).toBe(
+      "git+https://github.com/adi-IL/hq-jr.git"
+    );
+    expect(pickLastLine("' git+https://github.com/adi-IL/hq-jr.git '")).toBe(
+      "git+https://github.com/adi-IL/hq-jr.git"
+    );
+  });
+
+  it("keeps a value whose quotes do not match", () => {
+    expect(pickLastLine("'git+https://github.com/adi-IL/hq-jr.git\"")).toBe(
+      "'git+https://github.com/adi-IL/hq-jr.git\""
+    );
+  });
+
+  it("returns null for empty output and the literal undefined", () => {
+    expect(pickLastLine("\n")).toBeNull();
+    expect(pickLastLine("")).toBeNull();
+    expect(pickLastLine("undefined")).toBeNull();
+    expect(pickLastLine("'undefined'")).toBeNull();
   });
 });
 
@@ -270,6 +309,13 @@ describe.skipIf(process.platform === "win32")("bump-version.mjs end to end", () 
     expect(result.stderr).toMatch(/does not own/);
   });
 
+  it("accepts a quoted npm repository URL", () => {
+    const { git, bump } = setup({ npmRepository: "'git+https://github.com/adi-IL/hq-jr.git'" });
+    const result = bump();
+    expect(result.status).toBe(0);
+    expect(git(["tag", "--list", "v0.1.9"]).trim()).toBe("v0.1.9");
+  });
+
   it("releases an unpublished package without an owner check", () => {
     const { git, bump } = setup({ npmVersion: "E404", npmRepository: "" });
     const result = bump();
@@ -331,5 +377,26 @@ describe.skipIf(process.platform === "win32")("bump-version.mjs end to end", () 
     expect(result.stdout).toMatch(/next version:\s+0.2.1/);
     expect(git(["status", "--porcelain"]).trim()).toBe("");
     expect(git(["tag", "--list"]).trim()).toBe("");
+  });
+});
+
+describe("release workflow", () => {
+  const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+  const publishJob = workflow.slice(
+    workflow.indexOf("  publish-npm:"),
+    workflow.indexOf("  publish-image:")
+  );
+
+  it("downloads the npm artifact outside the git checkout", () => {
+    expect(publishJob).toContain("path: ${{ runner.temp }}/npm-package");
+    expect(publishJob).toContain(
+      "TARBALL: ${{ runner.temp }}/npm-package/${{ needs.verify.outputs.tarball }}"
+    );
+    expect(publishJob).not.toMatch(/path: npm-package/);
+    expect(publishJob).not.toMatch(/TARBALL: npm-package/);
+  });
+
+  it("keeps the checkout that the provenance attestation needs", () => {
+    expect(publishJob).toContain("uses: actions/checkout@v7");
   });
 });

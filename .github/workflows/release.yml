@@ -141,14 +141,15 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: npm-package
-          path: npm-package
+          # The tarball is downloaded outside the checkout, so the working tree stays clean.
+          path: ${{ runner.temp }}/npm-package
 
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NAME: ${{ needs.verify.outputs.name }}
           VERSION: ${{ needs.prepare.outputs.version }}
-          TARBALL: npm-package/${{ needs.verify.outputs.tarball }}
+          TARBALL: ${{ runner.temp }}/npm-package/${{ needs.verify.outputs.tarball }}
         run: |
           if published="$(npm view "$NAME@$VERSION" version 2>"$RUNNER_TEMP/npm-view.err")"; then
             if [ "$published" = "$VERSION" ]; then

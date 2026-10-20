@@ -399,12 +399,21 @@ export function main(argv, repoRoot) {
   console.log(`Pushing ${tag} starts the release workflow.`);
 }
 
-function pickLastLine(stdout) {
+const QUOTED_VALUE = /^(['"`])([\s\S]*)\1$/;
+
+/** A value the registry printed inside a matching pair of quotes, without the quotes. */
+function stripQuotes(value) {
+  const trimmed = String(value).trim();
+  const quoted = QUOTED_VALUE.exec(trimmed);
+  return quoted ? quoted[2].trim() : trimmed;
+}
+
+export function pickLastLine(stdout) {
   const lines = String(stdout)
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  const value = lines[lines.length - 1];
+  const value = stripQuotes(lines[lines.length - 1] ?? "");
   return value && value !== "undefined" ? value : null;
 }
 
