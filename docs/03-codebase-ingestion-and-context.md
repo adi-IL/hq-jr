@@ -42,8 +42,8 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
 | Secret Redaction (src/services/scrubber.ts)                 |
 | - Redact PATs (github_pat_), Anthropic/OpenAI keys, and JWTs|
 | - Replace credentials with [REDACTED_SECRET] placeholders   |
-| - Keep env and member expression reads intact               |
-|   (process.env.X, os.environ[...], env.X)                   |
+| - Keep env and configuration reads intact                   |
+|   (process.env.X, os.environ[...], config.X)                |
 +------------------------------+------------------------------+
                                |
                                v
@@ -76,11 +76,11 @@ Large pull requests can exceed model limits. `hq-jr` applies character budgets a
    - Generated directories (`node_modules/`, `dist/`, `build/`, `out/`, `target/`, `.next/`, `vendor/`, `coverage/`).
    - Minified bundles (`*.min.*`, `*.bundle.js`).
    - The filter does not read `.gitignore`; it uses the fixed rules above.
-   - Risk categories are decided from whole path words, so `src/AuthorProfile.tsx` is not treated as authentication code and `src/server/reviewer.ts` is not treated as a frontend view.
+   - Risk categories are decided from path words: a security root matches a whole word or the start of a compound word, so `src/authservice.ts` is treated as authentication code, while `src/AuthorProfile.tsx` is not treated as authentication code and `src/server/reviewer.ts` is not treated as a frontend view.
 
 2. **Truncation and Character Budgeting:**
-   - Each formatted file diff is capped at 30,000 characters before truncation notices are added. Secret replacement runs before the budget is measured, because the `[REDACTED_SECRET]` placeholder is longer than the text it replaces.
-   - The emitted prompt payload is capped at 120,000 characters in total. The metadata sections and the truncation notices count against that cap, so diff content is trimmed until the whole payload fits.
+   - Each formatted file diff is capped at 30,000 characters before truncation notices are added. Secret replacement runs before the budget is measured, because the cap has to apply to the text that is actually emitted.
+   - The emitted prompt payload is capped at 120,000 characters in total. The metadata sections and the truncation notices count against that cap, so the metadata is measured first and the diff content is trimmed to what is left. A file whose diff content does not fit is reported as pruned instead of as a file to review. When the metadata alone exceeds the cap, it is trimmed on a line boundary so that no metadata line is cut in half.
    - Long developer discussion replies keep the root turn plus the latest 8 turns, at 1,500 characters per turn.
 
 ---

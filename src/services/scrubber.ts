@@ -37,10 +37,10 @@ const REDACTION_PLACEHOLDER = "[REDACTED_SECRET]";
 
 /**
  * Generic secret / password assignments in code, JSON, YAML, and .env.
- * The value may be quoted, unquoted, or a member expression.
+ * The value may be quoted, unquoted, a member expression, or a bracket access.
  */
 const GENERIC_ASSIGNMENT_REGEX =
-  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(["'`]?)([^"'`\r\n\s]{8,128})["'`]?/gi;
+  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(["'`]?)((?:[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\[(?:["'][^"'\r\n]*["']|[A-Za-z_$][A-Za-z0-9_$]*)\])|(?:[^"'`\r\n\s]{8,128}))["'`]?/gi;
 
 const ENV_REFERENCE_REGEX =
   /^(?:process|globalThis|global|Deno|Bun)\.env\b|^os\.environ\b|^(?:import\.meta\.)?env\b|^this\.env\b/;
@@ -51,11 +51,39 @@ const MEMBER_EXPRESSION_REGEX =
 const TRAILING_PUNCTUATION_REGEX = /[;,)\]}]+$/;
 
 /**
+ * Roots that name a configuration lookup. A value that starts with one of
+ * them points at configuration instead of holding a credential.
+ */
+const CODE_REFERENCE_ROOTS = [
+  "process.env",
+  "os.environ",
+  "import.meta.env",
+  "globalThis.env",
+  "this.env",
+  "Deno.env",
+  "Bun.env",
+  "env",
+  "config",
+  "settings",
+];
+
+/**
+ * A bracket access reads a property, so it is code and not a literal.
+ */
+const BRACKET_PROPERTY_READ_REGEX =
+  /^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\[(?:["'][^"'\r\n]*["']|[A-Za-z_$][A-Za-z0-9_$]*)\]$/;
+
+const BRACKET_ACCESS_SUFFIX_REGEX = /\[[^\]\r\n]*\]$/;
+
+/**
  * Splits a captured value into the value itself and the punctuation that
  * closes the statement it appears in. A bracketed value keeps its brackets.
  */
 function splitTrailingPunctuation(value: string): { core: string; trailing: string } {
   if (value.startsWith("[") && value.endsWith("]")) {
+    return { core: value, trailing: "" };
+  }
+  if (BRACKET_ACCESS_SUFFIX_REGEX.test(value)) {
     return { core: value, trailing: "" };
   }
   const trailing = TRAILING_PUNCTUATION_REGEX.exec(value)?.[0] ?? "";
@@ -64,7 +92,8 @@ function splitTrailingPunctuation(value: string): { core: string; trailing: stri
 
 /**
  * A value that points at configuration instead of holding a credential, such
- * as process.env.SECRET_KEY, is code the reviewer needs to see untouched.
+ * as process.env.SECRET_KEY, is code the reviewer needs to see untouched. A
+ * bare word that merely contains a dot is not a reference.
  */
 function isReferenceValue(value: string, quote: string): boolean {
   if (!value) {
@@ -76,7 +105,15 @@ function isReferenceValue(value: string, quote: string): boolean {
   if (ENV_REFERENCE_REGEX.test(value)) {
     return true;
   }
-  return MEMBER_EXPRESSION_REGEX.test(value);
+  if (BRACKET_PROPERTY_READ_REGEX.test(value)) {
+    return true;
+  }
+  if (!MEMBER_EXPRESSION_REGEX.test(value)) {
+    return false;
+  }
+  return CODE_REFERENCE_ROOTS.some(
+    (root) => value === root || value.startsWith(`${root}.`) || value.startsWith(`${root}[`)
+  );
 }
 
 /**

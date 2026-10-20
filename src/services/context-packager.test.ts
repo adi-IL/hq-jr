@@ -2,6 +2,11 @@ import { describe, it, expect } from "vitest";
 import { parseUnifiedDiff } from "./diff-parser.js";
 import { packageReviewContext } from "./context-packager.js";
 
+function listedReviewPaths(promptPayload: string): string[] {
+  const metadata = promptPayload.split("## Diff Content with Exact Line Anchors")[0];
+  return [...metadata.matchAll(/- \*\*(.+?)\*\*/g)].map((match) => match[1]);
+}
+
 describe("Context Packager", () => {
   const multiFileDiff = `
 diff --git a/package-lock.json b/package-lock.json
@@ -31,6 +36,26 @@ index 000..444 100644
 +}
 `;
 
+  const manyFileDiff = Array.from({ length: 8 }, (_, index) => {
+    const path = `src/feature/module-with-a-long-name-${index}.ts`;
+    return `diff --git a/${path} b/${path}
+new file mode 100644
+index 000..${index} 100644
+--- /dev/null
++++ b/${path}
+@@ -0,0 +1,2 @@
++export const value${index} = ${index};
++export const label${index} = "text";
+`;
+  }).join("\n");
+
+  const largeFileDiff = `diff --git a/src/very/long/path/to/a/module/file.ts b/src/very/long/path/to/a/module/file.ts
+index 1111111..2222222 100644
+--- a/src/very/long/path/to/a/module/file.ts
++++ b/src/very/long/path/to/a/module/file.ts
+@@ -1,1 +1,200 @@
+${Array.from({ length: 200 }, (_, index) => `+export const entry${index} = "value ${index}";\n`).join("")}`;
+
   it("filters out noise files and orders review items by risk priority", () => {
     const parsed = parseUnifiedDiff(multiFileDiff);
     const context = packageReviewContext(parsed);
@@ -55,10 +80,12 @@ index 000..444 100644
 
   it("enforces maxTotalChars budget and flags truncation", () => {
     const parsed = parseUnifiedDiff(multiFileDiff);
-    // Artificially tiny budget
-    const context = packageReviewContext(parsed, { maxTotalChars: 150 });
+    // The metadata of this diff is larger than a tiny budget, so the budget
+    // has to leave room for the file list before any diff content is added.
+    const context = packageReviewContext(parsed, { maxTotalChars: 400 });
 
     expect(context.promptPayload.length).toBeGreaterThan(0);
+    expect(context.promptPayload.length).toBeLessThanOrEqual(400);
     expect(context.itemsToReview.length).toBeGreaterThanOrEqual(1);
     expect(context.itemsToReview[0].isTruncated).toBe(true);
   });
@@ -76,6 +103,60 @@ ${secretLines}`;
     const context = packageReviewContext(parsed, { maxTotalChars: 1000 });
 
     expect(context.promptPayload.length).toBeLessThanOrEqual(1000);
+    expect(context.itemsToReview[0].isTruncated).toBe(true);
+  });
+
+  it("does not offer a file for review when its diff content is empty", () => {
+    const parsed = parseUnifiedDiff(multiFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 400 });
+
+    for (const item of context.itemsToReview) {
+      expect(item.formattedDiff.trim().length).toBeGreaterThan(0);
+    }
+
+    const listed = listedReviewPaths(context.promptPayload);
+    expect(listed).toEqual(context.itemsToReview.map((item) => item.file.newPath));
+    expect(listed).not.toContain("src/controllers/items.ts");
+  });
+
+  it("reserves the metadata size so the diff content is trimmed instead", () => {
+    const parsed = parseUnifiedDiff(manyFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 1200 });
+
+    expect(context.promptPayload.length).toBeLessThanOrEqual(1200);
+    expect(context.itemsToReview.length).toBeGreaterThan(0);
+
+    for (const item of context.itemsToReview) {
+      expect(item.formattedDiff.trim().length).toBeGreaterThan(0);
+    }
+
+    expect(listedReviewPaths(context.promptPayload)).toEqual(
+      context.itemsToReview.map((item) => item.file.newPath)
+    );
+  });
+
+  it("cuts the metadata on a line boundary when the metadata alone exceeds the cap", () => {
+    const parsed = parseUnifiedDiff(manyFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 400 });
+
+    expect(context.promptPayload.length).toBeLessThanOrEqual(400);
+
+    const metadata = context.promptPayload.split("## Diff Content with Exact Line Anchors")[0];
+    for (const line of metadata.split("\n")) {
+      if (line.startsWith("- **")) {
+        expect(line).toMatch(/\]\s*$/);
+      } else if (line.startsWith("- ")) {
+        expect(line).toMatch(/\)\s*$/);
+      }
+    }
+  });
+
+  it("keeps a truncation marker when the budget cuts the diff content", () => {
+    const parsed = parseUnifiedDiff(largeFileDiff);
+    const context = packageReviewContext(parsed, { maxTotalChars: 2000 });
+
+    expect(context.promptPayload.length).toBeLessThanOrEqual(2000);
+    expect(context.promptPayload).toContain("[diff truncated to preserve context budget]");
     expect(context.itemsToReview[0].isTruncated).toBe(true);
   });
 });

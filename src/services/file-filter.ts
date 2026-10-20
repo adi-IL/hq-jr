@@ -58,29 +58,39 @@ const IGNORED_DIRECTORY_PREFIXES = [
 ];
 
 /**
- * Security terms are matched as whole path words, never as arbitrary
- * substrings, so "AuthorProfile" is not treated as authentication code.
+ * Security terms match a whole path word or the prefix of a compound word, so
+ * "authservice" is authentication code while "AuthorProfile" is not.
  */
-const SECURITY_TERMS = new Set([
+const SECURITY_ROOTS = [
   "auth",
   "authn",
   "authz",
-  "oauth",
   "authentication",
   "authorization",
+  "authorisation",
   "authorize",
-  "crypto",
-  "cryptography",
-  "middleware",
-  "middlewares",
-  "permission",
-  "permissions",
-  "rbac",
-  "secret",
-  "secrets",
+  "authenticator",
+  "authenticate",
+  "authenticated",
+  "oauth",
   "token",
-  "tokens",
-]);
+  "secret",
+  "secretmanager",
+  "crypto",
+  "rbac",
+  "permission",
+  "middleware",
+  "jwt",
+  "credential",
+  "credentials",
+];
+
+/**
+ * Words that start with a security root but describe authorship or authority.
+ */
+const NON_SECURITY_PREFIXES = ["author", "authority"];
+
+const SECURITY_ROOTS_BY_LENGTH = [...SECURITY_ROOTS].sort((a, b) => b.length - a.length);
 
 const FRONTEND_TERMS = new Set([
   "component",
@@ -114,6 +124,24 @@ function tokenizePath(normalizedPath: string): string[] {
     }
   }
   return tokens;
+}
+
+/**
+ * A path token is security critical when a security root matches it as a
+ * whole word or as the prefix of a compound word. The longest matching root
+ * wins, so "authorization" stays security code while "author" does not.
+ */
+function isSecurityToken(token: string): boolean {
+  for (const root of SECURITY_ROOTS_BY_LENGTH) {
+    if (!token.startsWith(root)) {
+      continue;
+    }
+    if (root === "auth" && NON_SECURITY_PREFIXES.some((prefix) => token.startsWith(prefix))) {
+      return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -186,7 +214,7 @@ export function evaluateFile(filePath: string): FilterResult {
   const pathTokens = tokenizePath(normalized);
 
   // 6. Security-critical paths
-  if (pathTokens.some((token) => SECURITY_TERMS.has(token))) {
+  if (pathTokens.some((token) => isSecurityToken(token))) {
     return {
       shouldIgnore: false,
       category: "SECURITY",

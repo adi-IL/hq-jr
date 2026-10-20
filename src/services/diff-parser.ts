@@ -38,23 +38,42 @@ export interface ParsedDiff {
 }
 
 const HUNK_HEADER_REGEX = /^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@(.*)$/;
-const GIT_DIFF_HEADER_REGEX =
-  /^diff --git ("(?:[^"\\]|\\.)*"|\S+)\s+("(?:[^"\\]|\\.)*"|\S+)\s*$/;
+const GIT_DIFF_HEADER_REGEX = /^diff --git\s+(.+?)\s*$/;
 const GIT_INDEX_REGEX = /^index\s+[0-9a-zA-Z]+\.\.[0-9a-zA-Z]+(?:\s+(\d+))?/;
 const FILE_PATH_HEADER_REGEX = /^(?:---|\+\+\+) (.*)$/;
 const SUBMODULE_MODE = "160000";
 
 /**
+ * Git escapes control characters with these letters inside a quoted path.
+ */
+const CONTROL_ESCAPE_CODES: Record<string, number> = {
+  a: 7,
+  b: 8,
+  t: 9,
+  n: 10,
+  v: 11,
+  f: 12,
+  r: 13,
+};
+
+/**
  * Decodes a git quoted path. Git quotes the whole path and escapes every
  * non-ASCII byte as an octal escape, so the bytes must be reassembled before
- * they can be decoded as UTF-8.
+ * they can be decoded as UTF-8. Literal characters are pushed as their UTF-8
+ * bytes, because a single code point is not a single byte.
  */
 function decodeGitQuotedPath(body: string): string {
   const bytes: number[] = [];
   for (let i = 0; i < body.length; i++) {
     const char = body[i];
     if (char !== "\\") {
-      bytes.push(char.charCodeAt(0));
+      const codePoint = body.codePointAt(i) as number;
+      for (const byte of Buffer.from(String.fromCodePoint(codePoint), "utf8")) {
+        bytes.push(byte);
+      }
+      if (codePoint > 0xffff) {
+        i++;
+      }
       continue;
     }
     const next = body[i + 1];
@@ -69,10 +88,88 @@ function decodeGitQuotedPath(body: string): string {
         continue;
       }
     }
-    bytes.push(next.charCodeAt(0));
+    const controlCode = CONTROL_ESCAPE_CODES[next];
+    bytes.push(controlCode !== undefined ? controlCode : next.charCodeAt(0));
     i += 1;
   }
   return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * Finds the closing quote of a quoted path token, honouring backslash escapes.
+ */
+function findClosingQuote(text: string): number {
+  for (let i = 1; i < text.length; i++) {
+    if (text[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (text[i] === '"') {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function stripPathPrefix(value: string, prefix: string): string {
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
+/**
+ * Splits the two path tokens of a "diff --git" header. A quoted path is one
+ * token, an unquoted path may contain spaces, so the two sides are separated
+ * on the b/ prefix and the split that yields the same path on both sides wins.
+ */
+function splitGitHeaderPaths(rest: string): [string, string] | null {
+  const trimmed = rest.trim();
+
+  if (trimmed.startsWith('"')) {
+    const firstEnd = findClosingQuote(trimmed);
+    if (firstEnd < 0) {
+      return null;
+    }
+    const first = trimmed.slice(0, firstEnd + 1);
+    const remainder = trimmed.slice(firstEnd + 1).trim();
+    if (!remainder) {
+      return null;
+    }
+    if (!remainder.startsWith('"')) {
+      return [first, remainder];
+    }
+    const secondEnd = findClosingQuote(remainder);
+    if (secondEnd < 0) {
+      return null;
+    }
+    return [first, remainder.slice(0, secondEnd + 1)];
+  }
+
+  const quotedStart = trimmed.indexOf('"');
+  if (quotedStart > 0) {
+    const head = trimmed.slice(0, quotedStart).trim();
+    const tail = trimmed.slice(quotedStart);
+    if (head && tail) {
+      return [head, tail];
+    }
+  }
+
+  const candidates: number[] = [];
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === " " && trimmed.startsWith("b/", i + 1)) {
+      candidates.push(i);
+    }
+  }
+  if (candidates.length === 0) {
+    return null;
+  }
+  for (const index of candidates) {
+    const left = stripPathPrefix(trimmed.slice(0, index), "a/");
+    const right = stripPathPrefix(trimmed.slice(index + 1), "b/");
+    if (left === right) {
+      return [trimmed.slice(0, index), trimmed.slice(index + 1)];
+    }
+  }
+  const index = candidates[0];
+  return [trimmed.slice(0, index), trimmed.slice(index + 1)];
 }
 
 /**
@@ -134,8 +231,9 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
       }
 
       const match = line.match(GIT_DIFF_HEADER_REGEX);
-      const oldPath = parseGitPath(match ? match[1] : "", "a/");
-      const newPath = parseGitPath(match ? match[2] : "", "b/");
+      const paths = match ? splitGitHeaderPaths(match[1]) : null;
+      const oldPath = paths ? parseGitPath(paths[0], "a/") : "";
+      const newPath = paths ? parseGitPath(paths[1], "b/") : "";
 
       currentFile = {
         oldPath,
@@ -275,6 +373,23 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
       });
       currentOldLine++;
       currentNewLine++;
+    } else if (line === "") {
+      // A blank line inside a hunk body stands for an empty source line, so it
+      // is counted to keep the later anchors aligned. The trailing empty
+      // string of the split is not part of the hunk.
+      const hunkIsComplete =
+        currentOldLine - currentHunk.oldStart >= currentHunk.oldLines &&
+        currentNewLine - currentHunk.newStart >= currentHunk.newLines;
+      if (i < lines.length - 1 && !hunkIsComplete) {
+        currentHunk.lines.push({
+          type: "context",
+          content: "",
+          oldLineNumber: currentOldLine,
+          newLineNumber: currentNewLine,
+        });
+        currentOldLine++;
+        currentNewLine++;
+      }
     } else if (line.startsWith("\\ No newline at end of file")) {
       // Ignore git marker
       continue;

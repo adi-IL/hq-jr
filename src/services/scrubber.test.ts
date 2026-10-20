@@ -51,6 +51,22 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(redactedCount).toBe(0);
   });
 
+  it("redacts a credential shaped value that contains a dot", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password: hunter2.abc");
+
+    expect(scrubbed).not.toContain("hunter2.abc");
+    expect(scrubbed).toContain("[REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("keeps a quoted bracket access intact", () => {
+    const raw = 'password = configuration["secretKey"]';
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
   it("counts a redacted key once", () => {
     const raw = "const apiKey = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789';";
     const { scrubbed, redactedCount } = scrubSecrets(raw);
