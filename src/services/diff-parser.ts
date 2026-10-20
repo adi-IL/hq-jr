@@ -25,6 +25,7 @@ export interface DiffFile {
   isModeChange: boolean;
   oldMode?: string;
   newMode?: string;
+  similarityIndex?: number;
   hunks: DiffHunk[];
   addedLinesCount: number;
   deletedLinesCount: number;
@@ -37,13 +38,172 @@ export interface ParsedDiff {
 }
 
 const HUNK_HEADER_REGEX = /^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@(.*)$/;
+const GIT_DIFF_HEADER_REGEX = /^diff --git\s+(.+?)\s*$/;
+const GIT_INDEX_REGEX = /^index\s+[0-9a-zA-Z]+\.\.[0-9a-zA-Z]+(?:\s+(\d+))?/;
+const FILE_PATH_HEADER_REGEX = /^(?:---|\+\+\+) (.*)$/;
+const SUBMODULE_MODE = "160000";
 
-function parseGitPath(raw: string): string {
-  const trimmed = raw.trim();
-  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-    return trimmed.slice(1, -1).replace(/\\"/g, '"');
+/**
+ * Git escapes control characters with these letters inside a quoted path.
+ */
+const CONTROL_ESCAPE_CODES: Record<string, number> = {
+  a: 7,
+  b: 8,
+  t: 9,
+  n: 10,
+  v: 11,
+  f: 12,
+  r: 13,
+};
+
+/**
+ * Decodes a git quoted path. Git quotes the whole path and escapes every
+ * non-ASCII byte as an octal escape, so the bytes must be reassembled before
+ * they can be decoded as UTF-8. Literal characters are pushed as their UTF-8
+ * bytes, because a single code point is not a single byte.
+ */
+function decodeGitQuotedPath(body: string): string {
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (char !== "\\") {
+      const codePoint = body.codePointAt(i) as number;
+      for (const byte of Buffer.from(String.fromCodePoint(codePoint), "utf8")) {
+        bytes.push(byte);
+      }
+      if (codePoint > 0xffff) {
+        i++;
+      }
+      continue;
+    }
+    const next = body[i + 1];
+    if (next === undefined) {
+      break;
+    }
+    if (next >= "0" && next <= "7") {
+      const octal = body.slice(i + 1, i + 4);
+      if (/^[0-7]{3}$/.test(octal)) {
+        bytes.push(parseInt(octal, 8));
+        i += 3;
+        continue;
+      }
+    }
+    const controlCode = CONTROL_ESCAPE_CODES[next];
+    bytes.push(controlCode !== undefined ? controlCode : next.charCodeAt(0));
+    i += 1;
   }
-  return trimmed;
+  return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * Finds the closing quote of a quoted path token, honouring backslash escapes.
+ */
+function findClosingQuote(text: string): number {
+  for (let i = 1; i < text.length; i++) {
+    if (text[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (text[i] === '"') {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function stripPathPrefix(value: string, prefix: string): string {
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
+/**
+ * Splits the two path tokens of a "diff --git" header. A quoted path is one
+ * token, an unquoted path may contain spaces, so the two sides are separated
+ * on the b/ prefix and the split that yields the same path on both sides wins.
+ */
+function splitGitHeaderPaths(rest: string): [string, string] | null {
+  const trimmed = rest.trim();
+
+  if (trimmed.startsWith('"')) {
+    const firstEnd = findClosingQuote(trimmed);
+    if (firstEnd < 0) {
+      return null;
+    }
+    const first = trimmed.slice(0, firstEnd + 1);
+    const remainder = trimmed.slice(firstEnd + 1).trim();
+    if (!remainder) {
+      return null;
+    }
+    if (!remainder.startsWith('"')) {
+      return [first, remainder];
+    }
+    const secondEnd = findClosingQuote(remainder);
+    if (secondEnd < 0) {
+      return null;
+    }
+    return [first, remainder.slice(0, secondEnd + 1)];
+  }
+
+  const quotedStart = trimmed.indexOf('"');
+  if (quotedStart > 0) {
+    const head = trimmed.slice(0, quotedStart).trim();
+    const tail = trimmed.slice(quotedStart);
+    if (head && tail) {
+      return [head, tail];
+    }
+  }
+
+  const candidates: number[] = [];
+  for (let i = 0; i < trimmed.length; i++) {
+    if (trimmed[i] === " " && trimmed.startsWith("b/", i + 1)) {
+      candidates.push(i);
+    }
+  }
+  if (candidates.length === 0) {
+    return null;
+  }
+  for (const index of candidates) {
+    const left = stripPathPrefix(trimmed.slice(0, index), "a/");
+    const right = stripPathPrefix(trimmed.slice(index + 1), "b/");
+    if (left === right) {
+      return [trimmed.slice(0, index), trimmed.slice(index + 1)];
+    }
+  }
+  const index = candidates[0];
+  return [trimmed.slice(0, index), trimmed.slice(index + 1)];
+}
+
+/**
+ * Normalizes a path token taken from a diff header: decodes git quoting and
+ * removes the a/ or b/ prefix git adds to the diff side of the path.
+ */
+function parseGitPath(raw: string, prefix: string): string {
+  const trimmed = raw.trim();
+  let value = trimmed;
+  if (value.length > 1 && value.startsWith('"') && value.endsWith('"')) {
+    value = decodeGitQuotedPath(value.slice(1, -1));
+  }
+  if (prefix && value.startsWith(prefix)) {
+    value = value.slice(prefix.length);
+  }
+  return value;
+}
+
+/**
+ * A file header path is either /dev/null or something path shaped. Deleted
+ * lines such as "--- commented out" must not be mistaken for a header.
+ */
+function looksLikeFilePathHeader(raw: string): boolean {
+  const value = raw.trim();
+  if (value === "/dev/null") {
+    return true;
+  }
+  if (value.startsWith('"')) {
+    return true;
+  }
+  if (/^[ab]\//.test(value)) {
+    return true;
+  }
+  return !/\s/.test(value);
 }
 
 /**
@@ -70,10 +230,10 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
         files.push(currentFile);
       }
 
-      // Support unquoted and quoted file paths
-      const match = line.match(/^diff --git (?:"a\/(.+?)"|a\/(.+?))\s+(?:"b\/(.+)"|b\/(.+))$/);
-      const oldPath = parseGitPath(match ? (match[1] || match[2] || "") : "");
-      const newPath = parseGitPath(match ? (match[3] || match[4] || "") : "");
+      const match = line.match(GIT_DIFF_HEADER_REGEX);
+      const paths = match ? splitGitHeaderPaths(match[1]) : null;
+      const oldPath = paths ? parseGitPath(paths[0], "a/") : "";
+      const newPath = paths ? parseGitPath(paths[1], "b/") : "";
 
       currentFile = {
         oldPath,
@@ -99,13 +259,13 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
     if (line.startsWith("new file mode ")) {
       currentFile.isNew = true;
       currentFile.newMode = line.replace("new file mode ", "").trim();
-      if (currentFile.newMode === "160000") currentFile.isSubmodule = true;
+      if (currentFile.newMode === SUBMODULE_MODE) currentFile.isSubmodule = true;
       continue;
     }
     if (line.startsWith("deleted file mode ")) {
       currentFile.isDeleted = true;
       currentFile.oldMode = line.replace("deleted file mode ", "").trim();
-      if (currentFile.oldMode === "160000") currentFile.isSubmodule = true;
+      if (currentFile.oldMode === SUBMODULE_MODE) currentFile.isSubmodule = true;
       continue;
     }
     if (line.startsWith("old mode ")) {
@@ -118,21 +278,40 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
       currentFile.isModeChange = true;
       continue;
     }
-    if (line.includes("160000")) {
-      currentFile.isSubmodule = true;
+    if (line.startsWith("similarity index ")) {
+      const similarity = parseInt(line.slice("similarity index ".length).trim(), 10);
+      if (!Number.isNaN(similarity)) {
+        currentFile.similarityIndex = similarity;
+      }
+      continue;
+    }
+    if (line.startsWith("rename from ")) {
+      currentFile.oldPath = parseGitPath(line.slice("rename from ".length), "");
+      currentFile.isRenamed = true;
+      continue;
+    }
+    if (line.startsWith("rename to ")) {
+      currentFile.newPath = parseGitPath(line.slice("rename to ".length), "");
+      currentFile.isRenamed = true;
+      continue;
+    }
+    const indexMatch = line.match(GIT_INDEX_REGEX);
+    if (indexMatch) {
+      if (indexMatch[1] === SUBMODULE_MODE) {
+        currentFile.isSubmodule = true;
+      }
+      continue;
     }
     if (line.startsWith("Binary files ") || line.startsWith("GIT binary patch")) {
       currentFile.isBinary = true;
       continue;
     }
-    if (line.startsWith("--- ")) {
-      if (line === "--- /dev/null") {
+    const pathHeaderMatch = !currentHunk ? line.match(FILE_PATH_HEADER_REGEX) : null;
+    if (pathHeaderMatch && looksLikeFilePathHeader(pathHeaderMatch[1])) {
+      if (pathHeaderMatch[0].startsWith("--- ") && pathHeaderMatch[1].trim() === "/dev/null") {
         currentFile.isNew = true;
       }
-      continue;
-    }
-    if (line.startsWith("+++ ")) {
-      if (line === "+++ /dev/null") {
+      if (pathHeaderMatch[0].startsWith("+++ ") && pathHeaderMatch[1].trim() === "/dev/null") {
         currentFile.isDeleted = true;
       }
       continue;
@@ -185,19 +364,38 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
       });
       currentOldLine++;
       currentFile.deletedLinesCount++;
-    } else if (line.startsWith(" ") || line === "") {
+    } else if (line.startsWith(" ")) {
       currentHunk.lines.push({
         type: "context",
-        content: line.startsWith(" ") ? line.slice(1) : line,
+        content: line.slice(1),
         oldLineNumber: currentOldLine,
         newLineNumber: currentNewLine,
       });
       currentOldLine++;
       currentNewLine++;
+    } else if (line === "") {
+      // A blank line inside a hunk body stands for an empty source line, so it
+      // is counted to keep the later anchors aligned. The trailing empty
+      // string of the split is not part of the hunk.
+      const hunkIsComplete =
+        currentOldLine - currentHunk.oldStart >= currentHunk.oldLines &&
+        currentNewLine - currentHunk.newStart >= currentHunk.newLines;
+      if (i < lines.length - 1 && !hunkIsComplete) {
+        currentHunk.lines.push({
+          type: "context",
+          content: "",
+          oldLineNumber: currentOldLine,
+          newLineNumber: currentNewLine,
+        });
+        currentOldLine++;
+        currentNewLine++;
+      }
     } else if (line.startsWith("\\ No newline at end of file")) {
       // Ignore git marker
       continue;
     }
+    // A zero length body line is not a valid context line: unified diffs
+    // always prefix context lines with a space, so this is diff noise.
   }
 
   if (currentHunk && currentFile) {

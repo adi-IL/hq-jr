@@ -39,4 +39,70 @@ describe("File Filter & Noise Exclusion", () => {
     expect(testResult.category).toBe("TEST");
     expect(testResult.riskWeight).toBe(3);
   });
+
+  it("ignores TypeScript declaration files", () => {
+    const result = evaluateFile("src/types.d.ts");
+    expect(result.shouldIgnore).toBe(true);
+  });
+
+  it("does not classify files by arbitrary substring matches", () => {
+    expect(evaluateFile("src/AuthorProfile.tsx").category).toBe("FRONTEND");
+    expect(evaluateFile("src/hooks/useAuthor.ts").category).toBe("BACKEND");
+    expect(evaluateFile("src/server/reviewer.ts").category).toBe("BACKEND");
+  });
+
+  it("keeps compound security file names at the highest priority", () => {
+    const securityFiles = [
+      "src/authservice.ts",
+      "src/authhandler.go",
+      "src/oauth2.ts",
+      "src/auth0.ts",
+      "src/JWTAuth.ts",
+      "src/secretsmanager.ts",
+      "src/authenticate.ts",
+      "src/services/token-store.ts",
+      "src/lib/credential-helper.ts",
+      "src/middleware/authorize.ts",
+    ];
+
+    for (const file of securityFiles) {
+      const result = evaluateFile(file);
+      expect(result.category, file).toBe("SECURITY");
+      expect(result.riskWeight, file).toBe(10);
+      expect(result.shouldIgnore, file).toBe(false);
+    }
+  });
+
+  it("keeps author and authority style names out of the security category", () => {
+    expect(evaluateFile("src/AuthorProfile.tsx").category).toBe("FRONTEND");
+    expect(evaluateFile("src/components/AuthorityBadge.tsx").category).toBe("FRONTEND");
+    expect(evaluateFile("src/server/reviewer.ts").category).toBe("BACKEND");
+    expect(evaluateFile("src/models/author.ts").category).toBe("BACKEND");
+  });
+
+  it("ignores documentation in any docs directory", () => {
+    const result = evaluateFile("src/docs/guide.ts");
+    expect(result.shouldIgnore).toBe(true);
+    expect(result.category).toBe("DOCUMENTATION");
+  });
+
+  it("finds security roots inside compound words", () => {
+    for (const file of [
+      "src/errors/UnauthorizedError.ts",
+      "src/http/basicauth.go",
+      "src/http/apitoken.ts",
+      "src/lib/webcrypto.ts",
+      "src/aws/clientsecret.ts",
+    ]) {
+      const result = evaluateFile(file);
+      expect(result.category, file).toBe("SECURITY");
+      expect(result.riskWeight, file).toBe(10);
+    }
+  });
+
+  it("keeps look-alike words out of the security category", () => {
+    expect(evaluateFile("src/models/coauthor.ts").category).toBe("BACKEND");
+    expect(evaluateFile("src/parser/tokenizer.ts").category).toBe("BACKEND");
+    expect(evaluateFile("src/hr/secretary.ts").category).toBe("BACKEND");
+  });
 });
