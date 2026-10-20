@@ -107,5 +107,8 @@ jobs:
       - name: Verify Documentation Matches The Code
         run: node scripts/check-doc-code-sanity.mjs
 
+      - name: Verify Agent Instruction Files
+        run: node scripts/check-agents-files.mjs
+
       - name: Dependency Vulnerability Audit
         run: npm audit --omit=dev --audit-level=high
