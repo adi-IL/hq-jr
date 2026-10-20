@@ -293,8 +293,33 @@ function fitPayload(
   for (const { text } of kept) {
     sections.push(text, DIFF_SEPARATOR);
   }
-  const payload = sections.join("\n");
+  let payload = sections.join("\n");
   if (payload.length <= maxTotalChars) {
+    if (dropped.length > 0 && kept.length > 0 && !payload.includes(BUDGET_CUT_TEXT)) {
+      // The budget dropped a file, so the payload has to say that the diff was
+      // cut. When the diff content filled the cap there is no room left for the
+      // notice, so the room comes out of the diff content of the last kept
+      // file. That file is cut on a line boundary and keeps at least its first
+      // code line, and the cut ends with the notice. A budget cut is never
+      // silent.
+      const deficit = payload.length + TOTAL_TRUNCATION_NOTICE.length - maxTotalChars;
+      if (deficit > 0) {
+        const last = kept[kept.length - 1];
+        const prefix = prefixThroughWholeLines(last.text, last.text.length - deficit, last.item.minimumLength);
+        if (prefix === null) {
+          return { fits: false, kept: [], payload: "" };
+        }
+        const shortened = prefix + TOTAL_TRUNCATION_NOTICE;
+        sections[sections.length - 2] = shortened;
+        kept[kept.length - 1] = { ...last, text: shortened, isTruncated: true };
+        payload = sections.join("\n");
+        if (payload.length > maxTotalChars) {
+          return { fits: false, kept: [], payload: "" };
+        }
+      } else {
+        payload = payload + TOTAL_TRUNCATION_NOTICE;
+      }
+    }
     return { fits: true, kept, payload };
   }
   // Kept files were measured to fit. An overflow here means the headers
