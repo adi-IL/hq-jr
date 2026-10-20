@@ -134,4 +134,23 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(scrubbed).toBe("password=[REDACTED_SECRET]");
     expect(redactedCount).toBe(1);
   });
+
+  it("keeps bracket reads with inner spaces or chained keys intact", () => {
+    const raw =
+      "const secret = credentials[ 'api_key' ];\n" +
+      "const apiKey = config['auth']['api_key'];\n" +
+      'password = settings.db["primary"].password;';
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
+  it("keeps the semicolon after a key the first pass already redacted", () => {
+    const { scrubbed, redactedCount } = scrubSecrets(
+      "api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789;"
+    );
+    expect(scrubbed).toBe("api_key: [REDACTED_SECRET];");
+    expect(redactedCount).toBe(1);
+  });
 });
