@@ -505,26 +505,115 @@ export interface DispatchSandboxParams {
   }>;
 }
 
+/** Language of the baseline test command, which decides the sandbox hosts. */
+export type SandboxLanguage = "rust" | "go" | "python" | "node";
+
+/**
+ * Hosts the sandbox may reach, per language of the baseline test command.
+ *
+ * The agent holds the cloned private repository and runs instructions derived
+ * from the pull request, so every host on these lists is a place the
+ * repository contents could be sent. Each list names the package registry of
+ * that one language and the toolchain hosts the agent needs when the image
+ * does not already carry the toolchain, and nothing else. There is no
+ * wildcard entry and no all-hosts entry, because either one reopens the
+ * exfiltration path. A new host goes in by naming what needs it.
+ */
+const SANDBOX_HOSTS: Record<SandboxLanguage, readonly string[]> = {
+  rust: [
+    // crates.io: the crate registry the agent resolves dependencies against.
+    "crates.io",
+    // index.crates.io: the sparse registry index cargo reads to pick versions.
+    "index.crates.io",
+    // static.crates.io: where cargo downloads the crate archives.
+    "static.crates.io",
+    // sh.rustup.rs: the rustup installer the agent runs when cargo is missing.
+    "sh.rustup.rs",
+    // static.rust-lang.org: where rustup downloads the Rust toolchain.
+    "static.rust-lang.org",
+  ],
+  go: [
+    // proxy.golang.org: the module proxy that serves the module metadata, the
+    // module zips, and the toolchain modules Go 1.21 and later download.
+    "proxy.golang.org",
+    // sum.golang.org: the checksum database the go command verifies modules against.
+    "sum.golang.org",
+    // storage.googleapis.com: where the module proxy redirects the zips.
+    "storage.googleapis.com",
+    // go.dev: the Go toolchain download page.
+    "go.dev",
+    // dl.google.com: where go.dev serves the toolchain archives.
+    "dl.google.com",
+  ],
+  python: [
+    // pypi.org: the package index pip resolves dependencies against.
+    "pypi.org",
+    // files.pythonhosted.org: where pip downloads the wheels and the sdists.
+    "files.pythonhosted.org",
+  ],
+  node: [
+    // registry.npmjs.org: the npm registry that serves the package metadata
+    // and the tarballs.
+    "registry.npmjs.org",
+    // nodejs.org: the Node toolchain download, for an image without node.
+    "nodejs.org",
+  ],
+};
+
+/**
+ * Picks the language of the baseline test command. The command is the only
+ * signal of the language under test, and the choices mirror
+ * detectTestCommand in the sandbox runner: cargo, go, pytest, and npm. A
+ * command of a language outside that set falls back to Node, which is the
+ * fallback detectTestCommand itself uses.
+ */
+export function sandboxLanguageForTestCommand(testCommand: string): SandboxLanguage {
+  const command = testCommand.trim().toLowerCase();
+  if (/\bcargo\b/.test(command)) return "rust";
+  if (/\bgo\s+(test|build|vet|run|mod)\b/.test(command)) return "go";
+  if (/\b(pytest|pip3?|python3?)\b/.test(command)) return "python";
+  return "node";
+}
+
+/** One egress rule of the sandbox. */
+export interface SandboxAllowlistEntry {
+  domain: string;
+  transform?: Array<{ [header: string]: string }>;
+}
+
+/**
+ * Builds the egress allowlist of the sandbox. github.com is the only entry
+ * that carries a transform, so the installation token reaches the clone of
+ * the private repository and nothing else. Every other entry is a host of
+ * the language under test that the agent needs to resolve dependencies and
+ * to get a toolchain.
+ *
+ * The repository is not mounted with environment.sources instead. A
+ * repository source has no ref, so the mount cannot pin the pull request
+ * branch, and a private source is authenticated through this same allowlist,
+ * so the credential path is the same either way.
+ */
+export function buildSandboxAllowlist(
+  testCommand: string,
+  base64AuthToken: string
+): SandboxAllowlistEntry[] {
+  const language = sandboxLanguageForTestCommand(testCommand);
+  return [
+    {
+      domain: "github.com",
+      transform: [{ Authorization: `Basic ${base64AuthToken}` }],
+    },
+    ...SANDBOX_HOSTS[language].map((domain) => ({ domain })),
+  ];
+}
+
 export async function dispatchSandboxVerification(params: DispatchSandboxParams) {
   const networkConfig: Interactions.Environment["network"] = params.base64AuthToken
-    ? {
-        allowlist: [
-          // The wildcard entry keeps every domain reachable, so the agent can
-          // install a toolchain and download packages. It carries no
-          // transform, so it injects no header.
-          { domain: "*" },
-          // The installation token is injected on github.com only, which is
-          // what lets the agent clone the private repository.
-          {
-            domain: "github.com",
-            transform: [{ Authorization: `Basic ${params.base64AuthToken}` }],
-          },
-        ],
-      }
+    ? { allowlist: buildSandboxAllowlist(params.testCommand, params.base64AuthToken) }
     : undefined;
   // The network rules travel with the environment, so the agent reaches
-  // github.com with the installation token and keeps every other host
-  // reachable without a credential.
+  // github.com with the installation token and the package hosts of the
+  // language under test, and no other host.
   const environment: Interactions.Environment | "remote" = networkConfig
     ? { type: "remote", network: networkConfig }
     : "remote";

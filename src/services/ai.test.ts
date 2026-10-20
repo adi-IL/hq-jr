@@ -27,6 +27,7 @@ import {
   shouldEscalate,
 } from "./ai.js";
 import { config, parseEnv, riskRank, riskAtLeast, type RiskLevel } from "../config.js";
+import { detectTestCommand } from "./sandbox-runner.js";
 import { runCliDeepReview } from "../cli.js";
 
 describe("Review Schemas", () => {
@@ -725,68 +726,149 @@ describe("sandbox dispatch network configuration", () => {
     instructions: "reproduce the flagged defect",
   };
 
-  it("keeps every domain reachable and injects the installation token on github.com only", async () => {
+  const token = "eC1hY2Nlc3MtdG9rZW46dG9rZW4=";
+
+  /**
+   * The exact hosts the sandbox may reach, per baseline test command. The
+   * list is pinned here so that a new host is a deliberate change and not a
+   * side effect of a code edit.
+   */
+  const EXPECTED_HOSTS: Record<string, string[]> = {
+    "cargo test": [
+      "github.com",
+      "crates.io",
+      "index.crates.io",
+      "static.crates.io",
+      "sh.rustup.rs",
+      "static.rust-lang.org",
+    ],
+    "go test ./...": [
+      "github.com",
+      "proxy.golang.org",
+      "sum.golang.org",
+      "storage.googleapis.com",
+      "go.dev",
+      "dl.google.com",
+    ],
+    pytest: ["github.com", "pypi.org", "files.pythonhosted.org"],
+    "npm test": ["github.com", "registry.npmjs.org", "nodejs.org"],
+  };
+
+  interface CapturedEnvironment {
+    type: string;
+    network?: { allowlist?: Array<{ domain: string; transform?: unknown }> };
+  }
+
+  /** Dispatches with the given test command and returns the sent environment. */
+  async function dispatchWithTestCommand(
+    testCommand: string
+  ): Promise<CapturedEnvironment> {
     const spy = vi
       .spyOn(ai.interactions, "create")
-      .mockResolvedValue({ id: "ix-net-1" } as never);
+      .mockResolvedValue({ id: "ix-net" } as never);
 
     await dispatchSandboxVerification({
       ...sandboxParams,
-      base64AuthToken: "eC1hY2Nlc3MtdG9rZW46dG9rZW4=",
+      testCommand,
+      base64AuthToken: token,
     });
 
-    const environment = spy.mock.calls[0][0].environment as {
-      type: string;
-      network?: { allowlist?: Array<{ domain: string; transform?: unknown }> };
-    };
-    expect(environment.type).toBe("remote");
-    const allowlist = environment.network?.allowlist ?? [];
+    return spy.mock.calls[0][0].environment as CapturedEnvironment;
+  }
 
-    // Every domain stays reachable, so the agent can install a toolchain and
-    // download packages. The wildcard entry carries no transform.
-    expect(allowlist.some((entry) => entry.domain === "*")).toBe(true);
-    expect(allowlist.find((entry) => entry.domain === "*")?.transform).toBeUndefined();
+  it("pins the exact allowlist of every language the sandbox can run", async () => {
+    for (const [testCommand, expectedHosts] of Object.entries(EXPECTED_HOSTS)) {
+      const environment = await dispatchWithTestCommand(testCommand);
 
-    // The token is injected on github.com, which is what lets the agent clone
-    // the private repository.
-    const github = allowlist.find((entry) => entry.domain === "github.com");
-    expect(github?.transform).toEqual([
-      { Authorization: "Basic eC1hY2Nlc3MtdG9rZW46dG9rZW4=" },
-    ]);
+      expect(environment.type).toBe("remote");
+      expect((environment.network?.allowlist ?? []).map((entry) => entry.domain)).toEqual(
+        expectedHosts
+      );
+    }
+  });
 
-    // The allowlist is not a github.com only list, and no other domain
-    // receives the credential.
-    expect(allowlist.length).toBeGreaterThan(1);
-    expect(allowlist.filter((entry) => entry.domain === "github.com")).toHaveLength(1);
-    for (const entry of allowlist) {
-      if (entry.domain !== "github.com") {
-        expect(entry.transform).toBeUndefined();
+  it("gives the installation token to github.com and to no other host", async () => {
+    for (const testCommand of Object.keys(EXPECTED_HOSTS)) {
+      const environment = await dispatchWithTestCommand(testCommand);
+      const allowlist = environment.network?.allowlist ?? [];
+
+      const withTransform = allowlist.filter((entry) => entry.transform !== undefined);
+      expect(withTransform).toHaveLength(1);
+      expect(withTransform[0].domain).toBe("github.com");
+      expect(withTransform[0].transform).toEqual([
+        { Authorization: `Basic ${token}` },
+      ]);
+
+      // Every other host is reachable without a credential, so no other host
+      // can receive the token.
+      for (const entry of allowlist) {
+        if (entry.domain !== "github.com") {
+          expect(entry.transform).toBeUndefined();
+        }
       }
     }
   });
 
-  it("sends the allowlist shape the SDK documents: a wildcard and a github.com entry", async () => {
-    const spy = vi
-      .spyOn(ai.interactions, "create")
-      .mockResolvedValue({ id: "ix-net-3" } as never);
+  it("sends no wildcard and no all-hosts entry", async () => {
+    for (const testCommand of Object.keys(EXPECTED_HOSTS)) {
+      const environment = await dispatchWithTestCommand(testCommand);
+      const allowlist = environment.network?.allowlist ?? [];
 
-    await dispatchSandboxVerification({
-      ...sandboxParams,
-      base64AuthToken: "eC1hY2Nlc3MtdG9rZW46dG9rZW4=",
-    });
+      for (const entry of allowlist) {
+        // "*" is the all-hosts form the SDK documents, an empty domain is the
+        // all-hosts form the managed agents documentation uses, and a
+        // prefixed wildcard covers a whole domain tree. None of them is
+        // allowed here, because the agent holds the private repository.
+        expect(entry.domain).not.toBe("*");
+        expect(entry.domain).not.toBe("");
+        expect(entry.domain).not.toContain("*");
+      }
+    }
+  });
 
-    expect(spy.mock.calls[0][0].environment).toEqual({
-      type: "remote",
-      network: {
-        allowlist: [
-          { domain: "*" },
-          {
-            domain: "github.com",
-            transform: [{ Authorization: "Basic eC1hY2Nlc3MtdG9rZW46dG9rZW4=" }],
-          },
-        ],
-      },
-    });
+  it("keeps the package and toolchain hosts of the language under test", async () => {
+    const packageHosts: Record<string, string[]> = {
+      "cargo test": ["crates.io", "index.crates.io", "static.crates.io"],
+      "go test ./...": ["proxy.golang.org", "sum.golang.org", "storage.googleapis.com"],
+      pytest: ["pypi.org", "files.pythonhosted.org"],
+      "npm test": ["registry.npmjs.org"],
+    };
+    const toolchainHosts: Record<string, string[]> = {
+      "cargo test": ["sh.rustup.rs", "static.rust-lang.org"],
+      "go test ./...": ["go.dev", "dl.google.com"],
+      pytest: [],
+      "npm test": ["nodejs.org"],
+    };
+
+    for (const [testCommand, hosts] of Object.entries(packageHosts)) {
+      const environment = await dispatchWithTestCommand(testCommand);
+      const domains = (environment.network?.allowlist ?? []).map((entry) => entry.domain);
+
+      for (const host of [...hosts, ...toolchainHosts[testCommand]]) {
+        expect(domains).toContain(host);
+      }
+    }
+  });
+
+  it("covers every test command the sandbox runner can produce", () => {
+    const detected = [
+      detectTestCommand(["src/main.rs"]),
+      detectTestCommand(["main.go"]),
+      detectTestCommand(["app.py"]),
+      detectTestCommand(["index.ts"]),
+    ];
+
+    expect(detected).toEqual(["cargo test", "go test ./...", "pytest", "npm test"]);
+    for (const command of detected) {
+      expect(Object.keys(EXPECTED_HOSTS)).toContain(command);
+    }
+  });
+
+  it("falls back to the Node hosts for a command it cannot place", async () => {
+    const environment = await dispatchWithTestCommand("make check");
+    const domains = (environment.network?.allowlist ?? []).map((entry) => entry.domain);
+
+    expect(domains).toEqual(EXPECTED_HOSTS["npm test"]);
   });
 
   it("sends no allowlist and no credentials when there is no installation token", async () => {
