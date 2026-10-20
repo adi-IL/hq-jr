@@ -19,8 +19,35 @@ export const aiDispatcherOptions = {
 };
 export const aiDispatcher = new Agent(aiDispatcherOptions);
 
-export const aiFetch = ((input: Parameters<typeof undiciFetch>[0], init?: Parameters<typeof undiciFetch>[1]) =>
-  undiciFetch(input, { ...init, dispatcher: aiDispatcher })) as unknown as typeof fetch;
+export function toAiFetchInit(
+  input: Request,
+  init?: Parameters<typeof undiciFetch>[1]
+): Parameters<typeof undiciFetch>[1] {
+  return {
+    method: input.method,
+    headers: input.headers as never,
+    body: input.body,
+    signal: input.signal,
+    redirect: input.redirect,
+    cache: input.cache,
+    credentials: input.credentials,
+    integrity: input.integrity,
+    keepalive: input.body ? false : input.keepalive,
+    mode: input.mode === "navigate" ? "same-origin" : input.mode,
+    referrer: input.referrer,
+    referrerPolicy: input.referrerPolicy,
+    ...(input.body ? { duplex: "half" as const } : {}),
+    ...init,
+    dispatcher: aiDispatcher,
+  };
+}
+
+export const aiFetch = ((input: Parameters<typeof undiciFetch>[0] | Request, init?: Parameters<typeof undiciFetch>[1]) => {
+  if (input instanceof Request) {
+    return undiciFetch(input.url, toAiFetchInit(input, init));
+  }
+  return undiciFetch(input, { ...init, dispatcher: aiDispatcher });
+}) as unknown as typeof fetch;
 
 export const aiHttpOptions = { timeout: AI_REQUEST_TIMEOUT_MS, fetch: aiFetch };
 

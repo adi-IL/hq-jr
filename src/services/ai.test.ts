@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { readFile } from "node:fs/promises";
+import { Request as UndiciRequest } from "undici";
 import { z } from "zod";
 import { Type } from "@google/genai";
 import {
@@ -246,6 +247,127 @@ describe("AI request timeouts", () => {
     try {
       const res = await aiFetch(`http://127.0.0.1:${port}/`);
       expect(await res.text()).toBe("ok");
+    } finally {
+      setGlobalDispatcher(previous);
+      server.close();
+    }
+  });
+
+  it("forwards native Request objects with method, headers, and body through the AI dispatcher", async () => {
+    const { createServer } = await import("node:http");
+    const { createHash } = await import("node:crypto");
+    const { setGlobalDispatcher, getGlobalDispatcher } = await import("undici");
+    const { aiFetch, toAiFetchInit } = await import("./ai.js");
+
+    const server = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(Buffer.from(chunk));
+      }
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          method: req.method,
+          url: req.url,
+          header: req.headers["x-test-header"],
+          cacheControl: req.headers["cache-control"],
+          pragma: req.headers["pragma"],
+          secFetchMode: req.headers["sec-fetch-mode"],
+          referer: req.headers["referer"] ?? null,
+          body: Buffer.concat(chunks).toString("utf8"),
+        })
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+
+    const previous = getGlobalDispatcher();
+    const broken = {
+      dispatch() {
+        throw new Error("global dispatcher must not handle AI requests");
+      },
+      close() {
+        return Promise.resolve();
+      },
+      destroy() {
+        return Promise.resolve();
+      },
+    };
+    setGlobalDispatcher(broken as never);
+    try {
+      const expectedPostPayload = JSON.stringify({
+        method: "POST",
+        url: "/v1beta/interactions",
+        header: "tier3",
+        cacheControl: "no-cache",
+        pragma: "no-cache",
+        secFetchMode: "same-origin",
+        referer: "https://example.com/",
+        body: '{"agent":"antigravity"}',
+      });
+      const postIntegrity = `sha256-${createHash("sha256").update(expectedPostPayload).digest("base64")}`;
+      const req = new globalThis.Request(`http://127.0.0.1:${port}/v1beta/interactions`, {
+        method: "POST",
+        headers: {
+          "x-test-header": "tier3",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ agent: "antigravity" }),
+        cache: "no-store",
+        credentials: "omit",
+        integrity: postIntegrity,
+        keepalive: true,
+        mode: "same-origin",
+        referrer: "https://example.com/secret/path?token=1",
+        referrerPolicy: "origin",
+      });
+      const uReq = new UndiciRequest(req.url, toAiFetchInit(req));
+      expect(uReq.cache).toBe("no-store");
+      expect(uReq.credentials).toBe("omit");
+      expect(uReq.mode).toBe("same-origin");
+      expect(uReq.referrer).toBe("https://example.com/secret/path?token=1");
+      expect(uReq.referrerPolicy).toBe("origin");
+      expect(uReq.integrity).toBe(postIntegrity);
+
+      const res = await aiFetch(req);
+      expect(await res.json()).toEqual({
+        method: "POST",
+        url: "/v1beta/interactions",
+        header: "tier3",
+        cacheControl: "no-cache",
+        pragma: "no-cache",
+        secFetchMode: "same-origin",
+        referer: "https://example.com/",
+        body: '{"agent":"antigravity"}',
+      });
+
+      const getReq = new globalThis.Request(`http://127.0.0.1:${port}/v1beta/interactions/ix-1`, {
+        method: "GET",
+        headers: { "x-test-header": "poll" },
+        cache: "no-store",
+        credentials: "omit",
+        keepalive: true,
+        mode: "same-origin",
+        referrer: "https://example.com/ref",
+        referrerPolicy: "no-referrer",
+      });
+      const getRes = await aiFetch(getReq);
+      expect(await getRes.json()).toEqual({
+        method: "GET",
+        url: "/v1beta/interactions/ix-1",
+        header: "poll",
+        cacheControl: "no-cache",
+        pragma: "no-cache",
+        secFetchMode: "same-origin",
+        referer: null,
+        body: "",
+      });
+
+      const mismatchReq = new globalThis.Request(`http://127.0.0.1:${port}/v1beta/interactions/ix-1`, {
+        method: "GET",
+        integrity: "sha256-abc",
+      });
+      await expect(aiFetch(mismatchReq)).rejects.toThrow(/fetch failed/);
     } finally {
       setGlobalDispatcher(previous);
       server.close();
