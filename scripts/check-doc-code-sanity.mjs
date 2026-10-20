@@ -152,7 +152,7 @@ if (!structureBlock) {
 } else {
   const stack = [];
   const treePaths = new Set();
-  for (const line of structureBlock[1].split("\n")) {
+  for (const line of structureBlock[1].split(/\r?\n/)) {
     const indent = (line.match(/^[\s│]*/) || [""])[0].length;
     const cleaned = line
       .replace(/^[│├└─\s]+/, "")

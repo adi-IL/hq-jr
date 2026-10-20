@@ -127,6 +127,7 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 
    ```bash
    sudo install -d -o 1001 -g 1001 /opt/hq-jr/data
+   sudo chown -R 1001:1001 /opt/hq-jr/data
    ```
 
 4. Stage ADC. The container runs as uid `1001` and only needs the ADC JSON file:
