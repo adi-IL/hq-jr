@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-20
+
+### Fixed
+
+- The release workflow could not build the container image. The step that reads the release tag from origin sent its own `Authorization` header while the checkout above it had persisted one of the same name, so GitHub answered 400 "Duplicate header" and the image was never built. The image and release jobs now check out without persisting a credential, and a test fails if a step sends its own header in a job whose checkout persists one.
+- The two sandbox allowlist tests read the first recorded call of a shared spy instead of the call of the dispatch under test, so they asserted one language's allowlist against another's. Vitest 5 hands back the same spy when a method is spied again, where Vitest 2 handed back a fresh one.
+
+## [0.1.9] - 2026-10-20
+
 ### Added
 
 - Gemini 4 Argon escalation tier. A high-risk triage result routes the deep review to `gemini-4-argon` (`HQ_JR_MODEL_ESCALATION`) instead of `gemini-3.8-flash`. The gate is `HQ_JR_ESCALATION_MIN_RISK`, default `HIGH`. Argon costs roughly 2.7x Flash per token, so it stays off low-risk changes.
@@ -28,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Vitest 5.0.5 replaces Vitest 2.1.9, which drops the `tinypool` worker pool and its two prototype-pollution advisories. The declared Node floor moves to 22.12.0, which Vitest 5 requires, and `source-map-js` moves to 1.2.2.
+- `@sentry/node` is pinned to 10.76.2. Probot 13 pulled a version that carried the vulnerable `@opentelemetry/core` and the database instrumentation packages into the production image.
 - Release no longer attaches a container tarball to the GitHub Release. The image is pulled with `docker pull`.
 - The CI job is named "Typecheck, Test, and Build" because `npm run lint` only runs the TypeScript compiler.
 - GitHub secret scanning and push protection are enabled on the repository, and the `gcloud/` directory holding Application Default Credentials is ignored by git and excluded from the Docker build context.
@@ -154,7 +165,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default models match `src/config.ts`: `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` are `gemini-3.8-flash`. Override Tier 2 with `gemini-3.1-pro-preview` if you want Pro.
 - Tier 3 / Antigravity is experimental.
 
-[Unreleased]: https://github.com/adi-IL/hq-jr/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/adi-IL/hq-jr/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.10
+[0.1.9]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.9
 [0.1.8]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.8
 [0.1.7]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.7
 [0.1.6]: https://github.com/adi-IL/hq-jr/releases/tag/v0.1.6
