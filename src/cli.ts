@@ -2,7 +2,7 @@
 
 import { readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags } from "./services/ai.js";
 import type { DeepReviewResult } from "./schemas/review.js";
 import { parseUnifiedDiff, isLineInDiff } from "./services/diff-parser.js";
@@ -289,18 +289,24 @@ async function handleSandboxTest(args: string[]) {
   console.log(JSON.stringify(result, null, 2));
 }
 
-/** True when this module is the process entry point, so importing it does not run the CLI. */
-function isCliEntryPoint(): boolean {
-  const entry = process.argv[1];
-  if (!entry) return true;
+/**
+ * True when the given entry path is this module, so importing it does not run the CLI.
+ *
+ * Fails closed. A missing entry path (a worker thread, `node -e`, a test harness)
+ * or an entry path that cannot be resolved is not proof that this module is the
+ * entry point, so both cases return false. Only a positively resolved entry path
+ * that points at this very file starts the CLI.
+ */
+export function isCliEntryPoint(entry: string | undefined): boolean {
+  if (!entry) return false;
   try {
-    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(entry);
   } catch {
-    return true;
+    return false;
   }
 }
 
-if (isCliEntryPoint()) {
+if (isCliEntryPoint(process.argv[1])) {
   main().catch((err) => {
     console.error("Unhandled CLI error:", err);
     process.exit(1);

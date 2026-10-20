@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { fileURLToPath } from "node:url";
 import appFn, { buildDeepReviewBody, buildExcludedFilesSummary } from "./index.js";
 import { addRemediationCommit, acquireRunLock, releaseRunLock } from "./services/db.js";
 import { BUDGET_DROP_REASON } from "./services/context-packager.js";
 import * as aiModule from "./services/ai.js";
 import * as sandboxRunnerModule from "./services/sandbox-runner.js";
 import * as discussionModule from "./services/discussion.js";
-import { formatDeepReviewPendingLine, runCliDeepReview } from "./cli.js";
+import { formatDeepReviewPendingLine, runCliDeepReview, isCliEntryPoint } from "./cli.js";
 import { config } from "./config.js";
 
 describe("hq-jr Event Handlers & Security Guards", () => {
@@ -1356,5 +1357,31 @@ describe("CLI deep review output", () => {
     expect(started).toEqual([config.HQ_JR_MODEL_ESCALATION]);
     expect(header).toContain(config.HQ_JR_MODEL_TIER2);
     expect(header).toContain("fallback");
+  });
+});
+
+describe("CLI entry point guard", () => {
+  /**
+   * The path of src/cli.ts. The test file sits next to the module under test,
+   * so the path is stable and points at the file the guard compares against.
+   */
+  const cliModulePath = fileURLToPath(new URL("./cli.ts", import.meta.url));
+
+  it("does not run the CLI when the entry path is missing", () => {
+    // A worker thread, `node -e`, or a test harness has no process.argv[1].
+    expect(isCliEntryPoint(undefined)).toBe(false);
+  });
+
+  it("does not run the CLI when the entry path cannot be resolved", () => {
+    // An entry path that does not exist is not proof that this module is the entry point.
+    expect(isCliEntryPoint("/nonexistent/path/to/hq-jr-cli.js")).toBe(false);
+  });
+
+  it("does not run the CLI when the entry path is a different module", () => {
+    expect(isCliEntryPoint(fileURLToPath(import.meta.url))).toBe(false);
+  });
+
+  it("runs the CLI when the entry path resolves to this module", () => {
+    expect(isCliEntryPoint(cliModulePath)).toBe(true);
   });
 });

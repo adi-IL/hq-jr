@@ -2,8 +2,9 @@
  * Manual honesty check (no live Vertex / GitHub).
  * Verifies SQLite findings save/load and sandbox poll→conclusion mapping.
  */
-import { writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const dbMod = await import("../dist/services/db.js");
 const sandboxMod = await import("../dist/services/sandbox-runner.js");
@@ -142,7 +143,14 @@ if (!result.summary.includes("it('repro'")) {
 log("poll path OK: not success-on-dispatch; conclusion from poll");
 
 db.close();
+
+// The transcript carries the runner's Node version and a timestamp, so it goes
+// stale immediately. It is written to a temporary directory, never into the
+// repository, so a run never dirties the working tree.
+const outDir = mkdtempSync(join(tmpdir(), "hq-jr-manual-honesty-"));
+const outPath = join(outDir, "manual-test-output.txt");
+log(`Transcript written to ${outPath}`);
+
 log("\n=== DONE ok ===");
 
-const outPath = fileURLToPath(new URL("../manual-test-output.txt", import.meta.url));
 writeFileSync(outPath, out.join("\n") + "\n");
