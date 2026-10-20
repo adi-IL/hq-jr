@@ -94,7 +94,7 @@ function redactsAtAnyLength(key: string): boolean {
  * such as env-abc12345, is not an accessor.
  */
 const ENV_ACCESSOR_REGEX =
-  /^(?:(?:process|globalThis|global|Deno|Bun|this)\.env|os\.environ|(?:import\.meta\.)?env)(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]*\]|$)/;
+  /^(?:(?:process|globalThis|global|Deno|Bun|this)\.env|os\.environ|(?:import\.meta\.)?env)(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]*\])?$/;
 
 /** Shell and .env interpolation such as $DB_PASSWORD or ${DB_PASSWORD}. */
 const ENV_INTERPOLATION_REGEX = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/;
@@ -727,6 +727,68 @@ function readEscapedQuoted(text: string, start: number, limit: number): ValueSpa
 }
 
 /**
+ * The end of a chain of quoted literals joined by "+", such as
+ * "pass" + "word123". The value of that expression is one string at runtime,
+ * so the chain is read as one value and the length floor applies to the whole
+ * of it.
+ *
+ * A chain only continues with a literal in the same quote character, so the
+ * value keeps one consistent quote style. A different quote, or anything that
+ * is not a literal, ends the chain and the value is read from there on.
+ */
+function readLiteralChain(text: string, start: number, limit: number, quote: string): number {
+  let end = skipString(text, start, limit);
+  for (;;) {
+    const after = skipSpacesOnly(text, end, limit);
+    if (after >= limit || text[after] !== "+") {
+      return end;
+    }
+    const next = skipSpacesOnly(text, after + 1, limit);
+    if (next >= limit || text[next] !== quote) {
+      return end;
+    }
+    const literalEnd = skipString(text, next, limit);
+    if (literalEnd <= next) {
+      return end;
+    }
+    end = literalEnd;
+  }
+}
+
+/**
+ * The interiors of the quoted literals of a chain such as "pass" + "word123",
+ * or null when the text is not such a chain. The runtime value of the chain
+ * is one string, so the interiors are joined and the length is measured on
+ * the whole rather than on a fragment.
+ */
+function literalChainFragments(raw: string): { start: number; end: number }[] | null {
+  const fragments: { start: number; end: number }[] = [];
+  let index = 0;
+  for (;;) {
+    index = skipSpacesOnly(raw, index, raw.length);
+    const quote = raw[index];
+    if (quote !== '"' && quote !== "'" && quote !== "`") {
+      return null;
+    }
+    const close = skipString(raw, index, raw.length);
+    if (close <= index + 1 || raw[close - 1] !== quote) {
+      return null;
+    }
+    fragments.push({ start: index + 1, end: close - 1 });
+    index = close;
+    index = skipSpacesOnly(raw, index, raw.length);
+    if (index >= raw.length) {
+      break;
+    }
+    if (raw[index] !== "+") {
+      return null;
+    }
+    index++;
+  }
+  return fragments.length > 1 ? fragments : null;
+}
+
+/**
  * Reads one candidate value, forward only, until the newline that ends the
  * statement or the next secret assignment. Quotes, calls and brackets are
  * part of the span. A block scalar also includes its indented lines.
@@ -746,7 +808,7 @@ function readValueSpan(text: string, start: number, limit: number = text.length)
   }
   const opener = text[start];
   if (opener === '"' || opener === "'" || opener === "`") {
-    const end = skipString(text, start, limit);
+    const end = readLiteralChain(text, start, limit, opener);
     return { text: text.slice(start, end), start, end };
   }
   let index = start;
@@ -859,7 +921,10 @@ function escapedQuotedBody(span: string): string | null {
  * be a credential. A quoted literal is replaced inside its quotes. Anything
  * else is replaced as a whole span.
  */
-function redactRange(span: ValueSpan, key: string): { start: number; end: number } | null {
+function redactRange(
+  span: ValueSpan,
+  key: string
+): { start: number; end: number; replacement: string } | null {
   const raw = span.text;
   if (raw.length === 0 || raw === REDACTION_PLACEHOLDER) {
     return null;
@@ -875,27 +940,46 @@ function redactRange(span: ValueSpan, key: string): { start: number; end: number
     ) {
       return null;
     }
-    return { start: span.start, end: span.end };
+    return { start: span.start, end: span.end, replacement: REDACTION_PLACEHOLDER };
   }
   const escapedBody = escapedQuotedBody(raw);
   if (escapedBody !== null) {
     if (!literalIsSecret(escapedBody, key)) {
       return null;
     }
-    return { start: span.start + 2, end: span.end - 2 };
+    return { start: span.start + 2, end: span.end - 2, replacement: REDACTION_PLACEHOLDER };
+  }
+  // A chain of literals is one value at runtime, so the length floor applies
+  // to the whole of it. Each fragment on its own can be too short to be a
+  // credential while the value they make is one.
+  const fragments = literalChainFragments(raw);
+  if (fragments !== null) {
+    const joined = fragments.map((fragment) => raw.slice(fragment.start, fragment.end)).join("");
+    if (!literalIsSecret(joined, key)) {
+      return null;
+    }
+    // The chain keeps its shape, so each literal is replaced in place.
+    let replacement = "";
+    let cursor = 0;
+    for (const fragment of fragments) {
+      replacement += raw.slice(cursor, fragment.start) + REDACTION_PLACEHOLDER;
+      cursor = fragment.end;
+    }
+    replacement += raw.slice(cursor);
+    return { start: span.start, end: span.end, replacement };
   }
   const interior = quotedInterior(raw);
   if (interior !== null) {
     if (!literalIsSecret(interior, key)) {
       return null;
     }
-    return { start: span.start + 1, end: span.end - 1 };
+    return { start: span.start + 1, end: span.end - 1, replacement: REDACTION_PLACEHOLDER };
   }
   if (isReferenceValue(raw)) {
     return null;
   }
   if (isBrokenBracketLiteral(raw) || literalIsSecret(raw, key)) {
-    return { start: span.start, end: span.end };
+    return { start: span.start, end: span.end, replacement: REDACTION_PLACEHOLDER };
   }
   return null;
 }
@@ -1023,7 +1107,7 @@ function redactRegion(
       index = span.end;
       continue;
     }
-    text += input.slice(last, range.start) + REDACTION_PLACEHOLDER;
+    text += input.slice(last, range.start) + range.replacement;
     last = range.end;
     count++;
     index = span.end;

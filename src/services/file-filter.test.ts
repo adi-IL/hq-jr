@@ -156,3 +156,30 @@ describe("File Filter & Noise Exclusion", () => {
     expect(authSource.shouldIgnore).toBe(false);
   });
 });
+
+describe("file filter security and docs rules", () => {
+  it("keeps a security named data file outside a docs directory as security", () => {
+    for (const path of ["config/secrets.json", "src/security/rbac.xml", "data/credentials.csv"]) {
+      const result = evaluateFile(path);
+      expect(result.category, path).toBe("SECURITY");
+      expect(result.riskWeight, path).toBe(10);
+      expect(result.shouldIgnore, path).toBe(false);
+    }
+  });
+
+  it("keeps a data file under a docs directory as documentation", () => {
+    for (const path of ["docs/api.json", "docs/data.csv"]) {
+      const result = evaluateFile(path);
+      expect(result.category, path).toBe("DOCUMENTATION");
+      expect(result.shouldIgnore, path).toBe(true);
+    }
+  });
+
+  it("keeps a config manifest under a docs directory as configuration", () => {
+    for (const path of ["docs/package.json", "docs/tsconfig.json"]) {
+      const result = evaluateFile(path);
+      expect(result.category, path).toBe("CONFIG");
+      expect(result.shouldIgnore, path).toBe(false);
+    }
+  });
+});

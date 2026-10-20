@@ -26,6 +26,8 @@ const DEFAULT_MAX_TOTAL_CHARS = 120000;
 const DEFAULT_MAX_PER_FILE_CHARS = 30000;
 const PER_FILE_TRUNCATION_NOTICE = "\n... [diff truncated due to size limit]";
 const TOTAL_TRUNCATION_NOTICE = "\n... [diff truncated to preserve context budget]";
+/** The shared tail of the budget cut notices. */
+const BUDGET_CUT_TEXT = "truncated to preserve context budget";
 const METADATA_TRUNCATION_NOTICE = "\n... [metadata truncated to preserve context budget]";
 const BUDGET_DROP_REASON = "Context window budget limit reached";
 const BINARY_SKIP_REASON = "Binary file has no reviewable text";
@@ -102,7 +104,7 @@ export function packageReviewContext(
   const prepared: PreparedItem[] = [];
   for (const { file, filter } of candidateItems) {
     const path = file.newPath || file.oldPath;
-    const scrubbedPath = scrubSecrets(path).scrubbed;
+    const scrubbedPath = scrubSecrets(singleLinePath(path)).scrubbed;
     // Scrub before measuring, so the caps apply to the text actually sent.
     let text = scrubSecrets(formatFileHunks(file)).scrubbed;
     const minimumLength = firstCodeLineEnd(text);
@@ -163,18 +165,36 @@ export function packageReviewContext(
     formattedDiff: text,
     isTruncated,
   }));
+  const budgetDropped = prepared.slice(itemsToReview.length);
   const ignoredItems = [
     ...filteredItems,
     ...perFileDrops,
-    ...prepared.slice(itemsToReview.length).map((item) => ({ path: item.path, reason: BUDGET_DROP_REASON })),
+    ...budgetDropped.map((item) => ({ path: item.path, reason: BUDGET_DROP_REASON })),
   ];
+  // A file that the budget dropped is named in the ignored list, but the
+  // payload must also say that the diff content was cut, so the cut is never
+  // silent.
+  //
+  // The notice travels with the payload, so its room comes out of the
+  // metadata. When no file was kept the metadata holds no review line, so the
+  // cut cannot take a listed path away.
+  let payload = layout.payload;
+  if (budgetDropped.length > 0 && !payload.includes(BUDGET_CUT_TEXT)) {
+    if (itemsToReview.length === 0 && maxTotalChars > TOTAL_TRUNCATION_NOTICE.length) {
+      payload =
+        cutAtLineBoundary(payload, maxTotalChars - TOTAL_TRUNCATION_NOTICE.length) +
+        TOTAL_TRUNCATION_NOTICE;
+    } else if (payload.length + TOTAL_TRUNCATION_NOTICE.length <= maxTotalChars) {
+      payload = payload + TOTAL_TRUNCATION_NOTICE;
+    }
+  }
 
   return {
     itemsToReview,
     ignoredItems,
     totalReviewableAdditions: itemsToReview.reduce((sum, item) => sum + item.file.addedLinesCount, 0),
     totalReviewableDeletions: itemsToReview.reduce((sum, item) => sum + item.file.deletedLinesCount, 0),
-    promptPayload: layout.payload,
+    promptPayload: payload,
   };
 }
 
@@ -183,6 +203,15 @@ function unreviewableReason(file: DiffFile): string | null {
   if (file.isBinary) return BINARY_SKIP_REASON;
   if (!file.hunks.some((hunk) => hunk.lines.length > 0)) return NO_LINES_REASON;
   return null;
+}
+
+/**
+ * A path on one line. A Git path can hold a newline, and the path is written
+ * into the payload verbatim, so a raw newline in it would break the line
+ * structure and the cut would be measured against the wrong line.
+ */
+function singleLinePath(path: string): string {
+  return path.replace(/[\r\n]/g, (char) => (char === "\r" ? "\\r" : "\\n"));
 }
 
 /** Index of the newline that ends the first code line, or the text length. */
@@ -212,7 +241,7 @@ function prefixThroughWholeLines(text: string, room: number, minimumLength: numb
 }
 
 function formatIgnoredLine(path: string, reason: string): string {
-  return `- ${scrubSecrets(path).scrubbed} (${scrubSecrets(reason).scrubbed})`;
+  return `- ${scrubSecrets(singleLinePath(path)).scrubbed} (${scrubSecrets(reason).scrubbed})`;
 }
 
 interface PayloadLayout {
@@ -321,7 +350,7 @@ function formatIgnoredList(lines: string[], maxChars: number): string[] {
 
 function formatFileHunks(file: DiffFile): string {
   const parts: string[] = [];
-  const filePath = file.newPath || file.oldPath;
+  const filePath = singleLinePath(file.newPath || file.oldPath);
   parts.push(`### File: ${filePath} (${file.addedLinesCount} additions, ${file.deletedLinesCount} deletions)`);
 
   for (const hunk of file.hunks) {
