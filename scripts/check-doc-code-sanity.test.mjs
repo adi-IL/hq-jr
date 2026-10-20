@@ -179,6 +179,17 @@ describe("check-doc-code-sanity project structure parsing", () => {
     expect(code).toBe(0);
   });
 
+  it("reports a missing project path on a line that names a foreign file", () => {
+    const readme = readFileSync(readmePath, "utf8").replace(
+      "## Project Structure",
+      "`src/services/does-not-exist.ts` and `src/example.py`\n\n## Project Structure"
+    );
+    const { output, code } = runCheck(readme);
+    expect(code).toBe(1);
+    expect(output).toContain("src/services/does-not-exist.ts");
+    expect(output).not.toContain("src/example.py");
+  });
+
   it("does not require a test file to be named in the docs", () => {
     const extra = join(repoRoot, "src/services/zz-doc-only.test.ts");
     writeFileSync(extra, "export const t = 1;\n");
