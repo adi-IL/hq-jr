@@ -26,7 +26,11 @@ const DEFAULT_MAX_TOTAL_CHARS = 120000;
 const DEFAULT_MAX_PER_FILE_CHARS = 30000;
 const PER_FILE_TRUNCATION_NOTICE = "\n... [diff truncated due to size limit]";
 const TOTAL_TRUNCATION_NOTICE = "\n... [diff truncated to preserve context budget]";
+const METADATA_TRUNCATION_NOTICE = "\n... [metadata truncated to preserve context budget]";
 const BUDGET_DROP_REASON = "Context window budget limit reached";
+const BINARY_SKIP_REASON = "Binary file has no reviewable text";
+const NO_LINES_REASON = "No reviewable lines in the diff";
+const PER_FILE_DROP_REASON = "Per-file size limit leaves no whole line";
 /** The ignored file list may use at most this share of the payload budget. */
 const IGNORED_LIST_SHARE = 0.2;
 
@@ -41,7 +45,7 @@ interface PreparedItem {
   path: string;
   /** Scrubbed diff text after the per file cap. */
   text: string;
-  /** Shortest cut that still shows code: the file and hunk headers plus one line. */
+  /** End index of the first code line in `text`. */
   minimumLength: number;
   isTruncated: boolean;
   /** Line for this file in the "Files Under Review" list. */
@@ -56,9 +60,11 @@ interface PreparedItem {
  * The whole emitted payload, metadata included, stays within maxTotalChars.
  * The file list and section headers are reserved first, the ignored file list
  * is capped at a share of the budget, and diff content gets the rest in risk
- * order. Every budget cut ends with a truncation notice. A file that would
- * not keep at least one line of code is moved to the ignored list instead of
- * being reported as reviewable.
+ * order. A cut of diff content lands on a line boundary and ends with a
+ * truncation notice. When the section headers alone exceed the cap, no file
+ * is kept and the payload is cut on a line boundary. That cut ends with a
+ * truncation notice when the cap has room for it. A file with no reviewable
+ * lines is moved to the ignored list instead of being reported as reviewable.
  */
 export function packageReviewContext(
   parsedDiff: ParsedDiff,
@@ -79,26 +85,40 @@ export function packageReviewContext(
         path: targetPath,
         reason: filter.reason || "Ignored by rule",
       });
-    } else {
-      candidateItems.push({ file, filter });
+      continue;
     }
+    const reason = unreviewableReason(file);
+    if (reason) {
+      filteredItems.push({ path: targetPath, reason });
+      continue;
+    }
+    candidateItems.push({ file, filter });
   }
 
   // Rank by risk weight descending (highest risk files first)
   candidateItems.sort((a, b) => b.filter.riskWeight - a.filter.riskWeight);
 
-  const prepared: PreparedItem[] = candidateItems.map(({ file, filter }) => {
+  const perFileDrops: { path: string; reason: string }[] = [];
+  const prepared: PreparedItem[] = [];
+  for (const { file, filter } of candidateItems) {
     const path = file.newPath || file.oldPath;
     const scrubbedPath = scrubSecrets(path).scrubbed;
     // Scrub before measuring, so the caps apply to the text actually sent.
     let text = scrubSecrets(formatFileHunks(file)).scrubbed;
-    const minimumLength = endOfLine(text, 3);
+    const minimumLength = firstCodeLineEnd(text);
     let isTruncated = false;
     if (text.length > maxPerFileChars) {
-      text = text.slice(0, maxPerFileChars) + PER_FILE_TRUNCATION_NOTICE;
-      isTruncated = true;
+      const prefix = prefixThroughWholeLines(text, maxPerFileChars, minimumLength);
+      if (prefix === null) {
+        perFileDrops.push({ path, reason: PER_FILE_DROP_REASON });
+        continue;
+      }
+      if (prefix.length < text.length) {
+        text = prefix + PER_FILE_TRUNCATION_NOTICE;
+        isTruncated = true;
+      }
     }
-    return {
+    prepared.push({
       file,
       filter,
       path,
@@ -107,9 +127,11 @@ export function packageReviewContext(
       isTruncated,
       reviewLine: `- **${scrubbedPath}** [Category: ${filter.category}, Priority: ${filter.riskWeight}/10]`,
       droppedLine: formatIgnoredLine(path, BUDGET_DROP_REASON),
-    };
-  });
-  const filteredLines = filteredItems.map((item) => formatIgnoredLine(item.path, item.reason));
+    });
+  }
+  const filteredLines = [...filteredItems, ...perFileDrops].map((item) =>
+    formatIgnoredLine(item.path, item.reason)
+  );
 
   // Keep the longest risk ranked prefix of files that fits. A shorter prefix
   // has less metadata and leaves every kept file at least as much room, so
@@ -139,6 +161,7 @@ export function packageReviewContext(
   }));
   const ignoredItems = [
     ...filteredItems,
+    ...perFileDrops,
     ...prepared.slice(itemsToReview.length).map((item) => ({ path: item.path, reason: BUDGET_DROP_REASON })),
   ];
 
@@ -151,16 +174,37 @@ export function packageReviewContext(
   };
 }
 
-/** Index just past the given number of lines, or the text length if shorter. */
-function endOfLine(text: string, lines: number): number {
-  let index = -1;
-  for (let i = 0; i < lines; i++) {
-    index = text.indexOf("\n", index + 1);
-    if (index === -1) {
-      return text.length;
-    }
+/** A binary file, or any file with no hunk lines, has nothing to review. */
+function unreviewableReason(file: DiffFile): string | null {
+  if (file.isBinary) return BINARY_SKIP_REASON;
+  if (!file.hunks.some((hunk) => hunk.lines.length > 0)) return NO_LINES_REASON;
+  return null;
+}
+
+/** Index of the newline that ends the first code line, or the text length. */
+function firstCodeLineEnd(text: string): number {
+  let start = 0;
+  while (start < text.length) {
+    const newlineAt = text.indexOf("\n", start);
+    const end = newlineAt === -1 ? text.length : newlineAt;
+    if (/^[+\- ] /.test(text.slice(start, end))) return end;
+    if (newlineAt === -1) break;
+    start = newlineAt + 1;
   }
-  return index;
+  return text.length;
+}
+
+/**
+ * Longest prefix of at most `room` characters that ends on a line boundary
+ * and still contains the first code line. Null when that line does not fit.
+ */
+function prefixThroughWholeLines(text: string, room: number, minimumLength: number): string | null {
+  if (minimumLength > text.length) return null;
+  if (room >= text.length) return text;
+  if (room < minimumLength) return null;
+  const newlineAt = text.lastIndexOf("\n", room);
+  if (newlineAt >= minimumLength) return text.slice(0, newlineAt);
+  return null;
 }
 
 function formatIgnoredLine(path: string, reason: string): string {
@@ -205,10 +249,11 @@ function fitPayload(
       continue;
     }
     const room = available - TOTAL_TRUNCATION_NOTICE.length;
-    if (room < item.minimumLength) {
+    const prefix = prefixThroughWholeLines(item.text, room, item.minimumLength);
+    if (prefix === null) {
       return { fits: false, kept: [], payload: "" };
     }
-    kept.push({ item, text: item.text.slice(0, room) + TOTAL_TRUNCATION_NOTICE, isTruncated: true });
+    kept.push({ item, text: prefix + TOTAL_TRUNCATION_NOTICE, isTruncated: true });
     available = 0;
   }
 
@@ -216,16 +261,34 @@ function fitPayload(
     sections.push(text, DIFF_SEPARATOR);
   }
   const payload = sections.join("\n");
-  // Only reachable with no files kept, when the section headers and the
-  // ignored list summary alone exceed a cap far below the default.
-  return { fits: true, kept, payload: payload.length > maxTotalChars ? cutAtLineBoundary(payload, maxTotalChars) : payload };
+  if (payload.length <= maxTotalChars) {
+    return { fits: true, kept, payload };
+  }
+  // Kept files were measured to fit. An overflow here means the headers
+  // alone are over the cap, so drop the prefix and let the search shrink it.
+  if (kept.length > 0) {
+    return { fits: false, kept: [], payload: "" };
+  }
+  return { fits: true, kept, payload: cutMetadata(payload, maxTotalChars) };
 }
 
-/** Cuts text to the limit on a line boundary, so no line is left half written. */
+/** Cuts metadata to the limit on a line boundary and appends a notice when it fits. */
+function cutMetadata(text: string, limit: number): string {
+  if (METADATA_TRUNCATION_NOTICE.length <= limit) {
+    const body = cutAtLineBoundary(text, limit - METADATA_TRUNCATION_NOTICE.length);
+    if (body.length === 0) return METADATA_TRUNCATION_NOTICE.slice(1);
+    return body + METADATA_TRUNCATION_NOTICE;
+  }
+  return cutAtLineBoundary(text, limit);
+}
+
+/** Cuts text to the limit on a line boundary. Returns nothing when no whole line fits. */
 function cutAtLineBoundary(text: string, limit: number): string {
-  const cut = text.slice(0, limit);
-  const lastBreak = cut.lastIndexOf("\n");
-  return lastBreak > 0 ? cut.slice(0, lastBreak) : cut;
+  if (limit <= 0) return "";
+  if (text.length <= limit) return text;
+  const newlineAt = text.lastIndexOf("\n", limit);
+  if (newlineAt > 0) return text.slice(0, newlineAt);
+  return "";
 }
 
 /**
