@@ -85,4 +85,24 @@ describe("File Filter & Noise Exclusion", () => {
     expect(result.shouldIgnore).toBe(true);
     expect(result.category).toBe("DOCUMENTATION");
   });
+
+  it("finds security roots inside compound words", () => {
+    for (const file of [
+      "src/errors/UnauthorizedError.ts",
+      "src/http/basicauth.go",
+      "src/http/apitoken.ts",
+      "src/lib/webcrypto.ts",
+      "src/aws/clientsecret.ts",
+    ]) {
+      const result = evaluateFile(file);
+      expect(result.category, file).toBe("SECURITY");
+      expect(result.riskWeight, file).toBe(10);
+    }
+  });
+
+  it("keeps look-alike words out of the security category", () => {
+    expect(evaluateFile("src/models/coauthor.ts").category).toBe("BACKEND");
+    expect(evaluateFile("src/parser/tokenizer.ts").category).toBe("BACKEND");
+    expect(evaluateFile("src/hr/secretary.ts").category).toBe("BACKEND");
+  });
 });

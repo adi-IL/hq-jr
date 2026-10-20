@@ -58,39 +58,23 @@ const IGNORED_DIRECTORY_PREFIXES = [
 ];
 
 /**
- * Security terms match a whole path word or the prefix of a compound word, so
- * "authservice" is authentication code while "AuthorProfile" is not.
+ * Security roots are matched inside path words, so compound names such as
+ * "authservice", "basicauth", "oauth2", "JWTAuth", "secretsmanager" or
+ * "UnauthorizedError" still count. Words that only share the letters, such as
+ * "author" or "tokenizer", are excluded by SECURITY_FALSE_FRIENDS.
  */
-const SECURITY_ROOTS = [
-  "auth",
-  "authn",
-  "authz",
-  "authentication",
-  "authorization",
-  "authorisation",
-  "authorize",
-  "authenticator",
-  "authenticate",
-  "authenticated",
-  "oauth",
-  "token",
-  "secret",
-  "secretmanager",
-  "crypto",
-  "rbac",
-  "permission",
-  "middleware",
-  "jwt",
-  "credential",
-  "credentials",
-];
+const SECURITY_ROOTS = ["auth", "credential", "crypto", "jwt", "middleware", "permission", "rbac", "secret", "token"];
 
 /**
- * Words that start with a security root but describe authorship or authority.
+ * A root occurrence followed by one of these continuations is a different
+ * word: author, authored, authority, coauthor, tokenize, tokenizer,
+ * secretary. "authoriz" and "authoris" stay security words.
  */
-const NON_SECURITY_PREFIXES = ["author", "authority"];
-
-const SECURITY_ROOTS_BY_LENGTH = [...SECURITY_ROOTS].sort((a, b) => b.length - a.length);
+const SECURITY_FALSE_FRIENDS: Record<string, RegExp> = {
+  auth: /^author(?!i[zs])/,
+  token: /^tokeni[zs]/,
+  secret: /^secretar/,
+};
 
 const FRONTEND_TERMS = new Set([
   "component",
@@ -103,7 +87,8 @@ const FRONTEND_TERMS = new Set([
 
 /**
  * Splits a path into lowercase words: on separators and on camel case
- * boundaries, so "useAuthor.ts" yields "use" and "author".
+ * boundaries, so "useAuthor.ts" yields "use" and "author" and "JWTAuth.ts"
+ * yields "jwt" and "auth".
  */
 function tokenizePath(normalizedPath: string): string[] {
   const tokens: string[] = [];
@@ -116,7 +101,7 @@ function tokenizePath(normalizedPath: string): string[] {
       if (!part) {
         continue;
       }
-      for (const word of part.split(/(?<=[a-z0-9])(?=[A-Z])/)) {
+      for (const word of part.split(/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)) {
         if (word) {
           tokens.push(word.toLowerCase());
         }
@@ -127,19 +112,17 @@ function tokenizePath(normalizedPath: string): string[] {
 }
 
 /**
- * A path token is security critical when a security root matches it as a
- * whole word or as the prefix of a compound word. The longest matching root
- * wins, so "authorization" stays security code while "author" does not.
+ * A path token is security critical when it contains a security root that is
+ * not the start of a look-alike word.
  */
 function isSecurityToken(token: string): boolean {
-  for (const root of SECURITY_ROOTS_BY_LENGTH) {
-    if (!token.startsWith(root)) {
-      continue;
+  for (const root of SECURITY_ROOTS) {
+    for (let index = token.indexOf(root); index !== -1; index = token.indexOf(root, index + 1)) {
+      const falseFriend = SECURITY_FALSE_FRIENDS[root];
+      if (!falseFriend || !falseFriend.test(token.slice(index))) {
+        return true;
+      }
     }
-    if (root === "auth" && NON_SECURITY_PREFIXES.some((prefix) => token.startsWith(prefix))) {
-      return false;
-    }
-    return true;
   }
   return false;
 }
