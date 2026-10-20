@@ -34,10 +34,7 @@ const BINARY_SKIP_REASON = "Binary file has no reviewable text";
 const NO_LINES_REASON = "No reviewable lines in the diff";
 const PER_FILE_DROP_REASON = "Per-file size limit leaves no whole line";
 /** The ignored file list may use at most this share of the payload budget. */
-/** Ignored files listed in the prompt payload. */
-const MAX_IGNORED_ITEMS_IN_PROMPT = 50;
-/** Share of the payload budget the ignored file list may use. */
-const IGNORED_LIST_SHARE = 0.05;
+const IGNORED_LIST_SHARE = 0.2;
 
 const REVIEW_LIST_HEADER = "## Files Under Review (Ranked by Risk)";
 const IGNORED_LIST_HEADER = "\n## Ignored / Pruned Files";
@@ -179,8 +176,8 @@ export function packageReviewContext(
   // silent.
   //
   // The notice travels with the payload, so its room comes out of the
-  // metadata. When no file was kept the metadata holds no review line, so
-  // the cut cannot take a listed path away.
+  // metadata. When no file was kept the metadata holds no review line, so the
+  // cut cannot take a listed path away.
   let payload = layout.payload;
   if (budgetDropped.length > 0 && !payload.includes(BUDGET_CUT_TEXT)) {
     if (itemsToReview.length === 0 && maxTotalChars > TOTAL_TRUNCATION_NOTICE.length) {
@@ -336,23 +333,17 @@ function formatIgnoredList(lines: string[], maxChars: number): string[] {
   const summary = (omitted: number) =>
     `- ... (${omitted} more ignored ${omitted === 1 ? "file" : "files"} not listed)`;
 
-  // The list is capped by count and by length, so a pull request that touches
-  // thousands of files cannot grow the prompt without bound.
-  const capped = lines.slice(0, MAX_IGNORED_ITEMS_IN_PROMPT);
   const sections = [IGNORED_LIST_HEADER];
   let used = IGNORED_LIST_HEADER.length;
-  for (let i = 0; i < capped.length; i++) {
+  for (let i = 0; i < lines.length; i++) {
     const remaining = lines.length - i - 1;
     const reserve = remaining > 0 ? summary(remaining).length + 1 : 0;
-    if (used + 1 + capped[i].length + reserve > maxChars) {
+    if (used + 1 + lines[i].length + reserve > maxChars) {
       sections.push(summary(lines.length - i));
       return sections;
     }
-    sections.push(capped[i]);
-    used += 1 + capped[i].length;
-  }
-  if (lines.length > capped.length) {
-    sections.push(summary(lines.length - capped.length));
+    sections.push(lines[i]);
+    used += 1 + lines[i].length;
   }
   return sections;
 }

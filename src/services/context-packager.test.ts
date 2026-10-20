@@ -7,8 +7,7 @@ function listedReviewPaths(promptPayload: string): string[] {
   return [...metadata.matchAll(/- \*\*(.+?)\*\*/g)].map((match) => match[1]);
 }
 
-describe("Context Packager", () => {
-  const multiFileDiff = `
+const multiFileDiff = `
 diff --git a/package-lock.json b/package-lock.json
 index 111..222 100644
 --- a/package-lock.json
@@ -35,6 +34,8 @@ index 000..444 100644
 +  return token.length > 10;
 +}
 `;
+
+describe("Context Packager", () => {
 
   const manyFileDiff = Array.from({ length: 8 }, (_, index) => {
     const path = `src/feature/module-with-a-long-name-${index}.ts`;
@@ -568,5 +569,27 @@ describe("context packager paths with a newline", () => {
       });
       expect(context.itemsToReview, `cap ${cap}`).toHaveLength(0);
     }
+  });
+});
+
+describe("context packager budget cut announcement", () => {
+  it("says the diff was cut when the budget dropped every file", () => {
+    const parsed = parseUnifiedDiff(multiFileDiff);
+    for (let cap = 150; cap <= 700; cap++) {
+      const context = packageReviewContext(parsed, { maxTotalChars: cap });
+      const dropped = context.ignoredItems.filter((item) => item.reason.includes("budget"));
+      if (dropped.length === 0 || context.itemsToReview.length > 0) continue;
+      expect(context.promptPayload, `cap ${cap}`).toContain("truncated to preserve context budget");
+      expect(context.promptPayload.length, `cap ${cap}`).toBeLessThanOrEqual(cap);
+    }
+  });
+
+  it("names a dropped file in the ignored list with the budget reason", () => {
+    const context = packageReviewContext(parseUnifiedDiff(multiFileDiff), { maxTotalChars: 400 });
+    expect(context.itemsToReview.map((item) => item.file.newPath)).toEqual(["src/auth/jwt.ts"]);
+    expect(context.ignoredItems).toContainEqual({
+      path: "src/controllers/items.ts",
+      reason: "Context window budget limit reached",
+    });
   });
 });
