@@ -43,7 +43,7 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
 | - Redact PATs (github_pat_), Anthropic/OpenAI keys, and JWTs|
 | - Replace credentials with [REDACTED_SECRET] placeholders   |
 | - Keep env and configuration reads intact                   |
-|   (process.env.X, os.environ[...], config.X)                |
+|   (process.env.X, os.environ[...], config.X, getSecret())   |
 +------------------------------+------------------------------+
                                |
                                v
@@ -76,11 +76,12 @@ Large pull requests can exceed model limits. `hq-jr` applies character budgets a
    - Generated directories (`node_modules/`, `dist/`, `build/`, `out/`, `target/`, `.next/`, `vendor/`, `coverage/`).
    - Minified bundles (`*.min.*`, `*.bundle.js`).
    - The filter does not read `.gitignore`; it uses the fixed rules above.
-   - Risk categories are decided from path words: a security root matches a whole word or the start of a compound word, so `src/authservice.ts` is treated as authentication code, while `src/AuthorProfile.tsx` is not treated as authentication code and `src/server/reviewer.ts` is not treated as a frontend view.
+   - Risk categories are decided from path words. A security root (`auth`, `credential`, `crypto`, `jwt`, `middleware`, `permission`, `rbac`, `secret`, `token`) counts anywhere inside a word, so `src/authservice.ts`, `src/basicauth.go` and `src/UnauthorizedError.ts` are treated as security code. Look-alike words such as `author`, `authority`, `tokenizer` and `secretary` do not count, so `src/AuthorProfile.tsx` is not treated as authentication code. Frontend terms must be whole words, so `src/server/reviewer.ts` is not treated as a frontend view.
 
 2. **Truncation and Character Budgeting:**
    - Each formatted file diff is capped at 30,000 characters before truncation notices are added. Secret replacement runs before the budget is measured, because the cap has to apply to the text that is actually emitted.
-   - The emitted prompt payload is capped at 120,000 characters in total. The metadata sections and the truncation notices count against that cap, so the metadata is measured first and the diff content is trimmed to what is left. A file whose diff content does not fit is reported as pruned instead of as a file to review. When the metadata alone exceeds the cap, it is trimmed on a line boundary so that no metadata line is cut in half.
+   - The emitted prompt payload is capped at 120,000 characters in total. The file lists, section headers and truncation notices count against that cap, so they are measured first and the diff content gets what is left, in risk order. The ignored file list may use at most a fifth of the budget; entries past that are summarized in one line. Every budget cut ends with a truncation notice.
+   - A file that would not keep at least one line of code is reported as pruned ("Context window budget limit reached") instead of as a file to review. If the section headers alone exceed a very small cap, no file is kept and the payload is cut on a line boundary.
    - Long developer discussion replies keep the root turn plus the latest 8 turns, at 1,500 characters per turn.
 
 ---
