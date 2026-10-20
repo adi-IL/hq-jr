@@ -741,3 +741,29 @@ describe("scrubber literal chains", () => {
     expect(chain.redactedCount).toBe(0);
   });
 });
+
+describe("scrubber environment accessors", () => {
+  it("redacts a fallback literal behind an environment accessor", () => {
+    const fallback = scrubSecrets('apiKey = process.env.API_KEY || "hardcoded_secret"');
+    expect(fallback.scrubbed).not.toContain("hardcoded_secret");
+    expect(fallback.redactedCount).toBe(1);
+  });
+
+  it("redacts a fallback literal behind a nullish coalesce", () => {
+    const fallback = scrubSecrets('apiKey = process.env.API_KEY ?? "hardcoded_secret"');
+    expect(fallback.scrubbed).not.toContain("hardcoded_secret");
+    expect(fallback.redactedCount).toBe(1);
+  });
+
+  it("keeps an environment accessor that stands alone", () => {
+    const accessor = scrubSecrets("apiKey = process.env.API_KEY");
+    expect(accessor.scrubbed).toBe("apiKey = process.env.API_KEY");
+    expect(accessor.redactedCount).toBe(0);
+  });
+
+  it("keeps a bracketed environment accessor that stands alone", () => {
+    const accessor = scrubSecrets('apiKey = process.env["API_KEY"]');
+    expect(accessor.scrubbed).toBe('apiKey = process.env["API_KEY"]');
+    expect(accessor.redactedCount).toBe(0);
+  });
+});
