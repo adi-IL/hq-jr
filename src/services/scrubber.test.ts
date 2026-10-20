@@ -398,6 +398,26 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(hash.redactedCount).toBe(1);
   });
 
+  it("redacts a literal fallback joined to a call", () => {
+    const or = scrubSecrets('password = os.getenv("DB_PASSWORD") || "hardcoded_secret"');
+    expect(or.scrubbed).toBe("password = [REDACTED_SECRET]");
+    expect(or.redactedCount).toBe(1);
+
+    const nullish = scrubSecrets('password = os.getenv("DB_PASSWORD") ?? "hardcoded_secret"');
+    expect(nullish.scrubbed).toBe("password = [REDACTED_SECRET]");
+
+    const deno = scrubSecrets('client_secret = Deno.env.get("X") ?? "hardcoded_secret"');
+    expect(deno.scrubbed).toBe("client_secret = [REDACTED_SECRET]");
+
+    const short = scrubSecrets('secret_key = os.getenv("X") || "ab"');
+    expect(short.scrubbed).toBe("secret_key = [REDACTED_SECRET]");
+
+    // The call on its own still reads a value from somewhere else, so it stays.
+    const alone = scrubSecrets('password = os.getenv("DB_PASSWORD")');
+    expect(alone.scrubbed).toBe('password = os.getenv("DB_PASSWORD")');
+    expect(alone.redactedCount).toBe(0);
+  });
+
   it("redacts the indented lines of a yaml block scalar", () => {
     const { scrubbed, redactedCount } = scrubSecrets("api_key: |\n  supersecretvalue");
 
