@@ -103,9 +103,6 @@ export async function checkAiHealth(): Promise<{ status: "ok" | "error"; message
       ai.models.generateContent({
         model: config.HQ_JR_MODEL_HEALTH,
         contents: "ping",
-        config: {
-          maxOutputTokens: config.HQ_JR_MAX_OUTPUT_TOKENS,
-        },
       })
     );
     const latencyMs = Date.now() - start;
@@ -126,10 +123,12 @@ export async function checkAiHealth(): Promise<{ status: "ok" | "error"; message
 /**
  * Neutralizes the untrusted wrapper tags so untrusted text cannot open or close
  * a wrapper and move the rest of the payload outside the untrusted region.
+ * Only the tag name is rewritten, so attributes, the closing angle bracket and
+ * any text after the tag name survive untouched.
  */
 export function escapeUntrustedTags(value: string): string {
   return value.replace(
-    /<\s*(\/?)\s*(untrusted_pr_metadata|untrusted_context|untrusted_diff)\b[^>]*>/gi,
+    /<[ \t]*(\/?)[ \t]*(untrusted_pr_metadata|untrusted_context|untrusted_diff)\b/gi,
     "<\\$1$2"
   );
 }
@@ -206,11 +205,19 @@ export const DEEP_REVIEW_RESPONSE_SCHEMA: Schema = {
           body: { type: Type.STRING },
           suggestedPatch: { type: Type.STRING },
         },
-        required: ["path", "severity", "category", "title", "body"],
+        required: ["path", "line", "side", "severity", "category", "title", "body"],
       },
     },
   },
-  required: ["summary", "verdict", "comments"],
+  required: [
+    "summary",
+    "verdict",
+    "resolvedPriorIssues",
+    "unresolvedPriorIssues",
+    "comments",
+    "requiresSandboxVerification",
+    "sandboxProbes",
+  ],
 };
 
 /**
@@ -234,7 +241,6 @@ ${escapeUntrustedTags(diffText)}
       config: {
         systemInstruction,
         responseMimeType: "application/json",
-        maxOutputTokens: config.HQ_JR_MAX_OUTPUT_TOKENS,
         thinkingConfig: {
           thinkingLevel: ThinkingLevel.HIGH,
         },
@@ -289,6 +295,73 @@ export function resolveDeepReviewModel(
     : config.HQ_JR_MODEL_TIER2;
 }
 
+export interface DeepReviewRouting {
+  model: string;
+  escalated: boolean;
+}
+
+/**
+ * Decides which model serves the deep review for a triage result.
+ */
+export function resolveDeepReviewRouting(
+  overallRisk: RiskLevel,
+  minRisk: RiskLevel = config.HQ_JR_ESCALATION_MIN_RISK
+): DeepReviewRouting {
+  const escalated = shouldEscalate(overallRisk, minRisk);
+  return {
+    model: escalated ? config.HQ_JR_MODEL_ESCALATION : config.HQ_JR_MODEL_TIER2,
+    escalated,
+  };
+}
+
+export interface EscalatedDeepReviewParams {
+  /** Triage risk of the pull request. */
+  overallRisk: RiskLevel;
+  /** Runs the deep review on the given model. */
+  run: (model: string) => Promise<DeepReviewResult>;
+  minRisk?: RiskLevel;
+  /** Receives the fallback notice when the escalation model fails. */
+  log?: (payload: Record<string, unknown>, message: string) => void;
+}
+
+export interface EscalatedDeepReviewOutcome {
+  result: DeepReviewResult;
+  model: string;
+  escalated: boolean;
+  fellBack: boolean;
+}
+
+/**
+ * Runs the deep review on the model the escalation gate selects and falls back
+ * to the Tier 2 model once when the escalation model fails.
+ */
+export async function runEscalatedDeepReview(
+  params: EscalatedDeepReviewParams
+): Promise<EscalatedDeepReviewOutcome> {
+  const routing = resolveDeepReviewRouting(params.overallRisk, params.minRisk);
+  try {
+    const result = await params.run(routing.model);
+    return { result, model: routing.model, escalated: routing.escalated, fellBack: false };
+  } catch (err: unknown) {
+    if (!routing.escalated) throw err;
+    params.log?.(
+      {
+        err,
+        escalationModel: routing.model,
+        fallbackModel: config.HQ_JR_MODEL_TIER2,
+      },
+      "Escalated deep review failed, retrying deep review on the Tier 2 model"
+    );
+    const result = await params.run(config.HQ_JR_MODEL_TIER2);
+    return {
+      result,
+      model: config.HQ_JR_MODEL_TIER2,
+      escalated: true,
+      fellBack: true,
+    };
+  }
+}
+
 /**
  * Tier 2: Deep semantic review using Gemini 3.8 Flash with High Thinking
  */
@@ -297,6 +370,11 @@ export async function runDeepReview(
   options?: DeepReviewOptions
 ): Promise<DeepReviewResult> {
   const model = options?.model || config.HQ_JR_MODEL_TIER2;
+  // Only the escalation model is capped. Tier 1 and Tier 2 keep their uncapped output.
+  const outputCap =
+    model === config.HQ_JR_MODEL_ESCALATION
+      ? { maxOutputTokens: config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS }
+      : {};
   let previousAuditSection = "";
   if (options?.previousReview) {
     const pr = options.previousReview;
@@ -337,7 +415,7 @@ ${contextPrompt}
       config: {
         systemInstruction,
         responseMimeType: "application/json",
-        maxOutputTokens: config.HQ_JR_MAX_OUTPUT_TOKENS,
+        ...outputCap,
         thinkingConfig: {
           thinkingLevel: ThinkingLevel.HIGH,
         },

@@ -13,7 +13,7 @@ const envSchema = z.object({
   HQ_JR_MODEL_DISCUSSION: z.string().default("gemini-3.8-flash"),
   HQ_JR_MODEL_REMEDIATION: z.string().default("gemini-3.8-flash"),
   HQ_JR_MODEL_HEALTH: z.string().default("gemini-3.8-flash"),
-  HQ_JR_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(32768),
+  HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(32768),
   HQ_JR_AGENT_TIER3: z.string().default("antigravity-preview-05-2026"),
   HQ_JR_AI_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
   HQ_JR_DB_PATH: z.string().default("./data/hq-jr.db"),
@@ -27,10 +27,12 @@ export const config = envSchema.parse(process.env);
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
 
 const RISK_ORDER: Record<RiskLevel, number> = { LOW: 0, MEDIUM: 1, HIGH: 2 };
+/** Rank for a risk level outside the known set: below LOW so it never escalates. */
+const UNKNOWN_RISK_RANK = -1;
 
 /** Single total order over risk levels: LOW < MEDIUM < HIGH. */
 export function riskRank(risk: RiskLevel): number {
-  return RISK_ORDER[risk];
+  return RISK_ORDER[risk] ?? UNKNOWN_RISK_RANK;
 }
 
 /** True when risk is at or above threshold under the riskRank order. */

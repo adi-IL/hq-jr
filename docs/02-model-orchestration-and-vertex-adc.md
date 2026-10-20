@@ -120,11 +120,11 @@ The system splits operational responsibilities according to capabilities: direct
 | `HQ_JR_MODEL_DISCUSSION` | `gemini-3.8-flash` | Replies in review discussion threads. |
 | `HQ_JR_MODEL_REMEDIATION` | `gemini-3.8-flash` | Autonomous remediation synthesis. |
 | `HQ_JR_MODEL_HEALTH` | `gemini-3.8-flash` | Health probe (`/healthz`, `hq-jr health`). |
-| `HQ_JR_MAX_OUTPUT_TOKENS` | `32768` | Output token cap for triage, deep review, and the health probe. |
+| `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | `32768` | Output token cap sent only on the escalation model call. |
 
-- **Output cap.** `HQ_JR_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on every triage and deep review call. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice.
+- **Output cap.** `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on the escalation model call only. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice. Triage, the Tier 2 deep review, the discussion replies, the remediation synthesis and the health probe are uncapped, exactly as before the escalation tier was added.
 - **Visibility.** `hq-jr health`, `hq-jr review`, and the app logs print the resolved model for every tier, so a local run shows which model actually served each stage.
-- **Compatibility.** `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` keep their names and defaults. Existing deployments that set them keep working unchanged.
+- **Compatibility.** `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` keep their names and defaults, but `HQ_JR_MODEL_TIER1` no longer drives the discussion, remediation and health calls. A deployment that set `HQ_JR_MODEL_TIER1` to anything other than `gemini-3.8-flash` sees those three call sites move to `gemini-3.8-flash` after this change. To keep the previous behavior, set `HQ_JR_MODEL_DISCUSSION`, `HQ_JR_MODEL_REMEDIATION` and `HQ_JR_MODEL_HEALTH` to the same value that `HQ_JR_MODEL_TIER1` used to hold. `HQ_JR_MAX_OUTPUT_TOKENS` is replaced by `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`, which caps the escalation model only.
 
 ## Pipeline Flow
 
@@ -219,9 +219,9 @@ Both direct tiers use `generateContent` with `responseMimeType: "application/jso
 
 The TypeScript definitions live in `src/schemas/review.ts`; `line` defaults to `1`, `side` defaults to `RIGHT`, `requiresSandboxVerification` defaults to `false`, and `resolvedPriorIssues`, `unresolvedPriorIssues`, and `sandboxProbes` default to empty. `comments` is required.
 
-The JSON `responseSchema` sent to the model lives in `src/services/ai.ts` (`TRIAGE_RESPONSE_SCHEMA`, `DEEP_REVIEW_RESPONSE_SCHEMA`). Both declarations describe the same contract: a field is required in the model contract exactly when the Zod schema rejects a payload without it. `line` and `side` carry Zod defaults, so they are declared as properties but not as required model output. A parity test in `src/services/ai.test.ts` compares field names, enum members, and required sets on both sides, so a change to one declaration without the other fails the suite.
+The JSON `responseSchema` sent to the model lives in `src/services/ai.ts` (`TRIAGE_RESPONSE_SCHEMA`, `DEEP_REVIEW_RESPONSE_SCHEMA`). Both declarations describe the same contract. A field is required in the model contract when the Zod schema always produces it: plain fields and fields with a Zod default (`line`, `side`, `requiresSandboxVerification`, `resolvedPriorIssues`, `unresolvedPriorIssues`, `sandboxProbes`) are required, and only `ZodOptional` fields (`verificationGoal`, `suggestedPatch`, `targetLine`) are not. Requiring `line` and `side` keeps the model from emitting a review comment without a diff anchor. A parity test in `src/services/ai.test.ts` compares field names, field types, enum members, and required sets on both sides, so a change to one declaration without the other fails the suite.
 
-Untrusted input is wrapped in `<untrusted_diff>` for triage and in `<untrusted_context>` for the deep review. `escapeUntrustedTags` in `src/services/ai.ts` neutralizes those tag names, plus `untrusted_pr_metadata`, in every untrusted field, so a pull request cannot close a wrapper and push the rest of the payload outside the untrusted region.
+Untrusted input is wrapped in `<untrusted_diff>` for triage and in `<untrusted_context>` for the deep review. `escapeUntrustedTags` in `src/services/ai.ts` neutralizes those tag names, plus `untrusted_pr_metadata`, in every untrusted field: the triage diff, the PR metadata block, the reviewed file list and reasons, the deep review prompt payload, and the discussion diff hunk, thread history and developer query. It rewrites only the tag name, so attributes, the closing angle bracket and the rest of the payload survive. A pull request therefore cannot close a wrapper and push the rest of the payload outside the untrusted region.
 
 ## Implementation Snippets
 
@@ -229,6 +229,8 @@ Untrusted input is wrapped in `<untrusted_diff>` for triage and in `<untrusted_c
 
 ```typescript
 import { GoogleGenAI } from "@google/genai";
+import { config } from "./config.js";
+import { resolveDeepReviewModel } from "./services/ai.js";
 
 const ai = new GoogleGenAI({
   vertexai: true,
@@ -238,7 +240,7 @@ const ai = new GoogleGenAI({
 
 export async function runTriage(diffText: string) {
   const res = await ai.models.generateContent({
-    model: "gemini-3.8-flash",
+    model: config.HQ_JR_MODEL_TIER1,
     contents: diffText,
     config: {
       responseMimeType: "application/json",
@@ -250,11 +252,14 @@ export async function runTriage(diffText: string) {
 
 export async function runDeepReview(contextPrompt: string, options?: { model?: string }) {
   const res = await ai.models.generateContent({
-    model: options?.model ?? "gemini-3.8-flash",
+    model: options?.model ?? config.HQ_JR_MODEL_TIER2,
     contents: contextPrompt,
     config: {
       responseMimeType: "application/json",
-      maxOutputTokens: 32768,
+      // Only the escalation model is capped.
+      ...(options?.model === config.HQ_JR_MODEL_ESCALATION
+        ? { maxOutputTokens: config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS }
+        : {}),
       responseSchema: { /* deep review schema */ },
     },
   });
@@ -262,8 +267,7 @@ export async function runDeepReview(contextPrompt: string, options?: { model?: s
 }
 
 // Escalation gate, applied before the deep review.
-const deepModel =
-  riskAtLeast(triage.overallRisk, "HIGH") ? "gemini-4-argon" : "gemini-3.8-flash";
+const deepModel = resolveDeepReviewModel(triage.overallRisk);
 
 export async function dispatchSandboxVerification(params: {
   repoUrl: string;

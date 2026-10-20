@@ -12,6 +12,7 @@ describe("hq-jr Event Handlers & Security Guards", () => {
   let octokitMock: any;
 
   beforeEach(() => {
+    vi.restoreAllMocks();
     handlers = new Map();
     mockApp = {
       log: {
@@ -126,7 +127,19 @@ describe("hq-jr Event Handlers & Security Guards", () => {
       overallRisk: "HIGH",
       files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
     });
-    vi.spyOn(aiModule, "runDeepReview").mockRejectedValue(new TypeError("fetch failed"));
+    const deepSpy = vi
+      .spyOn(aiModule, "runDeepReview")
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValue({
+        summary: "ok",
+        verdict: "COMMENT",
+        resolvedPriorIssues: [],
+        unresolvedPriorIssues: [],
+        comments: [],
+        requiresSandboxVerification: false,
+        sandboxProbes: [],
+      });
     octokitMock.pulls.get.mockResolvedValueOnce({
       data: `diff --git a/src/auth.ts b/src/auth.ts
 index 123..456 100644
@@ -150,6 +163,12 @@ index 123..456 100644
 
     const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
     expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    // The escalation attempt and its Tier 2 fallback consume both queued rejections.
+    expect(deepSpy).toHaveBeenCalledTimes(2);
+    // The spy is not left rejecting on every later call.
+    await expect(deepSpy("prompt", { model: "tier2" })).resolves.toMatchObject({
+      verdict: "COMMENT",
+    });
   });
 
   it("still fails the check when the review requests changes", async () => {
@@ -359,6 +378,33 @@ rename to src/new/auth.ts
     expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
     expect(finalUpdate.output.summary).toContain("src/old/auth.ts");
     expect(finalUpdate.output.summary).toContain("src/new/auth.ts");
+  });
+
+  it("escapes backticks in renamed file paths in the check summary", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: "diff --git a/src/old`x.ts b/src/new`x.ts\nsimilarity index 100%\nrename from src/old`x.ts\nrename to src/new`x.ts\n",
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 25,
+          state: "open",
+          title: "Move auth module",
+          head: { sha: "sha-25", ref: "rename" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate.output.summary).toContain("src/old&#96;x.ts");
+    expect(finalUpdate.output.summary).toContain("src/new&#96;x.ts");
+    expect(finalUpdate.output.summary).not.toContain("src/old`x.ts");
   });
 
   it("still fails the check when the review itself errors", async () => {

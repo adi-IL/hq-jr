@@ -2,11 +2,10 @@
 
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, resolveDeepReviewModel, shouldEscalate } from "./services/ai.js";
+import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags } from "./services/ai.js";
 import { parseUnifiedDiff, isLineInDiff } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
 import { config } from "./config.js";
-import type { DeepReviewResult } from "./schemas/review.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -62,7 +61,7 @@ function printModelRouting() {
   console.log(`  discussion:           ${config.HQ_JR_MODEL_DISCUSSION}`);
   console.log(`  remediation:          ${config.HQ_JR_MODEL_REMEDIATION}`);
   console.log(`  health probe:         ${config.HQ_JR_MODEL_HEALTH}`);
-  console.log(`  max output tokens:    ${config.HQ_JR_MAX_OUTPUT_TOKENS}`);
+  console.log(`  escalation max output tokens: ${config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS}`);
   console.log(`  escalation threshold: ${config.HQ_JR_ESCALATION_MIN_RISK}`);
 }
 
@@ -167,29 +166,27 @@ async function handleReview(args: string[]) {
   }
 
   // 4. Tier 2 Deep Semantic Review
-  const escalate = shouldEscalate(triage.overallRisk);
-  const deepReviewModel = resolveDeepReviewModel(triage.overallRisk);
+  const routing = resolveDeepReviewRouting(triage.overallRisk);
   console.log(
-    `\nEscalation: ${escalate ? "engaged" : "not engaged"} (overall risk ${triage.overallRisk}, threshold ${config.HQ_JR_ESCALATION_MIN_RISK})`
+    `\nEscalation: ${routing.escalated ? "engaged" : "not engaged"} (overall risk ${triage.overallRisk}, threshold ${config.HQ_JR_ESCALATION_MIN_RISK})`
   );
-  console.log(`\n--- Tier 2: Deep Semantic Review (${deepReviewModel}) ---`);
+  console.log(`\n--- Tier 2: Deep Semantic Review (${routing.model}) ---`);
   const reviewPrompt = `Local CLI Review Mode
 Files requiring deep review:
-${reviewables.map((f) => `- ${f.path} (Risk: ${f.risk}, Reason: ${f.reason})`).join("\n")}
+${reviewables.map((f) => `- ${escapeUntrustedTags(f.path)} (Risk: ${escapeUntrustedTags(f.risk)}, Reason: ${escapeUntrustedTags(f.reason)})`).join("\n")}
 
-${context.promptPayload}
+${escapeUntrustedTags(context.promptPayload)}
 `;
 
-  let review: DeepReviewResult;
-  try {
-    review = await runDeepReview(reviewPrompt, { model: deepReviewModel });
-  } catch (escalationErr: unknown) {
-    if (!escalate) throw escalationErr;
-    console.warn(
-      `Escalated deep review failed (${escalationErr instanceof Error ? escalationErr.message : String(escalationErr)}), retrying on ${config.HQ_JR_MODEL_TIER2}`
-    );
-    review = await runDeepReview(reviewPrompt, { model: config.HQ_JR_MODEL_TIER2 });
-  }
+  const deepReview = await runEscalatedDeepReview({
+    overallRisk: triage.overallRisk,
+    run: (model) => runDeepReview(reviewPrompt, { model }),
+    log: (payload, message) =>
+      console.warn(
+        `${message}: ${payload.err instanceof Error ? payload.err.message : String(payload.err)}`
+      ),
+  });
+  const review = deepReview.result;
   console.log(`\nVerdict: ${review.verdict}`);
   console.log(`Summary: ${review.summary}\n`);
 
