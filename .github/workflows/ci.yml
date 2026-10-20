@@ -34,6 +34,11 @@ jobs:
           path: ./
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           head: ${{ github.sha }}
+          # The scrubber and chaos-monkey tests hold fake credential shaped
+          # fixtures on purpose, and TruffleHog scans every commit in the
+          # range, so a fixture that once sat in history keeps failing the
+          # scan even after it is rewritten. Only verified results fail the
+          # build; the real credential check is GitHub push protection.
           extra_args: --only-verified
 
   build-and-test:

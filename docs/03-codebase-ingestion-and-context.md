@@ -24,7 +24,8 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
 |   src/index.ts -> src/services/diff-parser.ts               |
 | - pulls.get with the diff media type                        |
 | - Parse hunks, old/new line anchors, quoted paths           |
-| - Tag binaries and submodules (mode 160000)                 |
+| - Tag binaries and submodules (index line mode 160000)      |
+| - Parse rename from/to and similarity index headers         |
 +------------------------------+------------------------------+
                                |
                                v
@@ -32,6 +33,7 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
 | Heuristic Noise & Extension Filter (src/services/file-filter.ts)
 | - Skip lockfiles (package-lock.json, bun.lockb, Cargo.lock)  |
 | - Skip compiled assets (dist/, build/, minified JS)         |
+| - Skip type declaration files (*.d.ts)                      |
 | - Include SVGs in frontend triage for stored XSS detection  |
 +------------------------------+------------------------------+
                                |
@@ -40,6 +42,8 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
 | Secret Redaction (src/services/scrubber.ts)                 |
 | - Redact PATs (github_pat_), Anthropic/OpenAI keys, and JWTs|
 | - Replace credentials with [REDACTED_SECRET] placeholders   |
+| - Keep env and configuration reads intact                   |
+|   (process.env.X, os.environ[...], config.X, getSecret())   |
 +------------------------------+------------------------------+
                                |
                                v
@@ -52,7 +56,7 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                v
 +-------------------------------------------------------------+
 | Context Packager & Vertex AI Evaluation (src/services/ai.ts)|
-| - Diff-text caps: 30,000/file, 120,000 total                |
+| - Diff-text caps: 30,000/file, 120,000 total payload        |
 | - Tier 1: Flash + High Thinking (triage schema)             |
 | - Tier 2: Flash + High Thinking (deep review schema)        |
 +-------------------------------------------------------------+
@@ -65,15 +69,19 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
 Large pull requests can exceed model limits. `hq-jr` applies character budgets and deterministic filters before any model call.
 
 1. **Deterministic Ignore Rules** (`src/services/file-filter.ts`):
-   - Documentation (`*.md`, `*.markdown`, `*.txt`, `docs/**`).
+   - Documentation (`*.md`, `*.markdown`, `*.txt`, and any `docs/` directory segment).
    - Lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock`, `composer.lock`, `flake.lock`).
    - Asset binaries and archives (`*.png`, `*.jpg`, `*.wasm`, `*.bin`, `*.zip`, and similar).
+   - TypeScript declaration files (`*.d.ts`).
    - Generated directories (`node_modules/`, `dist/`, `build/`, `out/`, `target/`, `.next/`, `vendor/`, `coverage/`).
    - Minified bundles (`*.min.*`, `*.bundle.js`).
    - The filter does not read `.gitignore`; it uses the fixed rules above.
+   - Risk categories are decided from path words. A security root (`auth`, `credential`, `crypto`, `jwt`, `middleware`, `permission`, `rbac`, `secret`, `token`) counts anywhere inside a word, so `src/authservice.ts`, `src/basicauth.go` and `src/UnauthorizedError.ts` are treated as security code. Look-alike words such as `author`, `authority`, `tokenizer` and `secretary` do not count, so `src/AuthorProfile.tsx` is not treated as authentication code. Frontend terms must be whole words, so `src/server/reviewer.ts` is not treated as a frontend view.
 
 2. **Truncation and Character Budgeting:**
-   - Each formatted file diff is capped at 30,000 characters before truncation notices are added. Accumulated diff text is capped at 120,000 characters before notices. Secret replacement can expand a match, and prompt metadata and section headers are added after these caps, so the emitted prompt can exceed these budgets.
+   - Each formatted file diff is capped at 30,000 characters before truncation notices are added. Secret replacement runs before the budget is measured, because the cap has to apply to the text that is actually emitted.
+   - The emitted prompt payload is capped at 120,000 characters in total. The file lists, section headers and truncation notices count against that cap, so they are measured first and the diff content gets what is left, in risk order. The ignored file list may use at most a fifth of the budget; entries past that are summarized in one line. Every budget cut ends with a truncation notice.
+   - A file that would not keep at least one line of code is reported as pruned ("Context window budget limit reached") instead of as a file to review. If the section headers alone exceed a very small cap, no file is kept and the payload is cut on a line boundary.
    - Long developer discussion replies keep the root turn plus the latest 8 turns, at 1,500 characters per turn.
 
 ---

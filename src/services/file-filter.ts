@@ -58,13 +58,87 @@ const IGNORED_DIRECTORY_PREFIXES = [
 ];
 
 /**
+ * Security roots are matched inside path words, so compound names such as
+ * "authservice", "basicauth", "oauth2", "JWTAuth", "secretsmanager" or
+ * "UnauthorizedError" still count. Words that only share the letters, such as
+ * "author" or "tokenizer", are excluded by SECURITY_FALSE_FRIENDS.
+ */
+const SECURITY_ROOTS = ["auth", "credential", "crypto", "jwt", "middleware", "permission", "rbac", "secret", "token"];
+
+/**
+ * A root occurrence followed by one of these continuations is a different
+ * word: author, authored, authority, coauthor, tokenize, tokenizer,
+ * secretary. "authoriz" and "authoris" stay security words.
+ */
+const SECURITY_FALSE_FRIENDS: Record<string, RegExp> = {
+  auth: /^author(?!i[zs])/,
+  token: /^tokeni[zs]/,
+  secret: /^secretar/,
+};
+
+const FRONTEND_TERMS = new Set([
+  "component",
+  "components",
+  "page",
+  "pages",
+  "view",
+  "views",
+]);
+
+/**
+ * Splits a path into lowercase words: on separators and on camel case
+ * boundaries, so "useAuthor.ts" yields "use" and "author" and "JWTAuth.ts"
+ * yields "jwt" and "auth".
+ */
+function tokenizePath(normalizedPath: string): string[] {
+  const tokens: string[] = [];
+  for (const segment of normalizedPath.split("/")) {
+    if (!segment) {
+      continue;
+    }
+    const withoutExtension = segment.replace(/\.[A-Za-z0-9]+$/, "");
+    for (const part of withoutExtension.split(/[^A-Za-z0-9]+/)) {
+      if (!part) {
+        continue;
+      }
+      for (const word of part.split(/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])/)) {
+        if (word) {
+          tokens.push(word.toLowerCase());
+        }
+      }
+    }
+  }
+  return tokens;
+}
+
+/**
+ * A path token is security critical when it contains a security root that is
+ * not the start of a look-alike word.
+ */
+function isSecurityToken(token: string): boolean {
+  for (const root of SECURITY_ROOTS) {
+    for (let index = token.indexOf(root); index !== -1; index = token.indexOf(root, index + 1)) {
+      const falseFriend = SECURITY_FALSE_FRIENDS[root];
+      if (!falseFriend || !falseFriend.test(token.slice(index))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Categorizes and filters files to guard the context window and prevent reviewing noise.
  */
 export function evaluateFile(filePath: string): FilterResult {
   const normalized = filePath.replace(/\\/g, "/");
-  const filename = normalized.split("/").pop() || "";
+  const segments = normalized.split("/").filter((segment) => segment.length > 0);
+  const filename = segments.length > 0 ? segments[segments.length - 1] : "";
+  const lowerFilename = filename.toLowerCase();
   const lower = normalized.toLowerCase();
-  const ext = filename.includes(".") ? `.${filename.split(".").pop()?.toLowerCase()}` : "";
+  const ext = lowerFilename.includes(".") ? `.${lowerFilename.split(".").pop()}` : "";
+  // TypeScript declaration files carry two suffixes, so they need their own match.
+  const declarationExtension = lowerFilename.endsWith(".d.ts") ? ".d.ts" : "";
 
   // 1. Directory checks
   for (const prefix of IGNORED_DIRECTORY_PREFIXES) {
@@ -89,10 +163,10 @@ export function evaluateFile(filePath: string): FilterResult {
   }
 
   // 3. Ignored extensions (binaries, maps, types)
-  if (IGNORED_EXTENSIONS.has(ext)) {
+  if (IGNORED_EXTENSIONS.has(ext) || IGNORED_EXTENSIONS.has(declarationExtension)) {
     return {
       shouldIgnore: true,
-      reason: `Ignored binary/generated extension: ${ext}`,
+      reason: `Ignored binary/generated extension: ${declarationExtension || ext}`,
       category: "OTHER",
       riskWeight: 0,
     };
@@ -109,7 +183,9 @@ export function evaluateFile(filePath: string): FilterResult {
   }
 
   // 5. Documentation
-  if (ext === ".md" || ext === ".markdown" || ext === ".txt" || normalized.startsWith("docs/")) {
+  const directorySegments = segments.slice(0, -1);
+  const isDocsDirectory = directorySegments.some((segment) => segment.toLowerCase() === "docs");
+  if (ext === ".md" || ext === ".markdown" || ext === ".txt" || isDocsDirectory) {
     return {
       shouldIgnore: true,
       reason: "Documentation / markdown content",
@@ -118,16 +194,10 @@ export function evaluateFile(filePath: string): FilterResult {
     };
   }
 
+  const pathTokens = tokenizePath(normalized);
+
   // 6. Security-critical paths
-  if (
-    lower.includes("auth") ||
-    lower.includes("crypto") ||
-    lower.includes("token") ||
-    lower.includes("secret") ||
-    lower.includes("rbac") ||
-    lower.includes("permission") ||
-    lower.includes("middleware")
-  ) {
+  if (pathTokens.some((token) => isSecurityToken(token))) {
     return {
       shouldIgnore: false,
       category: "SECURITY",
@@ -169,9 +239,7 @@ export function evaluateFile(filePath: string): FilterResult {
 
   // 9. Frontend vs Backend source
   if (
-    lower.includes("component") ||
-    lower.includes("view") ||
-    lower.includes("page") ||
+    pathTokens.some((token) => FRONTEND_TERMS.has(token)) ||
     ext === ".tsx" ||
     ext === ".jsx" ||
     ext === ".vue" ||
