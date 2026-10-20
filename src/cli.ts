@@ -112,8 +112,10 @@ export async function runCliDeepReview(params: {
     log: params.log,
   });
 
-  // Same effective verdict the check run publishes. The CLI has no later
-  // comment-list edit, so the model result is the final list.
+  // The same effective verdict rule the check run publishes. The CLI does not
+  // run the action-ref filter, so a finding that claims a missing action ref
+  // and that the check run drops can still block here. The two verdicts can
+  // therefore differ.
   return {
     header: formatDeepReviewHeader(deepReview),
     result: { ...deepReview.result, verdict: resolveVerdict(deepReview.result) },
