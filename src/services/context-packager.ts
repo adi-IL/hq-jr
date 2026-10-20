@@ -144,7 +144,13 @@ function layoutPayload(
   const kept: RenderedItem[] = [];
   const payloadParts = [...metadata];
 
+  if (candidates.length === 0 && dropped.length > 0) {
+    const payload = scrubSecrets(`${metadataText}${TOTAL_TRUNCATION_NOTICE}`).scrubbed;
+    if (payload.length <= maxTotalChars) return { fits: true, payload, kept };
+  }
+
   for (const item of candidates) {
+    if (item.text.length < item.minimumText.length) return { fits: false, payload: "", kept: [] };
     const currentLength = payloadParts.join("\n").length;
     const available = maxTotalChars - currentLength - 1;
     let text = item.text;

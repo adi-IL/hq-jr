@@ -84,8 +84,9 @@ ${Array.from({ length: 200 }, (_, index) => `+export const entry${index} = "valu
     const context = packageReviewContext(parsed, { maxTotalChars: 150 });
 
     expect(context.promptPayload.length).toBeGreaterThan(0);
-    expect(context.itemsToReview.length).toBeGreaterThanOrEqual(1);
-    expect(context.itemsToReview[0].isTruncated).toBe(true);
+    // A 150-character cap cannot hold the required metadata, a listed path,
+    // and one complete code line. The file must therefore be ignored.
+    expect(context.itemsToReview).toHaveLength(0);
   });
 
   it("keeps the payload inside a tiny budget and says that the diff was cut", () => {
