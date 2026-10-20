@@ -566,6 +566,24 @@ describe("release workflow", () => {
     }
   });
 
+  it("names the version of every pinned action", () => {
+    // The comment names the release the commit belongs to, so a reader can
+    // check the pin without a network call. A pin without a version comment
+    // cannot be checked at all.
+    const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+    for (const [name, text] of [
+      ["ci.yml", ci],
+      ["release.yml", workflow],
+    ]) {
+      for (const line of text.split("\n")) {
+        const uses = /^\s*uses:\s*(\S+)\s*(#\s*\S+)?\s*$/.exec(line);
+        if (uses === null) continue;
+        if (uses[1].startsWith("./")) continue;
+        expect(uses[2], `no version comment: ${name} ${line.trim()}`).toMatch(/^#\s*v\d+\.\d+\.\d+$/);
+      }
+    }
+  });
+
   it("resolves the tag to a commit once and exposes it", () => {
     expect(prepareJob).toContain("sha: ${{ steps.version.outputs.sha }}");
     expect(prepareJob).toContain('git rev-parse --verify --quiet "refs/tags/$tag^{commit}"');
