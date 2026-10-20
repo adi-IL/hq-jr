@@ -278,6 +278,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          # The check below sends its own Authorization header, so the checkout
+          # must not persist one. Two headers of that name make the read fail
+          # with a 400.
+          persist-credentials: false
 
       # The tag is a mutable ref, so it can be moved while this workflow runs.
       # The image carries the release version, so a moved tag means the pushed
@@ -398,6 +402,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          # The check below sends its own Authorization header, so the checkout
+          # must not persist one. Two headers of that name make the read fail
+          # with a 400.
+          persist-credentials: false
 
       # The tag is a mutable ref, so it can be moved while this workflow runs.
       # The GitHub Release is attached to that tag, so a moved tag would publish
