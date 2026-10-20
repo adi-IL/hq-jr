@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { buildReviewPrompt } from "./index.js";
+import { buildReviewPrompt, markdownCodeSpan } from "./index.js";
 import { runDeepReview, ai } from "./services/ai.js";
 
 describe("buildReviewPrompt", () => {
@@ -109,5 +109,23 @@ describe("buildReviewPrompt", () => {
 
     const contents = spy.mock.calls[0][0].contents as string;
     expect(contents.match(/<\/untrusted_context>/g)).toHaveLength(1);
+  });
+});
+
+describe("markdownCodeSpan", () => {
+  it("wraps plain text in single backticks", () => {
+    expect(markdownCodeSpan("src/a.ts")).toBe("`src/a.ts`");
+  });
+
+  it("uses a fence longer than any backtick run in the text", () => {
+    expect(markdownCodeSpan("a`b``c")).toBe("```a`b``c```");
+  });
+
+  it("pads text that starts or ends with a backtick", () => {
+    expect(markdownCodeSpan("`a")).toBe("`` `a ``");
+  });
+
+  it("turns line breaks into spaces so the span cannot end the paragraph", () => {
+    expect(markdownCodeSpan("a\n\n[x](https://evil.example)")).toBe("`a [x](https://evil.example)`");
   });
 });

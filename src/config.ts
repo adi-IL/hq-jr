@@ -30,12 +30,23 @@ const RISK_ORDER: Record<RiskLevel, number> = { LOW: 0, MEDIUM: 1, HIGH: 2 };
 /** Rank for a risk level outside the known set: below LOW so it never escalates. */
 const UNKNOWN_RISK_RANK = -1;
 
-/** Single total order over risk levels: LOW < MEDIUM < HIGH. */
-export function riskRank(risk: RiskLevel): number {
-  return RISK_ORDER[risk] ?? UNKNOWN_RISK_RANK;
+function isRiskLevel(risk: unknown): risk is RiskLevel {
+  return typeof risk === "string" && Object.prototype.hasOwnProperty.call(RISK_ORDER, risk);
 }
 
-/** True when risk is at or above threshold under the riskRank order. */
+/**
+ * Single total order over risk levels: LOW < MEDIUM < HIGH. Anything else,
+ * including inherited keys such as "constructor", ranks as UNKNOWN_RISK_RANK.
+ */
+export function riskRank(risk: RiskLevel): number {
+  return isRiskLevel(risk) ? RISK_ORDER[risk] : UNKNOWN_RISK_RANK;
+}
+
+/**
+ * True when risk is at or above threshold under the riskRank order. An
+ * unrecognized threshold never matches, so it cannot escalate every pull request.
+ */
 export function riskAtLeast(risk: RiskLevel, threshold: RiskLevel): boolean {
+  if (!isRiskLevel(threshold)) return false;
   return riskRank(risk) >= riskRank(threshold);
 }

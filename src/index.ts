@@ -30,9 +30,18 @@ export const REMEDIATE_COMMAND_RE =
   /@hq-jr(?:\[bot\])?\s+(fix|patch|remediate)(\s+and\s+merge)?\b/i;
 export const COMMIT_REPRO_COMMAND_RE = /@hq-jr(?:\[bot\])?\s+commit-repro\b/i;
 
-/** Neutralizes backticks so an untrusted path cannot break out of an inline code span. */
-export function escapeInlineCode(value: string): string {
-  return value.replace(/`/g, "&#96;");
+/**
+ * Renders untrusted text as a Markdown inline code span. Entity references are
+ * not decoded inside code spans, so backticks are kept as they are and the fence
+ * is made one backtick longer than the longest run in the text instead. Line
+ * breaks become spaces so the text cannot end the paragraph and leave the span open.
+ */
+export function markdownCodeSpan(value: string): string {
+  const text = value.replace(/[\r\n]+/g, " ");
+  const longestRun = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longestRun + 1);
+  const pad = text.startsWith("`") || text.endsWith("`") ? " " : "";
+  return `${fence}${pad}${text}${pad}${fence}`;
 }
 
 export function buildReviewPrompt(params: {
@@ -372,7 +381,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
                   ? `\n\nRenamed files (${renamedFiles.length}):\n${renamedFiles
                       .map(
                         (f) =>
-                          `- \`${escapeInlineCode(f.oldPath)}\` -> \`${escapeInlineCode(f.newPath)}\``
+                          `- ${markdownCodeSpan(f.oldPath)} -> ${markdownCodeSpan(f.newPath)}`
                       )
                       .join("\n")}`
                   : ""),
@@ -394,7 +403,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             conclusion: "success",
             output: {
               title: "Triage Passed: Excluded Files Only",
-              summary: `Modified files were identified as non-reviewable artifacts (lockfiles, documentation, generated bundles):\n\n${contextPackage.ignoredItems.map((i: any) => `- \`${escapeInlineCode(i.path)}\`: ${i.reason}`).join("\n")}`,
+              summary: `Modified files were identified as non-reviewable artifacts (lockfiles, documentation, generated bundles):\n\n${contextPackage.ignoredItems.map((i: any) => `- ${markdownCodeSpan(i.path)}: ${i.reason}`).join("\n")}`,
             },
           });
         }

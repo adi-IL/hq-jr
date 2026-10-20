@@ -401,10 +401,10 @@ rename to src/new/auth.ts
       },
     });
 
+    // A longer fence keeps the real path text; an entity like &#96; would render literally in a code span.
     const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
-    expect(finalUpdate.output.summary).toContain("src/old&#96;x.ts");
-    expect(finalUpdate.output.summary).toContain("src/new&#96;x.ts");
-    expect(finalUpdate.output.summary).not.toContain("src/old`x.ts");
+    expect(finalUpdate.output.summary).toContain("- ``src/old`x.ts`` -> ``src/new`x.ts``");
+    expect(finalUpdate.output.summary).not.toContain("&#96;");
   });
 
   it("still fails the check when the review itself errors", async () => {

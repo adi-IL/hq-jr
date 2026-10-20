@@ -23,7 +23,7 @@ import {
   runEscalatedDeepReview,
   shouldEscalate,
 } from "./ai.js";
-import { config, riskRank, type RiskLevel } from "../config.js";
+import { config, riskRank, riskAtLeast, type RiskLevel } from "../config.js";
 
 describe("Review Schemas", () => {
   it("validates a well-formed triage payload", () => {
@@ -510,6 +510,17 @@ describe("escalated deep review policy", () => {
     ).rejects.toThrow("tier 2 unavailable");
 
     expect(models).toEqual([config.HQ_JR_MODEL_TIER2]);
+  });
+
+  it("ranks inherited object keys as unknown and never matches an unknown threshold", () => {
+    for (const value of ["constructor", "toString", "__proto__", "", undefined]) {
+      expect(typeof riskRank(value as RiskLevel)).toBe("number");
+      expect(riskRank(value as RiskLevel)).toBeLessThan(riskRank("LOW"));
+    }
+    expect(riskAtLeast("LOW", "bogus" as RiskLevel)).toBe(false);
+    expect(riskAtLeast("HIGH", "constructor" as RiskLevel)).toBe(false);
+    expect(shouldEscalate("LOW", "bogus" as RiskLevel)).toBe(false);
+    expect(resolveDeepReviewModel("HIGH", "bogus" as RiskLevel)).toBe(config.HQ_JR_MODEL_TIER2);
   });
 
   it("never escalates an unrecognized risk level", async () => {
