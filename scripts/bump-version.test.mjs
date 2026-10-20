@@ -682,6 +682,17 @@ describe("release workflow", () => {
     expect(publishStep.slice(distTag, npmPublish)).not.toContain("- name:");
   });
 
+  it("authenticates the tag listing of the latest decision", () => {
+    // The decision reads the tags of origin, so the read carries the token
+    // like every other read of a tag in this workflow.
+    const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8");
+    const imageJob = workflow.slice(workflow.indexOf("  publish-image:"), workflow.indexOf("  create-release:"));
+    const step = imageJob.slice(imageJob.indexOf("- name: Decide whether this release is the latest"));
+    expect(step).toContain("GH_TOKEN: ${{ github.token }}");
+    expect(step).toContain("http.https://github.com/.extraheader=AUTHORIZATION: basic $auth");
+    expect(step).toContain("set -euo pipefail");
+  });
+
   it.skipIf(process.platform === "win32")("leaves latest in place when a newer tag is already on origin", () => {
     const run = runLatestDecision({
       version: "0.1.9",
@@ -713,10 +724,14 @@ function runLatestDecision({ version, tags }) {
     path.join(bin, "git"),
     [
       "#!/bin/sh",
-      'if [ "$1" = "ls-remote" ] && [ "$2" = "--tags" ]; then',
-      '  printf "%s" "$TAGS"',
-      "  exit 0",
-      "fi",
+      "# The workflow passes the authorization header with -c, so the",
+      "# subcommand is not the first argument.",
+      'case " $* " in',
+      '  *ls-remote*--tags*)',
+      '    printf "%s" "$TAGS"',
+      "    exit 0",
+      "    ;;",
+      "esac",
       'echo "unexpected git $*" >&2',
       "exit 1",
       "",
@@ -743,6 +758,7 @@ function runLatestDecision({ version, tags }) {
         PATH: `${bin}${path.delimiter}${process.env.PATH}`,
         VERSION: version,
         GITHUB_OUTPUT: output,
+        GH_TOKEN: "test-token",
         TAGS: tags,
       },
     });
