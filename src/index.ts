@@ -61,9 +61,10 @@ const SHORT_TEXT_TRUNCATION_NOTICE = "\n...[cut]";
 
 /** Cuts a path that is too long to render and marks it as truncated. */
 function shortenSummaryPath(path: string): string {
-  return path.length > MAX_SUMMARY_PATH_CHARS
-    ? path.slice(0, MAX_SUMMARY_PATH_CHARS) + SUMMARY_TRUNCATION_MARKER
-    : path;
+  const scrubbedPath = scrubSecrets(path).scrubbed;
+  return scrubbedPath.length > MAX_SUMMARY_PATH_CHARS
+    ? scrubbedPath.slice(0, MAX_SUMMARY_PATH_CHARS) + SUMMARY_TRUNCATION_MARKER
+    : scrubbedPath;
 }
 
 /**

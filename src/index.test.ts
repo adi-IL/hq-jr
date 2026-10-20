@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fileURLToPath } from "node:url";
-import appFn, { buildDeepReviewBody, buildExcludedFilesSummary } from "./index.js";
+import appFn, { buildDeepReviewBody, buildExcludedFilesSummary, buildNoCodeChangesSummary } from "./index.js";
 import { addRemediationCommit, acquireRunLock, releaseRunLock } from "./services/db.js";
 import { BUDGET_DROP_REASON } from "./services/context-packager.js";
 import * as aiModule from "./services/ai.js";
@@ -907,6 +907,18 @@ index 123..456 100644
     expect(summary).toContain("package-lock.json");
     expect(summary).toContain("Dependency lockfile: package-lock.json");
     expect(summary).toContain(BUDGET_DROP_REASON);
+  });
+
+  it("scrubs credentials from paths in file summaries", () => {
+    const token = `ghp_${"a".repeat(36)}`;
+    const path = `src/API_KEY=${token}`;
+    const excluded = buildExcludedFilesSummary([{ path, reason: "Ignored" }]);
+    const renamed = buildNoCodeChangesSummary([{ oldPath: path, newPath: path }]);
+
+    expect(excluded).toContain("src/API_KEY=[REDACTED_SECRET]");
+    expect(renamed).toContain("src/API_KEY=[REDACTED_SECRET]");
+    expect(excluded).not.toContain(token);
+    expect(renamed).not.toContain(token);
   });
 
   it("still fails the check when the review itself errors", async () => {
