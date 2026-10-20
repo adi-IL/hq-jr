@@ -180,6 +180,45 @@ describe("action ref verification edge cases", () => {
     expect(resolveVerdict(out)).toBe("REQUEST_CHANGES");
   });
 
+  it("keeps a claim about a ref that is confirmed missing when another claim is false", async () => {
+    const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
+    const c = comment({
+      title: "Two claims",
+      body: "actions/setup-node@v9 does not exist.\nactions/checkout@v7 does not exist.",
+    });
+
+    const kept = await dropUnverifiedMissingActionRefs(octokit, [c]);
+
+    expect(kept).toHaveLength(1);
+    expect(kept[0].body).toContain("actions/setup-node@v9 does not exist.");
+    expect(kept[0].body).not.toContain("actions/checkout@v7");
+  });
+
+  it("keeps the body of a comment whose title was the false claim", async () => {
+    const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
+    const c = comment({
+      title: "actions/checkout@v7 does not exist",
+      body: "The query concatenates user input.",
+    });
+
+    const kept = await dropUnverifiedMissingActionRefs(octokit, [c]);
+
+    expect(kept).toHaveLength(1);
+    expect(kept[0].body).toBe("The query concatenates user input.");
+    expect(kept[0].title).toBe("Finding (action ref claim removed)");
+    expect(kept[0].severity).toBe("WARNING");
+  });
+
+  it("drops a comment whose title was the false claim and whose body explains it", async () => {
+    const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
+    const c = comment({
+      title: "actions/checkout@v7 does not exist",
+      body: "The workflow uses actions/checkout@v7, which the runner cannot resolve.",
+    });
+
+    expect(await dropUnverifiedMissingActionRefs(octokit, [c])).toEqual([]);
+  });
+
   it("keeps REQUEST_CHANGES when a blocking finding remains", async () => {
     const octokit = fakeOctokit({ "actions/checkout": ["v7"] });
     const out = await verifyReviewActionRefs(octokit, {

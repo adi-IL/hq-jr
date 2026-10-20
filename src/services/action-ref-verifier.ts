@@ -11,6 +11,8 @@ const MISSING_CLAIM_RE =
 const ACTION_REF_RE = /(?<![\w./:@-])([A-Za-z0-9][\w.-]*)\/([\w.-]+)(?:\/[\w.-]+)*@([\w./-]*[\w-])/g;
 const SHA_RE = /^[0-9a-f]{7,40}$/i;
 const SENTENCE_SPLIT_RE = /(?<=[.;!?])\s+|\n+/;
+/** The title of a comment whose own title was a dropped claim. */
+const REPLACEMENT_TITLE = "Finding (action ref claim removed)";
 
 type RefState = "exists" | "missing" | "unknown";
 type Ref = { owner: string; repo: string; ref: string };
@@ -78,14 +80,20 @@ type Cache = Map<string, Promise<RefState>>;
 async function judge(octokit: RefLookupOctokit, cache: Cache, text: string): Promise<DroppedClaim | null> {
   const refs = claimedRefs(text);
   if (refs.length === 0) return null;
-  const states: RefState[] = [];
+  const failed: Ref[] = [];
+  let found = false;
   for (const r of refs) {
     const key = refKey(r);
     if (!cache.has(key)) cache.set(key, resolveRef(octokit, r));
-    states.push(await cache.get(key)!);
+    const state = await cache.get(key)!;
+    // A ref that is confirmed missing backs a true claim, so that claim stays
+    // even when another claim in the same text is false.
+    if (state === "missing") continue;
+    failed.push(r);
+    if (state === "exists") found = true;
   }
-  if (states.every((st) => st === "missing")) return null;
-  return { refs, reason: states.includes("exists") ? "found" : "unverified" };
+  if (failed.length === 0) return null;
+  return { refs: failed, reason: found ? "found" : "unverified" };
 }
 
 export async function dropUnverifiedMissingActionRefs(
@@ -104,18 +112,32 @@ export async function dropUnverifiedMissingActionRefs(
     dropped.push(verdict);
     // The claim is false, but the comment can carry other findings, so the
     // sentences that carry the claim are removed and the rest of the comment
-    // is kept. A comment whose headline or whose whole body was the claim is
-    // dropped, because nothing else in it stands on its own.
+    // is kept. A comment whose whole body was the claim is dropped, because
+    // nothing else in it stands on its own.
     const droppedKeys = new Set(verdict.refs.map(refKey));
     const title = scrubSentences(comment.title, droppedKeys);
     const body = scrubSentences(comment.body, droppedKeys);
-    if (title === "" || body === "") continue;
+    if (body === "") continue;
+    if (title === "") {
+      // The title was the claim. The body is the comment's own finding only
+      // when it does not talk about the action, so it is kept under a title
+      // taken from it. A body that names the action is the claim's own
+      // explanation and goes with the claim.
+      if (namesAction(comment.body, verdict.refs)) continue;
+      kept.push({ ...comment, title: REPLACEMENT_TITLE, body });
+      continue;
+    }
     kept.push({ ...comment, title, body });
   }
   return kept;
 }
 
-/** Remove sentences that repeat a dropped claim, keeping the original separators and line breaks. */
+/**
+ * Remove sentences that carry a dropped claim, keeping the original
+ * separators and line breaks. A sentence that claims a ref whose claim failed
+ * verification goes even when it also names a ref whose claim is true: the
+ * false claim cannot stay.
+ */
 function scrubSentences(text: string, droppedKeys: Set<string>): string {
   const parts = text.split(/((?<=[.;!?])[ \t]+|\n+)/);
   let out = "";
@@ -123,13 +145,18 @@ function scrubSentences(text: string, droppedKeys: Set<string>): string {
     const sentence = parts[i];
     const sep = parts[i + 1] ?? "";
     const refs = claimedRefs(sentence);
-    if (refs.length > 0 && refs.every((r) => droppedKeys.has(refKey(r)))) {
+    if (refs.length > 0 && refs.some((r) => droppedKeys.has(refKey(r)))) {
       if (sep.includes("\n")) out = out.replace(/[ \t]+$/, "") + sep;
       continue;
     }
     out += sentence + sep;
   }
   return out.trim();
+}
+
+/** True when the text names one of the actions whose claim was dropped. */
+function namesAction(text: string, refs: Ref[]): boolean {
+  return refs.some((r) => text.includes(`${r.owner}/${r.repo}`));
 }
 
 function dropNote(dropped: DroppedClaim[]): string {
@@ -162,8 +189,15 @@ export async function verifyReviewActionRefs<T extends VerifiableReview>(octokit
   const unresolved: string[] = [];
   for (const issue of review.unresolvedPriorIssues ?? []) {
     const verdict = await judge(octokit, cache, issue);
-    if (verdict) priorDropped.push(verdict);
-    else unresolved.push(issue);
+    if (!verdict) {
+      unresolved.push(issue);
+      continue;
+    }
+    priorDropped.push(verdict);
+    // The issue can carry more than the failed claim, so the sentences that
+    // carry the claim are removed and the rest of the issue stays unresolved.
+    const rest = scrubSentences(issue, new Set(verdict.refs.map(refKey)));
+    if (rest !== "") unresolved.push(rest);
   }
   if (dropped.length === 0 && priorDropped.length === 0) return review;
 
