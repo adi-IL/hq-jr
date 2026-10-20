@@ -12,7 +12,16 @@ import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * The tree the check reads. It is the repository the script lives in, unless
+ * the caller names another tree with `--tree=<directory>`. A test that has to
+ * change a file can then run the check against a copy of it, and the working
+ * tree is never touched.
+ */
+const treeArg = process.argv.slice(2).find((arg) => arg.startsWith("--tree="));
+const repoRoot = treeArg
+  ? treeArg.slice("--tree=".length)
+  : join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * Drops line and block comments so a commented out call is not read as code.
@@ -439,7 +448,15 @@ function main() {
       problems.push(`${label} has a malformed value for ${name}, so it was not compared`);
     }
     for (const [name, value] of block.defaults) {
-      if (!config.has(name)) continue;
+      // A name that is not a config key is a name a reader would set that the
+      // app ignores, so it is drift as well. The external names are the ones
+      // Probot and the credential library read themselves.
+      if (!config.has(name)) {
+        if (!EXTERNAL_VARS.has(name)) {
+          problems.push(`${label} sets ${name} but src/config.ts does not define it`);
+        }
+        continue;
+      }
       if (PLACEHOLDER_VALUES.has(value)) continue;
       if (config.get(name) !== value) {
         problems.push(

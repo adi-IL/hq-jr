@@ -1,7 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -9,23 +19,53 @@ const script = join(repoRoot, "scripts", "check-doc-code-sanity.mjs");
 const readmePath = join(repoRoot, "README.md");
 
 /**
- * The paths the tests below put in the tree. The check reads the whole tree,
+ * The tree the check reads.
+ *
+ * The check reads the whole tree, so the tests below have to add files to it.
+ * They add them to a copy under the system temporary directory and never to the
+ * working tree, so a test run cannot delete or overwrite a file a developer is
+ * working on. The copy holds the real tree, so the check sees the same
+ * modules it would see in the repository.
+ */
+const treeRoot = mkdtempSync(join(tmpdir(), "doc-code-sanity-"));
+
+// Directories of the repository that are not part of the tree the check reads.
+// They are large and they change on their own, so they are not copied.
+const notCopied = new Set([".git", "node_modules", "dist", "coverage", "data"]);
+
+// The copy holds the tree the check reads. The whole tree is copied, so the
+// check sees the repository as it is, down to the files the project structure
+// listing names. The working tree is not written by the tests.
+beforeAll(() => {
+  for (const entry of readdirSync(repoRoot, { withFileTypes: true })) {
+    if (notCopied.has(entry.name)) continue;
+    cpSync(join(repoRoot, entry.name), join(treeRoot, entry.name), {
+      recursive: true,
+    });
+  }
+});
+
+afterAll(() => {
+  rmSync(treeRoot, { recursive: true, force: true });
+});
+
+/**
+ * The paths the tests below put in the copy. The check reads the whole tree,
  * so a path left behind by an interrupted run makes every other test in this
  * file fail. They are removed before and after every test.
  *
- * Every path starts with zz-, so it cannot be a module of the repository and
- * a file a developer is working on is never touched.
+ * Every path starts with zz-, so it cannot be a module of the repository.
  */
 const tempPaths = [
-  join(repoRoot, "src/services/zz-doc-only.test.ts"),
-  join(repoRoot, "src/services/zz-wire.ts"),
-  join(repoRoot, "src/services/zz-doc-only"),
+  join(treeRoot, "src/services/zz-doc-only.test.ts"),
+  join(treeRoot, "src/services/zz-wire.ts"),
+  join(treeRoot, "src/services/zz-doc-only"),
 ];
 
 // The file name has to be one the README already names, so the check has to
 // see the file name and the path as two different things. The directory keeps
 // the name out of the way of the modules of the repository.
-const namedTempFile = join(repoRoot, "src/services/zz-doc-only/index.ts");
+const namedTempFile = join(treeRoot, "src/services/zz-doc-only/index.ts");
 const namedTempContent = "export const extra = 1;\n";
 
 function removeTempPaths() {
@@ -37,12 +77,12 @@ afterEach(removeTempPaths);
 
 /**
  * Runs the sanity check against a README and returns its output and exit code.
- * The README is written to a copy inside the repository and the tracked file
- * is never touched, so an interrupted run cannot leave the repository
- * modified. The copy is removed whatever happens.
+ * The README is written to a copy and the tracked file is never touched, so an
+ * interrupted run cannot leave the repository modified. The copy is removed
+ * whatever happens.
  */
 function runCheck(readme, overrides = {}) {
-  const dir = mkdtempSync(join(repoRoot, ".doc-sanity-"));
+  const dir = mkdtempSync(join(tmpdir(), "doc-sanity-"));
   const readmeCopy = join(dir, "README.md");
   const args = [];
   try {
@@ -54,7 +94,10 @@ function runCheck(readme, overrides = {}) {
       args.push(`${doc}=${copy}`);
     }
     try {
-      const output = execFileSync("node", [script, ...args], { cwd: repoRoot, encoding: "utf8" });
+      const output = execFileSync("node", [script, `--tree=${treeRoot}`, ...args], {
+        cwd: treeRoot,
+        encoding: "utf8",
+      });
       return { output, code: 0 };
     } catch (error) {
       const err = error;
@@ -75,6 +118,31 @@ function readmeWith(crlf) {
   const eol = crlf ? "\r\n" : "\n";
   return original.split(/\r?\n/).join(eol);
 }
+
+describe("the working tree", () => {
+  it("holds none of the paths the tests clean up", () => {
+    // The tests remove paths they added themselves. Those paths have to be in
+    // the copy of the tree, or the cleanup removes a file of the developer.
+    for (const path of tempPaths) {
+      expect(path.startsWith(`${treeRoot}/`)).toBe(true);
+    }
+  });
+
+  it("keeps a file of the developer when the tests clean up", () => {
+    // A test run must not remove a file a developer is working on. The tests
+    // used to remove a directory of the working tree, so a file under it was
+    // gone after the run.
+    const marker = join(repoRoot, "src/services/zz-doc-only/sentinel.txt");
+    mkdirSync(dirname(marker), { recursive: true });
+    writeFileSync(marker, "sentinel\n");
+    try {
+      removeTempPaths();
+      expect(readFileSync(marker, "utf8")).toBe("sentinel\n");
+    } finally {
+      rmSync(dirname(marker), { recursive: true, force: true });
+    }
+  });
+});
 
 describe("check-doc-code-sanity project structure parsing", () => {
   it("passes on the shipped README", () => {
@@ -219,7 +287,7 @@ describe("check-doc-code-sanity project structure parsing", () => {
   });
 
   it("does not require a test file to be named in the docs", () => {
-    const extra = join(repoRoot, "src/services/zz-doc-only.test.ts");
+    const extra = join(treeRoot, "src/services/zz-doc-only.test.ts");
     writeFileSync(extra, "export const t = 1;\n");
     try {
       const { output, code } = runCheck(readFileSync(readmePath, "utf8"));
@@ -264,7 +332,7 @@ describe("unknown HQ_JR names", () => {
 });
 
 describe("not wired claims", () => {
-  const wire = join(repoRoot, "src/services/zz-wire.ts");
+  const wire = join(treeRoot, "src/services/zz-wire.ts");
 
   function withWire(source) {
     writeFileSync(wire, source);
