@@ -540,6 +540,47 @@ rename to src/new/auth.ts
     expect(summary).toMatch(/Excluded files \(showing first \d+ of 200\):/);
   });
 
+  it("caps the model summary in the low risk check summary", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "verbose model answer ".repeat(12000),
+      overallRisk: "LOW",
+      files: [{ path: "src/config.ts", risk: "LOW", reason: "Config only", shouldReview: false }],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/config.ts b/src/config.ts
+index 123..456 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -1,3 +1,4 @@
+ export const port = 3000;
++export const host = "localhost";
+`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 30,
+          state: "open",
+          title: "Config tweak",
+          head: { sha: "sha-30", ref: "config" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate.output.title).toBe("Triage Passed: Low Risk Changes");
+    const summary = finalUpdate.output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("All modified files are low risk or auto-generated. Deep review bypassed.");
+    expect(summary).toContain("truncated");
+  });
+
   it("still fails the check when the review itself errors", async () => {
     vi.spyOn(aiModule, "runTriage").mockRejectedValueOnce(new Error("Triage response failed schema validation"));
     octokitMock.pulls.get.mockResolvedValueOnce({

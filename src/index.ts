@@ -51,6 +51,8 @@ const MAX_SUMMARY_FILES_LISTED = 50;
 /** Longest path rendered in a capped check summary list. One line always fits in the summary budget. */
 const MAX_SUMMARY_PATH_CHARS = 2000;
 const SUMMARY_TRUNCATION_MARKER = "...[truncated]";
+/** Notice that marks model supplied text as cut for the check summary. */
+const SUMMARY_TEXT_TRUNCATION_NOTICE = "\n\n... [model summary truncated to fit the check output limit]";
 
 /** Cuts a path that is too long to render and marks it as truncated. */
 function shortenSummaryPath(path: string): string {
@@ -129,6 +131,31 @@ export function buildExcludedFilesSummary(
     header: (shown, total) =>
       shown < total ? `Excluded files (showing first ${shown} of ${total}):` : `Excluded files (${total}):`,
   });
+}
+
+/**
+ * Cuts model supplied text to the check summary budget and marks it as
+ * truncated, so a reader can tell a cut summary from a short one.
+ */
+function capSummaryText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const room = Math.max(0, maxChars - SUMMARY_TEXT_TRUNCATION_NOTICE.length);
+  return text.slice(0, room) + SUMMARY_TEXT_TRUNCATION_NOTICE;
+}
+
+/**
+ * Builds the check summary for a pull request whose files were all low risk.
+ * The model supplied text is capped, so a verbose answer cannot push the
+ * summary past the character limit GitHub accepts.
+ */
+export function buildTriagePassedSummary(triageSummary: string): string {
+  const header = "### Review Summary\n\n";
+  const footer = "\n\nAll modified files are low risk or auto-generated. Deep review bypassed.";
+  const text = capSummaryText(
+    triageSummary,
+    MAX_CHECK_SUMMARY_CHARS - header.length - footer.length
+  );
+  return `${header}${text}${footer}`;
 }
 
 export function buildReviewPrompt(params: {
@@ -504,7 +531,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
             conclusion: "success",
             output: {
               title: "Triage Passed: Low Risk Changes",
-              summary: `### Review Summary\n\n${triage.summary}\n\nAll modified files are low risk or auto-generated. Deep review bypassed.`,
+              summary: buildTriagePassedSummary(triage.summary),
             },
           });
         }
