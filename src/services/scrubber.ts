@@ -54,9 +54,17 @@ const MIN_GENERIC_SECRET_LENGTH = 8;
  * of scanning the rest of the line for a ']' that may never come. An
  * unterminated bracket is then taken in one step by the second branch of the
  * value.
+ *
+ * The third branch of the value is the malformed bracket. It reads a nested
+ * bracket as a bracket of its own, so a value such as [abcdefgh[i jkl] is
+ * captured whole: the tail of the credential behind the nested bracket stays
+ * part of the value instead of being left in the clear. A malformed bracket
+ * is not a code reference, so it is redacted like any other literal. The
+ * branch reads every character of the value once, so a value with many
+ * brackets stays linear in time.
  */
 const GENERIC_ASSIGNMENT_REGEX =
-  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(?:(["'`])((?:\\.|(?!\1)[^\\\r\n])*)\1?|((?:\[(?:[^\[\]\r\n]|\[[^\[\]\r\n]*\])*\]|\[[^"'`\s]*|[^"'`\s])+))/dgi;
+  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(?:(["'`])((?:\\.|(?!\1)[^\\\r\n])*)\1?|((?:\[(?:[^\[\]\r\n]|\[[^\[\]\r\n]*\])*\]|\[(?:[^\[\]"'`\s]+|\[[^\[\]\r\n]*\])+|\[[^"'`\s]*|[^"'`\s])+))/dgi;
 
 /**
  * An environment accessor, such as process.env, os.environ, this.env,

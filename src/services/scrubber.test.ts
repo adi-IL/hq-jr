@@ -188,6 +188,49 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(redactedCount).toBe(1);
   });
 
+  it("redacts a malformed bracket value whole", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password=[abcdefgh[i jkl]");
+
+    expect(scrubbed).toBe("password=[REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("redacts a malformed bracket value and keeps the punctuation around it", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password=[abcdefgh[i jkl];");
+
+    expect(scrubbed).toBe("password=[REDACTED_SECRET];");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("keeps the bracket reads that are code and redacts the ones that are literals", () => {
+    const code = ['configuration["secretKey"]', "config[ key ]", "arr[0]", "config['a']['b']"];
+    for (const value of code) {
+      const { scrubbed, redactedCount } = scrubSecrets(`password=${value}`);
+
+      expect(scrubbed).toBe(`password=${value}`);
+      expect(redactedCount).toBe(0);
+    }
+
+    const literals = ["[abcdefgh]", "[abcdefgh[i jkl]", "abcde1234(secret)"];
+    for (const value of literals) {
+      const { scrubbed, redactedCount } = scrubSecrets(`password=${value}`);
+
+      expect(scrubbed).toBe("password=[REDACTED_SECRET]");
+      expect(redactedCount).toBe(1);
+    }
+  });
+
+  it("scans a line of malformed bracket values with a nested bracket in linear time", () => {
+    const raw = "password=[abcdefgh[i jkl] ".repeat(12000);
+    const started = performance.now();
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+    const elapsed = performance.now() - started;
+
+    expect(scrubbed).toBe("password=[REDACTED_SECRET] ".repeat(12000));
+    expect(redactedCount).toBe(12000);
+    expect(elapsed).toBeLessThan(500);
+  });
+
   it("keeps the semicolon after a key the first pass already redacted", () => {
     const { scrubbed, redactedCount } = scrubSecrets(
       "api_key: sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789;"
