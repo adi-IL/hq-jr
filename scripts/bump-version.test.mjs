@@ -738,8 +738,9 @@ function latestDecisionStep() {
     workflow.indexOf("  create-release:")
   );
   const start = imageJob.indexOf("- name: Decide whether this release is the latest");
-  const end = imageJob.indexOf("- name: Move the latest tag", start);
-  return imageJob.slice(start, end);
+  const rest = imageJob.slice(start);
+  const next = rest.indexOf("\n      - name:");
+  return next < 0 ? rest : rest.slice(0, next);
 }
 
 function runLatestDecision({ version, tags, gitFails = false }) {
