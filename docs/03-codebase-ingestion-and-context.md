@@ -71,8 +71,8 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                v
 +-------------------------------------------------------------+
 | Tier 2: Deep Review (src/services/ai.ts)                    |
-| - Flash + High Thinking, or Gemini 4 Argon above the risk   |
-|   threshold                                                 |
+| - Flash + High Thinking, or Gemini 4 Argon at/above the     |
+|   risk threshold                                            |
 +-------------------------------------------------------------+
 ```
 
