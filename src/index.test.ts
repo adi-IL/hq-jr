@@ -337,6 +337,165 @@ index 123..456 100644
     expect(reviewCall.body).toContain("Found **1** observation(s).");
   });
 
+  const authDiff = `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`;
+
+  const openAuthPr = (number: number) =>
+    handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number, state: "open", head: { sha: `sha-${number}`, ref: "c" }, title: "PR" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+  it("downgrades REQUEST_CHANGES after a false missing-ref comment is dropped and logs it", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "actions/checkout@v7 does not exist.",
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        {
+          path: "src/auth.ts",
+          line: 2,
+          side: "RIGHT",
+          severity: "WARNING",
+          category: "BUG",
+          title: "Missing action",
+          body: "actions/checkout@v7 does not exist.",
+        },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.git.getRef = vi.fn().mockResolvedValue({ data: { ref: "refs/tags/v7" } });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await openAuthPr(83);
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    expect(finalUpdate.output.title).toBe("Review Completed: COMMENT");
+    expect(mockApp.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ verdict: "REQUEST_CHANGES", effectiveVerdict: "COMMENT" }),
+      expect.stringContaining("REQUEST_CHANGES")
+    );
+  });
+
+  it("fails the check when REQUEST_CHANGES has an unresolved prior issue and no comments", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "The loop bound is still wrong.",
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: ["The loop bound is still wrong."],
+      comments: [],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await openAuthPr(84);
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "failure" });
+    expect(finalUpdate.output.title).toBe("Review Completed: REQUEST_CHANGES");
+    expect(mockApp.log.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ effectiveVerdict: "COMMENT" }),
+      expect.any(String)
+    );
+  });
+
+  it("keeps the check neutral when APPROVE reports a blocking comment", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "LOW",
+      files: [{ path: "src/auth.ts", risk: "LOW", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "A warning remains.",
+      verdict: "APPROVE",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        {
+          path: "src/auth.ts",
+          line: 2,
+          side: "RIGHT",
+          severity: "WARNING",
+          category: "BUG",
+          title: "Off by one",
+          body: "Fix the bound.",
+        },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await openAuthPr(85);
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    expect(finalUpdate.output.title).toBe("Review Completed: COMMENT");
+    expect(mockApp.log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ verdict: "APPROVE", effectiveVerdict: "COMMENT" }),
+      expect.stringContaining("APPROVE")
+    );
+  });
+
+  it("keeps the check successful when APPROVE reports only suggestions", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "LOW",
+      files: [{ path: "src/auth.ts", risk: "LOW", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "One suggestion.",
+      verdict: "APPROVE",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        {
+          path: "src/auth.ts",
+          line: 2,
+          side: "RIGHT",
+          severity: "SUGGESTION",
+          category: "STYLE",
+          title: "Name the flag",
+          body: "A clearer name would help.",
+        },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await openAuthPr(86);
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "success" });
+    expect(finalUpdate.output.title).toBe("Review Completed: APPROVE");
+  });
+
   it("escalates the deep review to the escalation model on high risk pull requests", async () => {
     vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
       summary: "Auth rewrite",
@@ -1479,6 +1638,46 @@ describe("CLI deep review output", () => {
     expect(started).toEqual([config.HQ_JR_MODEL_ESCALATION]);
     expect(header).toContain(config.HQ_JR_MODEL_TIER2);
     expect(header).toContain("fallback");
+  });
+
+  it("reports the same effective verdict the check run uses", async () => {
+    const comment = {
+      path: "src/auth.ts",
+      line: 2,
+      side: "RIGHT" as const,
+      severity: "WARNING" as const,
+      category: "BUG" as const,
+      title: "Off by one",
+      body: "Fix the bound.",
+    };
+    vi.spyOn(aiModule, "runDeepReview")
+      .mockResolvedValueOnce({ ...deepReviewResult, verdict: "REQUEST_CHANGES", comments: [], unresolvedPriorIssues: [] })
+      .mockResolvedValueOnce({
+        ...deepReviewResult,
+        verdict: "REQUEST_CHANGES",
+        comments: [],
+        unresolvedPriorIssues: ["The loop bound is still wrong."],
+      })
+      .mockResolvedValueOnce({ ...deepReviewResult, verdict: "APPROVE", comments: [comment] })
+      .mockResolvedValueOnce({
+        ...deepReviewResult,
+        verdict: "APPROVE",
+        comments: [{ ...comment, severity: "SUGGESTION" }],
+      });
+
+    const runs = [
+      await runCliDeepReview({ overallRisk: "LOW", reviewPrompt: "prompt" }),
+      await runCliDeepReview({ overallRisk: "LOW", reviewPrompt: "prompt" }),
+      await runCliDeepReview({ overallRisk: "LOW", reviewPrompt: "prompt" }),
+      await runCliDeepReview({ overallRisk: "LOW", reviewPrompt: "prompt" }),
+    ];
+
+    expect(runs.map((run) => run.result.verdict)).toEqual([
+      "COMMENT",
+      "REQUEST_CHANGES",
+      "COMMENT",
+      "APPROVE",
+    ]);
   });
 });
 

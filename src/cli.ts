@@ -3,7 +3,7 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags } from "./services/ai.js";
+import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, resolveDeepReviewRouting, runEscalatedDeepReview, escapeUntrustedTags, resolveVerdict } from "./services/ai.js";
 import type { DeepReviewResult } from "./schemas/review.js";
 import { parseUnifiedDiff, isLineInDiff } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
@@ -112,7 +112,12 @@ export async function runCliDeepReview(params: {
     log: params.log,
   });
 
-  return { header: formatDeepReviewHeader(deepReview), result: deepReview.result };
+  // Same effective verdict the check run publishes. The CLI has no later
+  // comment-list edit, so the model result is the final list.
+  return {
+    header: formatDeepReviewHeader(deepReview),
+    result: { ...deepReview.result, verdict: resolveVerdict(deepReview.result) },
+  };
 }
 
 async function handleHealth() {

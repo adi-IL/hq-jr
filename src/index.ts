@@ -741,14 +741,16 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         log: (payload, message) => app.log.warn({ ...payload, pullNumber }, message),
       });
       const review = await verifyReviewActionRefs(octokit, deepReview.result);
-      // The verdict follows the findings the review reports. A REQUEST_CHANGES
-      // with no comments blocks a merge without pointing at a single finding,
-      // so it is treated as COMMENT and the check run stays neutral.
+      // Resolve once, against the comment list and prior issues that remain
+      // after missing-ref claims have been dropped. The model verdict is still
+      // on the review, so this comparison sees the real downgrade.
       const verdict = resolveVerdict(review);
       if (verdict !== review.verdict) {
         app.log.warn(
           { pullNumber, verdict: review.verdict, effectiveVerdict: verdict },
-          "Downgraded a REQUEST_CHANGES verdict with no comments to COMMENT"
+          verdict === "COMMENT" && review.verdict === "REQUEST_CHANGES"
+            ? "Downgraded a REQUEST_CHANGES verdict with no blocking finding to COMMENT"
+            : "Downgraded an APPROVE verdict that reports a blocking finding to COMMENT"
         );
       }
 

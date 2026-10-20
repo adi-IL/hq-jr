@@ -137,8 +137,9 @@ type VerifiableReview = Pick<DeepReviewResult, "comments" | "summary" | "verdict
 
 /**
  * Apply the filter to a full review: drop false missing-ref findings and prior
- * issues, remove summary sentences that repeat them, and stop requesting
- * changes when nothing blocking is left.
+ * issues, and remove summary sentences that repeat them. The verdict is left
+ * as the model wrote it. The caller resolves it against the comment list and
+ * the prior issues this function returns.
  */
 export async function verifyReviewActionRefs<T extends VerifiableReview>(octokit: RefLookupOctokit, review: T): Promise<T> {
   const cache: Cache = new Map();
@@ -157,10 +158,8 @@ export async function verifyReviewActionRefs<T extends VerifiableReview>(octokit
   const droppedKeys = new Set([...dropped, ...priorDropped].flatMap((d) => d.refs.map(refKey)));
   const summary = scrubSentences(review.summary, droppedKeys);
   const note = dropNote([...dropped, ...priorDropped]);
-  const blocking = comments.some((c) => c.severity !== "SUGGESTION") || unresolved.length > 0;
-  const verdict = review.verdict === "REQUEST_CHANGES" && !blocking ? "COMMENT" : review.verdict;
 
-  const out: T = { ...review, comments, summary: summary ? `${summary}\n\n${note}` : note, verdict };
+  const out: T = { ...review, comments, summary: summary ? `${summary}\n\n${note}` : note };
   if (review.unresolvedPriorIssues) out.unresolvedPriorIssues = unresolved;
   return out;
 }
