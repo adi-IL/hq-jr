@@ -65,6 +65,34 @@ function readDocsTableDefaults() {
 }
 
 /**
+ * Reads the value part of an assignment, stripping a trailing comment and a
+ * matching pair of quotes. Returns null when the line is an override in an
+ * example, such as `PORT=8081 npm start`, rather than a documented default.
+ */
+function readValue(remainder) {
+  let text = remainder.trim();
+  if (!text) return "";
+
+  // A quoted value keeps any hash inside it, so find the closing quote first.
+  const quote = text[0];
+  if (quote === '"' || quote === "'" || quote === "`") {
+    const close = text.indexOf(quote, 1);
+    if (close === -1) return null;
+    return text.slice(1, close).trim();
+  }
+
+  // An unquoted value ends at the first hash, and the rest of the line must be
+  // only a comment. Anything else continues into a command.
+  const hash = text.indexOf("#");
+  if (hash === -1) {
+    return /\s/.test(text) ? null : text;
+  }
+  const after = text.slice(hash).trim();
+  if (!after.startsWith("#")) return null;
+  return text.slice(0, hash).trim();
+}
+
+/**
  * Reads `NAME=value` lines out of an environment block.
  *
  * A fenced block is read as a whole, so a command elsewhere in the file such
@@ -76,6 +104,13 @@ function readDocsTableDefaults() {
  * after a value is stripped, so `NAME=value # note` still records the value.
  * A line that continues into a command is an override in an example, not a
  * documented default, so it is skipped.
+ *
+ * A value may be quoted, as a dotenv file commonly does. The quotes are
+ * stripped, so a quoted value compares equal to the unquoted default.
+ *
+ * An assignment with an EMPTY value is recorded as empty rather than being
+ * skipped. A variable whose default is not empty and whose example value is
+ * empty is a drift, and skipping it would let the check pass.
  */
 function readEnvBlockDefaults(file) {
   const source = readFileSync(join(repoRoot, file), "utf8");
@@ -86,12 +121,14 @@ function readEnvBlockDefaults(file) {
     : [...source.matchAll(/^```[a-z]*\n([\s\S]*?)^```$/gm)].map((m) => m[1]);
   for (const block of blocks) {
     for (const line of block.split("\n")) {
-      const assignment = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=([^\s#]*)(.*)$/.exec(line);
+      const assignment = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
       if (!assignment) continue;
-      const [, name, value, rest] = assignment;
-      // A line that continues into a command is an override in an example.
-      if (rest.trim() && !rest.trim().startsWith("#")) continue;
-      if (value) defaults.set(name, value);
+      const [, name, remainder] = assignment;
+      // Split the value from a trailing comment, keeping a hash that is inside
+      // a quoted value.
+      const value = readValue(remainder);
+      if (value === null) continue;
+      defaults.set(name, value);
     }
   }
   return defaults;
