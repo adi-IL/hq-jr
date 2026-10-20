@@ -144,10 +144,12 @@ for (const doc of DOC_FILES) {
 
   // 2. Source paths named in a code span. A missing path is reported when it
   // names a module that exists somewhere in the tree, or when its extension
-  // is one this repository ships. A line that also names a foreign file type
-  // is an example of another project, so its paths are not claims. A glob,
-  // a trailing-slash directory that exists, and an extensionless runtime
-  // name are not file claims of that kind.
+  // is one this repository ships. A path with a foreign extension is an
+  // example of another project, so it is not a claim, and a directory example
+  // on a line that names a foreign file is not a claim either. A path with a
+  // project extension is a claim even when the line also names a foreign
+  // path. A glob, a trailing-slash directory that exists, and an extensionless
+  // runtime name are not file claims of that kind.
   const spans = [];
   for (const m of text.matchAll(/`((?:src|scripts|deploy)\/[^`\s]+?)`/g)) {
     const target = toPosix(m[1].replace(/[.,:;]$/, ""));
@@ -175,7 +177,10 @@ for (const doc of DOC_FILES) {
       const base = target.split("/").pop();
       const basenameMatches = sourceFiles.some((file) => file.split("/").pop() === base);
       const ext = extensionOf(target);
-      if (!basenameMatches && (foreignExample || !PROJECT_EXTENSIONS.has(ext))) continue;
+      // A path with a foreign extension is an example of another project, so it
+      // is not a claim. A path with a project extension is a claim, so it is
+      // reported even when the line also names a foreign path.
+      if (!basenameMatches && !PROJECT_EXTENSIONS.has(ext)) continue;
       note(`${doc} names ${target} in a code span, but that path does not exist`);
     }
   }
