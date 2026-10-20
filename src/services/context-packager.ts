@@ -32,7 +32,10 @@ const BINARY_SKIP_REASON = "Binary file has no reviewable text";
 const NO_LINES_REASON = "No reviewable lines in the diff";
 const PER_FILE_DROP_REASON = "Per-file size limit leaves no whole line";
 /** The ignored file list may use at most this share of the payload budget. */
-const IGNORED_LIST_SHARE = 0.2;
+/** Ignored files listed in the prompt payload. */
+const MAX_IGNORED_ITEMS_IN_PROMPT = 50;
+/** Share of the payload budget the ignored file list may use. */
+const IGNORED_LIST_SHARE = 0.05;
 
 const REVIEW_LIST_HEADER = "## Files Under Review (Ranked by Risk)";
 const IGNORED_LIST_HEADER = "\n## Ignored / Pruned Files";
@@ -159,18 +162,28 @@ export function packageReviewContext(
     formattedDiff: text,
     isTruncated,
   }));
+  const budgetDropped = prepared.slice(itemsToReview.length);
   const ignoredItems = [
     ...filteredItems,
     ...perFileDrops,
-    ...prepared.slice(itemsToReview.length).map((item) => ({ path: item.path, reason: BUDGET_DROP_REASON })),
+    ...budgetDropped.map((item) => ({ path: item.path, reason: BUDGET_DROP_REASON })),
   ];
+  // A file that the budget dropped is named in the ignored list, but the
+  // payload must also say that the diff content was cut, so the cut is never
+  // silent. The notice travels with the payload, so its room is taken from
+  // the budget as soon as it is known.
+  let payload = layout.payload;
+  if (budgetDropped.length > 0 && !payload.includes(TOTAL_TRUNCATION_NOTICE)) {
+    const withNotice = `${payload}${TOTAL_TRUNCATION_NOTICE}`;
+    payload = withNotice.length <= maxTotalChars ? withNotice : payload;
+  }
 
   return {
     itemsToReview,
     ignoredItems,
     totalReviewableAdditions: itemsToReview.reduce((sum, item) => sum + item.file.addedLinesCount, 0),
     totalReviewableDeletions: itemsToReview.reduce((sum, item) => sum + item.file.deletedLinesCount, 0),
-    promptPayload: layout.payload,
+    promptPayload: payload,
   };
 }
 
@@ -300,17 +313,23 @@ function formatIgnoredList(lines: string[], maxChars: number): string[] {
   const summary = (omitted: number) =>
     `- ... (${omitted} more ignored ${omitted === 1 ? "file" : "files"} not listed)`;
 
+  // The list is capped by count and by length, so a pull request that touches
+  // thousands of files cannot grow the prompt without bound.
+  const capped = lines.slice(0, MAX_IGNORED_ITEMS_IN_PROMPT);
   const sections = [IGNORED_LIST_HEADER];
   let used = IGNORED_LIST_HEADER.length;
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = 0; i < capped.length; i++) {
     const remaining = lines.length - i - 1;
     const reserve = remaining > 0 ? summary(remaining).length + 1 : 0;
-    if (used + 1 + lines[i].length + reserve > maxChars) {
+    if (used + 1 + capped[i].length + reserve > maxChars) {
       sections.push(summary(lines.length - i));
       return sections;
     }
-    sections.push(lines[i]);
-    used += 1 + lines[i].length;
+    sections.push(capped[i]);
+    used += 1 + capped[i].length;
+  }
+  if (lines.length > capped.length) {
+    sections.push(summary(lines.length - capped.length));
   }
   return sections;
 }
