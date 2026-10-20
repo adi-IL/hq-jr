@@ -168,6 +168,7 @@ for (const doc of DOC_FILES) {
     for (const target of targets) {
       if (existsSync(join(repoRoot, target))) continue;
       if (target.endsWith("/")) {
+        if (foreignExample) continue;
         note(`${doc} names ${target} in a code span, but that path does not exist`);
         continue;
       }

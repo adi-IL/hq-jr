@@ -15,22 +15,70 @@ import { dirname, join } from "node:path";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
+ * Drops line and block comments so a commented out call is not read as code.
+ * Strings are left intact. An unclosed block comment hides the rest of the
+ * entry, so the caller treats that as unreadable rather than absent.
+ */
+function stripComments(source) {
+  let out = "";
+  let i = 0;
+  let quote = null;
+  while (i < source.length) {
+    const c = source[i];
+    if (quote) {
+      out += c;
+      if (c === "\\" && i + 1 < source.length) {
+        out += source[i + 1];
+        i += 2;
+        continue;
+      }
+      if (c === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      quote = c;
+      out += c;
+      i++;
+      continue;
+    }
+    if (c === "/" && source[i + 1] === "/") {
+      i += 2;
+      while (i < source.length && source[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && source[i + 1] === "*") {
+      const end = source.indexOf("*/", i + 2);
+      if (end === -1) return null;
+      i = end + 2;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+/**
  * Reads the argument of the first `.default(...)` in a schema entry. The
- * argument may span lines. An unclosed call is unreadable, not absent.
+ * argument may span lines. Comments are ignored first, so a commented out
+ * call is not the default. An unclosed call is unreadable, not absent.
  */
 function readDefaultArgument(body) {
-  const at = body.indexOf(".default(");
+  const source = stripComments(body);
+  if (source === null) return { kind: "unreadable" };
+  const at = source.indexOf(".default(");
   if (at === -1) return { kind: "none" };
   let i = at + ".default(".length;
   let depth = 1;
   let quote = null;
   let arg = "";
-  while (i < body.length) {
-    const c = body[i];
+  while (i < source.length) {
+    const c = source[i];
     if (quote) {
       arg += c;
-      if (c === "\\" && i + 1 < body.length) {
-        arg += body[i + 1];
+      if (c === "\\" && i + 1 < source.length) {
+        arg += source[i + 1];
         i += 2;
         continue;
       }
@@ -64,6 +112,89 @@ function readDefaultArgument(body) {
   return interpretDefault(arg.trim());
 }
 
+/**
+ * Decodes a JavaScript string body the way a string literal does. A sequence
+ * that is not a strict-mode escape is unreadable, because comparing the
+ * source characters would not compare the runtime value.
+ */
+function decodeJsString(inner) {
+  let out = "";
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] !== "\\") {
+      out += inner[i];
+      continue;
+    }
+    if (i + 1 >= inner.length) return null;
+    const n = inner[i + 1];
+    const simple = {
+      b: "\b",
+      f: "\f",
+      n: "\n",
+      r: "\r",
+      t: "\t",
+      v: "\v",
+      "\\": "\\",
+      "'": "'",
+      '"': '"',
+      "`": "`",
+    };
+    if (Object.prototype.hasOwnProperty.call(simple, n)) {
+      out += simple[n];
+      i += 1;
+      continue;
+    }
+    if (n === "0" && (i + 2 >= inner.length || !/[0-9]/.test(inner[i + 2]))) {
+      out += "\0";
+      i += 1;
+      continue;
+    }
+    if (n === "x" && /^[0-9A-Fa-f]{2}$/.test(inner.slice(i + 2, i + 4))) {
+      out += String.fromCharCode(parseInt(inner.slice(i + 2, i + 4), 16));
+      i += 3;
+      continue;
+    }
+    if (n === "u" && inner[i + 2] === "{") {
+      const end = inner.indexOf("}", i + 3);
+      if (end === -1) return null;
+      const hex = inner.slice(i + 3, end);
+      if (!/^[0-9A-Fa-f]{1,6}$/.test(hex)) return null;
+      const cp = parseInt(hex, 16);
+      if (cp > 0x10ffff) return null;
+      out += String.fromCodePoint(cp);
+      i = end;
+      continue;
+    }
+    if (n === "u" && /^[0-9A-Fa-f]{4}$/.test(inner.slice(i + 2, i + 6))) {
+      out += String.fromCharCode(parseInt(inner.slice(i + 2, i + 6), 16));
+      i += 5;
+      continue;
+    }
+    if (n === "\n") {
+      i += 1;
+      continue;
+    }
+    if (n === "\r") {
+      i += inner[i + 2] === "\n" ? 2 : 1;
+      continue;
+    }
+    if (/[0-9xu]/.test(n)) return null;
+    out += n;
+    i += 1;
+  }
+  return out;
+}
+
+function hasTemplateSubstitution(inner) {
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] === "\\") {
+      i += 1;
+      continue;
+    }
+    if (inner[i] === "$" && inner[i + 1] === "{") return true;
+  }
+  return false;
+}
+
 function interpretDefault(value) {
   if (
     (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
@@ -71,8 +202,10 @@ function interpretDefault(value) {
     (value.startsWith("`") && value.endsWith("`") && value.length >= 2)
   ) {
     const inner = value.slice(1, -1);
-    if (value.startsWith("`") && inner.includes("${")) return { kind: "unreadable" };
-    return { kind: "value", value: inner };
+    if (value.startsWith("`") && hasTemplateSubstitution(inner)) return { kind: "unreadable" };
+    const decoded = decodeJsString(inner);
+    if (decoded === null) return { kind: "unreadable" };
+    return { kind: "value", value: decoded };
   }
   if (/^-?\d[\d_]*(\.\d+)?$/.test(value)) {
     return { kind: "value", value: value.replace(/_/g, "") };
@@ -183,17 +316,17 @@ export function readValue(remainder) {
  * empty is a drift, and skipping it would let the check pass.
  *
  * An unmatched quote is returned as malformed and is not compared. A fenced
- * file whose fences cannot be read is reported, because reading nothing would
- * disable the check.
+ * file with an opening fence that never closes is reported, including when an
+ * earlier block closed cleanly. Leaving that block unread would let its
+ * assignments skip the check.
  */
 export function readEnvBlockDefaultsFrom(source, file) {
   const defaults = new Map();
   const malformed = [];
   const isDotenv = file.endsWith(".env") || file.endsWith(".env.example");
-  const blocks = isDotenv
-    ? [source]
-    : [...source.matchAll(/^```[a-z]*\r?\n([\s\S]*?)^```\r?$/gm)].map((m) => m[1]);
-  const blocksUnreadable = !isDotenv && blocks.length === 0 && /^```/m.test(source);
+  const fencePattern = () => /^```[a-z]*\r?\n([\s\S]*?)^```\r?$/gm;
+  const blocks = isDotenv ? [source] : [...source.matchAll(fencePattern())].map((m) => m[1]);
+  const blocksUnreadable = !isDotenv && /^```/m.test(source.replace(fencePattern(), ""));
   for (const block of blocks) {
     for (const line of block.split(/\r?\n/)) {
       const assignment = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=(.*)$/.exec(line);
