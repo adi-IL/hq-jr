@@ -36,7 +36,8 @@ scratch/
 # Deploy host state
 deploy/.last-failed-image
 
-# Google Application Default Credentials, staged on the deploy host
+# Google Application Default Credentials staged in a checkout.
+# The deploy host keeps its copy in /opt/hq-jr/gcloud, outside any checkout.
 gcloud/
 
 # Output of scripts/manual-honesty-check.mjs

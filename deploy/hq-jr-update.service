@@ -11,6 +11,7 @@ Group=adi-IL
 SupplementaryGroups=docker
 # /opt/hq-jr/deploy is a plain directory that holds the deploy files from the released
 # image. It is not a git checkout and this unit never pulls from GitHub.
-# Uncomment the next line to refresh the deploy files from the image before every update.
-# ExecStartPre=-/bin/sh -c 'docker rm -f hqjr-deploy-refresh >/dev/null 2>&1; docker create --name hqjr-deploy-refresh ghcr.io/adi-il/hq-jr:latest >/dev/null && docker cp hqjr-deploy-refresh:/app/deploy/. /opt/hq-jr/deploy/; docker rm -f hqjr-deploy-refresh >/dev/null 2>&1'
+# Uncomment the next line to refresh the deploy files before every update. It pulls the
+# image that compose.yaml runs and keeps the host compose.yaml. A failed refresh is not fatal.
+# ExecStartPre=-/opt/hq-jr/deploy/refresh-deploy-files.sh
 ExecStart=/opt/hq-jr/deploy/update.sh
