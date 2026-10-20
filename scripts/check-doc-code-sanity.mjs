@@ -43,7 +43,10 @@ const note = (msg) => problems.push(msg);
 const sourceFiles = [];
 function walk(dir, extensions) {
   for (const entry of readdirSync(join(repoRoot, dir), { withFileTypes: true })) {
-    const rel = join(dir, entry.name);
+    // Paths are compared against paths that come from the documents, which
+    // always use forward slashes. Normalise here so the comparison holds on
+    // Windows, where join() would produce backslashes.
+    const rel = `${dir}/${entry.name}`;
     if (entry.isDirectory()) walk(rel, extensions);
     else if (extensions.some((ext) => entry.name.endsWith(ext))) sourceFiles.push(rel);
   }
@@ -230,6 +233,7 @@ for (const doc of DOC_FILES) {
         (f) =>
           f !== file &&
           !f.endsWith(".test.ts") &&
+          !f.endsWith(".test.mjs") &&
           new RegExp(
             `from\\s+["'][^"']*${moduleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\.js)?["']`
           ).test(read(f))

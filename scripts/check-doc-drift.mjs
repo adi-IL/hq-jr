@@ -65,25 +65,32 @@ function readDocsTableDefaults() {
 }
 
 /**
- * Reads `NAME=value` lines out of an environment block. Only fenced blocks are
- * read, so a command elsewhere in the file such as `PORT=8081 npm start` is
- * not mistaken for a documented default. The fence must be followed by a
- * newline, otherwise a closing fence pairs with the next opening fence and
- * the block in between is read instead of the intended one.
+ * Reads `NAME=value` lines out of an environment block.
+ *
+ * A fenced block is read as a whole, so a command elsewhere in the file such
+ * as `PORT=8081 npm start` is not mistaken for a documented default. The fence
+ * must be followed by a newline, otherwise a closing fence pairs with the next
+ * opening fence and the block in between is read instead of the intended one.
+ *
+ * A dotenv file is read directly, because it has no fences. A trailing comment
+ * after a value is stripped, so `NAME=value # note` still records the value.
+ * A line that continues into a command is an override in an example, not a
+ * documented default, so it is skipped.
  */
 function readEnvBlockDefaults(file) {
   const source = readFileSync(join(repoRoot, file), "utf8");
   const defaults = new Map();
-  const blocks = [...source.matchAll(/^```[a-z]*\n([\s\S]*?)^```$/gm)];
+  const isDotenv = file.endsWith(".env") || file.endsWith(".env.example");
+  const blocks = isDotenv
+    ? [source]
+    : [...source.matchAll(/^```[a-z]*\n([\s\S]*?)^```$/gm)].map((m) => m[1]);
   for (const block of blocks) {
-    for (const line of block[1].split("\n")) {
-      // A line that continues into a command, such as `PORT=8081 npm start`,
-      // is an override in an example, not a documented default. So is a line
-      // that sets a variable for a single command with a leading env prefix.
+    for (const line of block.split("\n")) {
       const assignment = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=([^\s#]*)(.*)$/.exec(line);
       if (!assignment) continue;
       const [, name, value, rest] = assignment;
-      if (rest.trim()) continue;
+      // A line that continues into a command is an override in an example.
+      if (rest.trim() && !rest.trim().startsWith("#")) continue;
       if (value) defaults.set(name, value);
     }
   }
