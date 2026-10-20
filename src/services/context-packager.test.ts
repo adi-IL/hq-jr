@@ -584,6 +584,35 @@ describe("context packager budget cut announcement", () => {
     }
   });
 
+  it("announces the cut when the diff content filled the cap", () => {
+    const diff = `diff --git a/src/auth/jwt.ts b/src/auth/jwt.ts
+new file mode 100644
+index 111..222 100644
+--- /dev/null
++++ b/src/auth/jwt.ts
+@@ -0,0 +1,3 @@
++export function verifyToken(t: string) {
++  return t.length > 0;
++}
+diff --git a/src/controllers/items.ts b/src/controllers/items.ts
+new file mode 100644
+index 111..222 100644
+--- /dev/null
++++ b/src/controllers/items.ts
+@@ -0,0 +1,3 @@
++export const items = ["a", "b", "c"];
++export const more = items.map((i) => i.toUpperCase());
++export default items;
+`;
+    for (let cap = 300; cap <= 460; cap++) {
+      const context = packageReviewContext(parseUnifiedDiff(diff), { maxTotalChars: cap });
+      const dropped = context.ignoredItems.filter((item) => item.reason.includes("budget"));
+      if (dropped.length === 0) continue;
+      expect(context.promptPayload, `cap ${cap}`).toContain("truncated to preserve context budget");
+      expect(context.promptPayload.length, `cap ${cap}`).toBeLessThanOrEqual(cap);
+    }
+  });
+
   it("names a dropped file in the ignored list with the budget reason", () => {
     const context = packageReviewContext(parseUnifiedDiff(multiFileDiff), { maxTotalChars: 400 });
     expect(context.itemsToReview.map((item) => item.file.newPath)).toEqual(["src/auth/jwt.ts"]);
