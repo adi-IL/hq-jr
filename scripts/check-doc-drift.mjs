@@ -16,11 +16,14 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * Reads `NAME: z.<chain>.default(<literal>)` pairs out of the zod env schema.
- * The schema is one entry per line, so each line is matched on its own.
+ * The schema is one entry per line, so each line is matched on its own. A
+ * variable whose default cannot be read as a string or a number is reported
+ * as unreadable rather than skipped, so it can never pass the check silently.
  */
 function readConfigDefaults() {
   const source = readFileSync(join(repoRoot, "src", "config.ts"), "utf8");
   const defaults = new Map();
+  const unreadable = [];
   const entry = /^\s*([A-Z][A-Z0-9_]*):\s*z\..*?\.default\((.+)\),?\s*$/gm;
   for (const match of source.matchAll(entry)) {
     const [, name, raw] = match;
@@ -33,11 +36,12 @@ function readConfigDefaults() {
     } else if (/^-?\d[\d_]*(\.\d+)?$/.test(value)) {
       value = value.replace(/_/g, "");
     } else {
+      unreadable.push(name);
       continue;
     }
     defaults.set(name, value);
   }
-  return defaults;
+  return { defaults, unreadable };
 }
 
 /** Reads the docs/05 env var table. Cells are split on `|` and unwrapped. */
@@ -60,18 +64,33 @@ function readDocsTableDefaults() {
   return defaults;
 }
 
-/** Reads `NAME=value` lines out of the README and .env.example env blocks. */
+/**
+ * Reads `NAME=value` lines out of an environment block. Only fenced blocks are
+ * read, so a command elsewhere in the file such as `PORT=8081 npm start` is
+ * not mistaken for a documented default. The fence must be followed by a
+ * newline, otherwise a closing fence pairs with the next opening fence and
+ * the block in between is read instead of the intended one.
+ */
 function readEnvBlockDefaults(file) {
   const source = readFileSync(join(repoRoot, file), "utf8");
   const defaults = new Map();
-  const line = /^\s*(?:export\s+)?(HQ_JR_[A-Z0-9_]+|[A-Z][A-Z0-9_]*)=([^\s#]*)/gm;
-  for (const match of source.matchAll(line)) {
-    if (match[2]) defaults.set(match[1], match[2]);
+  const blocks = [...source.matchAll(/^```[a-z]*\n([\s\S]*?)^```$/gm)];
+  for (const block of blocks) {
+    for (const line of block[1].split("\n")) {
+      // A line that continues into a command, such as `PORT=8081 npm start`,
+      // is an override in an example, not a documented default. So is a line
+      // that sets a variable for a single command with a leading env prefix.
+      const assignment = /^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)=([^\s#]*)(.*)$/.exec(line);
+      if (!assignment) continue;
+      const [, name, value, rest] = assignment;
+      if (rest.trim()) continue;
+      if (value) defaults.set(name, value);
+    }
   }
   return defaults;
 }
 
-const config = readConfigDefaults();
+const { defaults: config, unreadable: unreadableDefaults } = readConfigDefaults();
 const docs = readDocsTableDefaults();
 const readme = readEnvBlockDefaults("README.md");
 const envExample = readEnvBlockDefaults(".env.example");
@@ -105,6 +124,15 @@ const PLACEHOLDER_VALUES = new Set([
 ]);
 
 const problems = [];
+
+// A variable whose default this script cannot read is a gap in the check, not
+// a variable that is allowed to skip it. Report it so the script cannot pass
+// while silently ignoring a schema entry.
+for (const name of unreadableDefaults) {
+  problems.push(
+    `src/config.ts defines ${name} but its default could not be read, so it is not checked against the docs`
+  );
+}
 
 // Every documented variable must exist in config.ts with the same default.
 for (const [name, documented] of docs) {
