@@ -195,6 +195,48 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(redactedCount).toBe(1);
   });
 
+  it("redacts a malformed bracket value whole when the space comes first", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password=[abc def[ghi]");
+
+    expect(scrubbed).toBe("password=[REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("redacts a malformed bracket value whole when the value holds a space", () => {
+    const { scrubbed, redactedCount } = scrubSecrets("password=[abc def");
+
+    expect(scrubbed).toBe("password=[REDACTED_SECRET]");
+    expect(redactedCount).toBe(1);
+  });
+
+  it("reads the value as a whole before it is classified", () => {
+    // The value is read to its end, so a space inside the bracket does not
+    // cut the value in two and the tail of the credential is redacted.
+    for (const value of ["[abcdefgh[i jkl]", "[a[b c]", "[abc def[ghi]", "[abc def"]) {
+      const { scrubbed, redactedCount } = scrubSecrets(`password=${value}`);
+
+      expect(scrubbed).toBe("password=[REDACTED_SECRET]");
+      expect(redactedCount).toBe(1);
+    }
+  });
+
+  it("keeps a member expression with a spaced key intact", () => {
+    const raw = "password = configuration[ secretKey ]";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe(raw);
+    expect(redactedCount).toBe(0);
+  });
+
+  it("ends a broken bracket value where the next secret assignment starts", () => {
+    const { scrubbed, redactedCount } = scrubSecrets(
+      "password=[abcdefgh password=realpassword123"
+    );
+
+    expect(scrubbed).toBe("password=[REDACTED_SECRET] password=[REDACTED_SECRET]");
+    expect(redactedCount).toBe(2);
+  });
+
   it("redacts a malformed bracket value and keeps the punctuation around it", () => {
     const { scrubbed, redactedCount } = scrubSecrets("password=[abcdefgh[i jkl];");
 
@@ -236,6 +278,17 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
 
   it("scans a line of malformed bracket values with a nested bracket in linear time", () => {
     const raw = "password=[abcdefgh[i jkl] ".repeat(12000);
+    const started = performance.now();
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+    const elapsed = performance.now() - started;
+
+    expect(scrubbed).toBe("password=[REDACTED_SECRET] ".repeat(12000));
+    expect(redactedCount).toBe(12000);
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("scans a line of malformed bracket values with a space in linear time", () => {
+    const raw = "password=[abc def[ghi] ".repeat(12000);
     const started = performance.now();
     const { scrubbed, redactedCount } = scrubSecrets(raw);
     const elapsed = performance.now() - started;

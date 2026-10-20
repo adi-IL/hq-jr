@@ -1,7 +1,7 @@
 /**
  * Patterns matching high-risk secrets and credentials.
  *
- * Known limitation: a regex only scrubber cannot tell a real credential from
+ * Known limitation: a pattern only scrubber cannot tell a real credential from
  * an arbitrary string of the same shape. Tokens with an unexpected length
  * (ghp_ under 36 characters, github_pat_ that is not exactly 82, AIza that is
  * not exactly 35, generic values under 8 characters) are not redacted. An
@@ -10,7 +10,9 @@
  * with a root that is not a known accessor, such as getSecret(), is a literal
  * value and is redacted. A broken bracket value, such as [abcdefgh[i jkl], is
  * a literal and is redacted whole, whatever its length, because a broken
- * bracket is never a name in the source.
+ * bracket is never a name in the source. The value is read as a whole before
+ * it is classified, so a broken bracket whose tail sits behind a space, such
+ * as [abc def[ghi], is redacted whole as well.
  */
 const SECRET_PATTERNS = [
   // Private keys (RSA, EC, PGP, OPENSSH)
@@ -44,27 +46,32 @@ const REDACTION_PLACEHOLDER = "[REDACTED_SECRET]";
 /** Values shorter than this are too short to be a credential worth hiding. */
 const MIN_GENERIC_SECRET_LENGTH = 8;
 
+/** The keys whose value holds a secret. */
+const SECRET_KEYS =
+  "password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret";
+
 /**
- * Generic secret / password assignments in code, JSON, YAML, and .env.
- * Groups 1 and 2 are the quote and body of a quoted value; the body runs to
- * the matching close quote, so it may contain spaces. Group 3 is an unquoted
- * value, which may contain bracket access with quoted keys such as
- * credentials['api_key'].
- *
- * The value has three bracket branches. The first reads a well formed
- * bracket, so a member expression such as configuration["secretKey"] is
- * captured whole. The second reads a malformed bracket: it reads a nested
- * bracket as a bracket of its own, so a value such as [abcdefgh[i jkl] is
- * captured whole and the tail of the credential behind the nested bracket
- * stays part of the value instead of being left in the clear. The third is an
- * unterminated bracket, which is taken in one step.
- *
- * Every branch stops at the next bracket instead of scanning the rest of the
- * line for a ']' that may never come, so a value with many brackets is read
- * once and not once per bracket.
+ * The key of a generic secret / password assignment in code, JSON, YAML, and
+ * .env, together with the separator that follows it. The value that comes
+ * after the separator is read by the value reader, so the pattern stops at
+ * the separator and the value is read as a whole before it is classified.
  */
-const GENERIC_ASSIGNMENT_REGEX =
-  /(?:["']?(?:password|passwd|api_key|apiKey|secret|private_token|client_secret|access_token|auth_token|refresh_token|api_secret)["']?)\s*[:=]\s*(?:(["'`])((?:\\.|(?!\1)[^\\\r\n])*)\1?|((?:\[(?:[^\[\]\r\n]|\[[^\[\]\r\n]*\])*\]|\[(?:[^\[\]"'`\s]+|\[[^\[\]\r\n]*\])+|\[[^"'`\s]*|[^"'`\s])+))/dgi;
+const GENERIC_ASSIGNMENT_REGEX = new RegExp(
+  `(?:["']?(?:${SECRET_KEYS})["']?)\\s*[:=]\\s*`,
+  "gi"
+);
+
+/**
+ * The start of another secret assignment, such as "password = ". A value
+ * that runs into another secret assignment has ended, so the text after it
+ * belongs to the next statement and not to the value. The rule is sticky, so
+ * it only matches at the position it is given and a value is read in one
+ * pass.
+ */
+const SECRET_ASSIGNMENT_REGEX = new RegExp(
+  `(?:["']?(?:${SECRET_KEYS})["']?)[^\\S\\r\\n]*[:=]`,
+  "gy"
+);
 
 /**
  * An environment accessor, such as process.env, os.environ, this.env,
@@ -291,6 +298,147 @@ function isBrokenBracketLiteral(value: string): boolean {
   return depth !== 0 && material > 0;
 }
 
+/** The value of an assignment, read as a whole. */
+interface ValueSpan {
+  /** The text of the value. */
+  text: string;
+  /** The index of the first character of the value. */
+  start: number;
+  /** The index after the last character of the value. */
+  end: number;
+  /** True when the value was written in quotes. */
+  quoted: boolean;
+}
+
+/**
+ * A space or a tab, the white space that stays inside a line. A line break
+ * ends the value on its own.
+ */
+function isSpace(char: string): boolean {
+  return char === " " || char === "\t" || char === "\v" || char === "\f";
+}
+
+/**
+ * The index of the first character after the white space at the given index,
+ * or -1 when the white space ends the line.
+ */
+function skipSpace(text: string, index: number): number {
+  let cursor = index;
+  while (cursor < text.length && isSpace(text[cursor])) {
+    cursor++;
+  }
+  if (cursor >= text.length || text[cursor] === "\n" || text[cursor] === "\r") {
+    return -1;
+  }
+  return cursor;
+}
+
+/**
+ * True when another secret assignment starts at the given index. The rule is
+ * sticky, so it only matches at that index.
+ */
+function startsSecretAssignment(text: string, index: number): boolean {
+  SECRET_ASSIGNMENT_REGEX.lastIndex = index;
+  return SECRET_ASSIGNMENT_REGEX.test(text);
+}
+
+/**
+ * Reads the body of a value that is written in quotes. The body runs to the
+ * matching close quote, so it may hold spaces, and it runs to the end of the
+ * line when the close quote is missing.
+ */
+function readQuotedValue(text: string, start: number): ValueSpan {
+  const quote = text[start];
+  let index = start + 1;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === "\\") {
+      const next = text[index + 1];
+      if (next === undefined || next === "\n" || next === "\r") {
+        break;
+      }
+      index += 2;
+      continue;
+    }
+    if (char === quote) {
+      return { text: text.slice(start + 1, index), start: start + 1, end: index, quoted: true };
+    }
+    if (char === "\n" || char === "\r") {
+      break;
+    }
+    index++;
+  }
+  return { text: text.slice(start + 1, index), start: start + 1, end: index, quoted: true };
+}
+
+/**
+ * Reads a value that is not written in quotes.
+ *
+ * The value runs to the end of the line, to a quote, or to the first space
+ * that is not inside a bracket. A space inside a bracket belongs to the
+ * value, so a bracket expression is read whole: a member expression such as
+ * configuration["secretKey"] keeps its shape and a malformed bracket such as
+ * [abcdefgh[i jkl] is read to the end of the value. The value ends where
+ * another secret assignment starts, because the text after that belongs to
+ * the next statement.
+ *
+ * Every character of the value is read once, so a value with many brackets
+ * stays linear in time.
+ */
+function readUnquotedValue(text: string, start: number): ValueSpan {
+  let index = start;
+  let depth = 0;
+  while (index < text.length) {
+    const char = text[index];
+    if (char === "\n" || char === "\r") {
+      break;
+    }
+    if (isSpace(char)) {
+      if (depth === 0) {
+        break;
+      }
+      const next = skipSpace(text, index);
+      if (next < 0 || startsSecretAssignment(text, next)) {
+        break;
+      }
+      index = next;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      if (depth === 0) {
+        break;
+      }
+      index++;
+      continue;
+    }
+    if (char === "[") {
+      depth++;
+    } else if (char === "]") {
+      if (depth > 0) {
+        depth--;
+      }
+    }
+    index++;
+  }
+  return { text: text.slice(start, index), start, end: index, quoted: false };
+}
+
+/**
+ * Reads the value of an assignment at the given index. The value is read as
+ * a whole, so the classification of the value does not depend on where the
+ * first space is.
+ */
+function readValue(text: string, start: number): ValueSpan | null {
+  if (start >= text.length) {
+    return null;
+  }
+  const char = text[start];
+  if (char === '"' || char === "'" || char === "`") {
+    return readQuotedValue(text, start);
+  }
+  return readUnquotedValue(text, start);
+}
+
 /**
  * Replaces the value of each generic secret assignment with the placeholder.
  * A value that an earlier pattern already replaced is left as is, so each
@@ -301,26 +449,29 @@ function redactGenericAssignments(input: string): { text: string; count: number 
   let lastIndex = 0;
   let count = 0;
 
-  for (const match of input.matchAll(GENERIC_ASSIGNMENT_REGEX)) {
-    const quoted = match[1] !== undefined;
-    const group = quoted ? 2 : 3;
-    const value = match[group] ?? "";
-    const span = match.indices?.[group];
-    if (!span) {
+  GENERIC_ASSIGNMENT_REGEX.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = GENERIC_ASSIGNMENT_REGEX.exec(input)) !== null) {
+    const value = readValue(input, match.index + match[0].length);
+    if (value === null) {
       continue;
     }
-    const core = quoted ? value : value.slice(0, value.length - trailingPunctuationLength(value));
-    const brokenBracket = !quoted && isBrokenBracketLiteral(core);
+    // The scan continues after the value, so a key inside a value is not read
+    // a second time.
+    GENERIC_ASSIGNMENT_REGEX.lastIndex = value.end;
+    const core = value.quoted
+      ? value.text
+      : value.text.slice(0, value.text.length - trailingPunctuationLength(value.text));
+    const brokenBracket = !value.quoted && isBrokenBracketLiteral(core);
     if (
       core === REDACTION_PLACEHOLDER ||
-      (!quoted && isReferenceValue(core)) ||
+      (!value.quoted && isReferenceValue(core)) ||
       (!brokenBracket && core.length < MIN_GENERIC_SECRET_LENGTH)
     ) {
       continue;
     }
-    const [start] = span;
-    text += input.slice(lastIndex, start) + REDACTION_PLACEHOLDER;
-    lastIndex = start + core.length;
+    text += input.slice(lastIndex, value.start) + REDACTION_PLACEHOLDER;
+    lastIndex = value.start + core.length;
     count++;
   }
 
