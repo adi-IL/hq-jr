@@ -254,6 +254,7 @@ describe("AI request timeouts", () => {
 
   it("forwards native Request objects with method, headers, and body through the AI dispatcher", async () => {
     const { createServer } = await import("node:http");
+    const { createHash } = await import("node:crypto");
     const { setGlobalDispatcher, getGlobalDispatcher } = await import("undici");
     const { aiFetch } = await import("./ai.js");
 
@@ -289,6 +290,13 @@ describe("AI request timeouts", () => {
     };
     setGlobalDispatcher(broken as never);
     try {
+      const expectedPostPayload = JSON.stringify({
+        method: "POST",
+        url: "/v1beta/interactions",
+        header: "tier3",
+        body: '{"agent":"antigravity"}',
+      });
+      const postIntegrity = `sha256-${createHash("sha256").update(expectedPostPayload).digest("base64")}`;
       const req = new globalThis.Request(`http://127.0.0.1:${port}/v1beta/interactions`, {
         method: "POST",
         headers: {
@@ -296,6 +304,13 @@ describe("AI request timeouts", () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({ agent: "antigravity" }),
+        cache: "no-store",
+        credentials: "omit",
+        integrity: postIntegrity,
+        keepalive: true,
+        mode: "same-origin",
+        referrer: "https://example.com/ref",
+        referrerPolicy: "no-referrer",
       });
       const res = await aiFetch(req);
       expect(await res.json()).toEqual({
@@ -304,6 +319,30 @@ describe("AI request timeouts", () => {
         header: "tier3",
         body: '{"agent":"antigravity"}',
       });
+
+      const getReq = new globalThis.Request(`http://127.0.0.1:${port}/v1beta/interactions/ix-1`, {
+        method: "GET",
+        headers: { "x-test-header": "poll" },
+        cache: "no-store",
+        credentials: "omit",
+        keepalive: true,
+        mode: "same-origin",
+        referrer: "https://example.com/ref",
+        referrerPolicy: "no-referrer",
+      });
+      const getRes = await aiFetch(getReq);
+      expect(await getRes.json()).toEqual({
+        method: "GET",
+        url: "/v1beta/interactions/ix-1",
+        header: "poll",
+        body: "",
+      });
+
+      const mismatchReq = new globalThis.Request(`http://127.0.0.1:${port}/v1beta/interactions/ix-1`, {
+        method: "GET",
+        integrity: "sha256-abc",
+      });
+      await expect(aiFetch(mismatchReq)).rejects.toThrow(/fetch failed/);
     } finally {
       setGlobalDispatcher(previous);
       server.close();

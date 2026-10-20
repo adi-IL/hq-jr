@@ -28,6 +28,13 @@ export const aiFetch = ((input: Parameters<typeof undiciFetch>[0] | Request, ini
           body: input.body,
           signal: input.signal,
           redirect: input.redirect,
+          cache: input.cache,
+          credentials: input.credentials,
+          integrity: input.integrity,
+          keepalive: input.body ? false : input.keepalive,
+          mode: input.mode === "navigate" ? "same-origin" : input.mode,
+          referrer: input.referrer,
+          referrerPolicy: input.referrerPolicy,
           ...(input.body ? { duplex: "half" as const } : {}),
         })
       : input;
