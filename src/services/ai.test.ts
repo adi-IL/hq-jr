@@ -1442,22 +1442,23 @@ describe("deep review verdict contract", () => {
     ).toBe("REQUEST_CHANGES");
   });
 
-  it("downgrades APPROVE when a blocking finding is reported and keeps suggestions", () => {
-    expect(resolveVerdict({ verdict: "APPROVE", comments: [] })).toBe("APPROVE");
-    expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("SUGGESTION")] })).toBe("APPROVE");
-    expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("WARNING")] })).toBe("COMMENT");
-    expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("CRITICAL")] })).toBe("COMMENT");
+  it("lets a blocking finding decide the verdict however the model wrote it", () => {
+    expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("WARNING")] })).toBe("REQUEST_CHANGES");
+    expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("CRITICAL")] })).toBe("REQUEST_CHANGES");
+    expect(resolveVerdict({ verdict: "COMMENT", comments: [finding("CRITICAL")] })).toBe("REQUEST_CHANGES");
     expect(
       resolveVerdict({
         verdict: "APPROVE",
         comments: [finding("SUGGESTION")],
         unresolvedPriorIssues: ["The loop bound is still wrong."],
       })
-    ).toBe("COMMENT");
+    ).toBe("REQUEST_CHANGES");
   });
 
-  it("leaves COMMENT unchanged", () => {
+  it("keeps APPROVE and COMMENT when only suggestions remain", () => {
+    expect(resolveVerdict({ verdict: "APPROVE", comments: [] })).toBe("APPROVE");
+    expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("SUGGESTION")] })).toBe("APPROVE");
     expect(resolveVerdict({ verdict: "COMMENT", comments: [] })).toBe("COMMENT");
-    expect(resolveVerdict({ verdict: "COMMENT", comments: [finding("CRITICAL")] })).toBe("COMMENT");
+    expect(resolveVerdict({ verdict: "COMMENT", comments: [finding("SUGGESTION")] })).toBe("COMMENT");
   });
 });
