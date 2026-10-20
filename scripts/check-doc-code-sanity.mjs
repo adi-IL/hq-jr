@@ -17,9 +17,9 @@
  * It also verifies the reverse direction for the project structure, because a
  * file that exists but is missing from the structure listing is drift too.
  */
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join } from "node:path";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(repoRoot, p), "utf8");
@@ -77,29 +77,40 @@ for (const doc of DOC_FILES) {
   }
 
   // 2. Source paths named in a code span. A path is a claim about this
-  // repository when it lives under a directory this repository has and is
-  // written as a link or a bare module path. A path used as an example of
-  // another project's layout is prose, so it is only checked when the file
-  // name is one this project could plausibly have.
-  for (const m of text.matchAll(/`((?:src|scripts)\/[^`\s]+?)`/g)) {
+  // repository when it is written as a link, or when its first directory
+  // segment is one this repository owns and the file name matches a module
+  // of this repository. A path used as an example of another project's
+  // layout is prose, so it is skipped unless it names a module of this
+  // project.
+  const OWNED_ROOTS = new Set([
+    ...sourceFiles.map((f) => f.split("/")[0]),
+    "src",
+    "scripts",
+    "deploy",
+  ]);
+  for (const m of text.matchAll(/`((?:src|scripts|deploy)\/[^`\s]+?)`/g)) {
     const target = m[1].replace(/[.,:;]$/, "");
     if (target.includes("*")) continue;
-    const parent = dirname(target);
-    if (!existsSync(join(repoRoot, parent))) continue;
     const base = target.split("/").pop();
-    const looksLikeOurs = sourceFiles.some((f) => f.endsWith(`/${base}`));
     const isDocLink = text.includes(`(${target})`);
-    if (!looksLikeOurs && !isDocLink) continue;
+    const nameMatches = sourceFiles.some((f) => f.split("/").pop() === base);
+    const root = target.split("/")[0];
+    if (!isDocLink && !nameMatches) continue;
+    if (!OWNED_ROOTS.has(root) && !isDocLink) continue;
     if (!existsSync(join(repoRoot, target))) {
       note(`${doc} names ${target} in a code span, but that path does not exist`);
     }
   }
 
-  // 4. HQ_JR_* variables the docs name must exist in config.ts. A name in a
-  // deployment example refers to a secret manager entry, not a config key.
+  // 4. HQ_JR_* variables the docs name must exist in config.ts. The secret
+  // manager examples name entries that are not config keys, so a name is
+  // exempt only when the line it appears on is one of those examples.
   for (const m of text.matchAll(/\b(HQ_JR_[A-Z0-9_]+)\b/g)) {
     if (configVars.has(m[1])) continue;
-    if (text.includes(`--set-secrets`) || text.includes("secret manager")) continue;
+    const line = text.slice(text.lastIndexOf("\n", m.index) + 1, m.index + m[0].length + 200);
+    const isSecretManagerExample =
+      line.includes("--set-secrets") || line.includes("secret manager");
+    if (isSecretManagerExample) continue;
     note(`${doc} names ${m[1]}, but src/config.ts does not define it`);
   }
 
@@ -137,8 +148,11 @@ for (const name of configVars) {
 // nearest ancestor row that ends in a slash.
 const readme = read("README.md");
 const structureBlock = readme.match(/## Project Structure\n[\s\S]*?```\n([\s\S]*?)```/);
-if (structureBlock) {
+if (!structureBlock) {
+  note("README has no '## Project Structure' code block, so the tree check cannot run");
+} else {
   const stack = [];
+  const treePaths = new Set();
   for (const line of structureBlock[1].split("\n")) {
     const indent = (line.match(/^[\s│]*/) || [""])[0].length;
     const cleaned = line
@@ -154,24 +168,80 @@ if (structureBlock) {
     const prefix = stack.map((s) => s.dir).join("");
     const path = prefix + cleaned;
     if (!/^[A-Za-z0-9._/-]+$/.test(path)) continue;
+    treePaths.add(path);
     if (!existsSync(join(repoRoot, path))) {
       note(`README project structure lists ${path}, which does not exist`);
     }
   }
+
+  // Every module under src/ and scripts/ must be named somewhere in the docs,
+  // so a new module cannot land undocumented. The README project structure
+  // tree counts, and so does a mention by name in any document. A test file is
+  // covered by its module.
+  const documentText = DOC_FILES.map((doc) => read(doc)).join("\n");
+  for (const file of sourceFiles) {
+    if (file.endsWith(".test.ts") || file.endsWith(".test.mjs")) continue;
+    if (documentText.includes(file)) continue;
+    if (treePaths.has(file)) continue;
+    note(`${file} is not mentioned in any document`);
+  }
 }
 
-// Every module under src/ and scripts/ must be named somewhere in the docs, so
-// a new module cannot land undocumented. The README project structure tree
-// counts, and so does a mention by name in any document. Test files are
-// checked against their module, and a test with no module of its own is
-// covered by the tree.
-const documentText = DOC_FILES.map((doc) => read(doc)).join("\n");
-for (const file of sourceFiles) {
-  if (file.endsWith(".test.ts") || file.endsWith(".test.mjs")) continue;
-  if (documentText.includes(file)) continue;
-  const base = file.split("/").pop();
-  if (readme.includes(base)) continue;
-  note(`${file} is not mentioned in any document`);
+// 7. A document that says a module is "not wired" into the review path must
+// be right. A module that later gets wired has to have that claim removed.
+// The claim appears in prose, in a heading, and in a project tree comment, so
+// the search is by module name and the claim is looked for near it.
+for (const doc of DOC_FILES) {
+  const text = read(doc);
+  for (const file of sourceFiles) {
+    if (file.endsWith(".test.ts") || file.endsWith(".test.mjs")) continue;
+    const base = file.split("/").pop();
+    // The module can be named by its full path or by its file name alone, as
+    // in the README project tree.
+    const mentions = new RegExp(
+      `\\b(${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})\\b`,
+      "g"
+    );
+    for (const m of text.matchAll(mentions)) {
+      // The claim must be on the same line as the module name. A claim about a
+      // different module further down the page is not about this one.
+      const lineStart = text.lastIndexOf("\n", m.index) + 1;
+      let lineEnd = text.indexOf("\n", m.index);
+      if (lineEnd === -1) lineEnd = text.length;
+      const line = text.slice(lineStart, lineEnd);
+      if (!/\bnot\s+wired\b/i.test(line)) continue;
+      // The line must not be naming a different module than the one claimed.
+      // Compare whole names, so a line that names both this module and its
+      // test file is still a claim about this module.
+      const otherModule = sourceFiles.find(
+        (f) =>
+          f !== file &&
+          f.split("/").pop() !== base &&
+          new RegExp(`\\b${f.split("/").pop().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(
+            line
+          )
+      );
+      if (otherModule) continue;
+      // A module is wired when a non-test source file imports it. The import
+      // path ends in .js because the code is ESM, so match the module name
+      // without its extension.
+      const moduleName = base.replace(/\.[^.]+$/, "");
+      const importedBy = sourceFiles.filter(
+        (f) =>
+          f !== file &&
+          !f.endsWith(".test.ts") &&
+          new RegExp(
+            `from\\s+["'][^"']*${moduleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\.js)?["']`
+          ).test(read(f))
+      );
+      if (importedBy.length > 0) {
+        note(
+          `${doc} says ${file} is not wired, but ${importedBy.join(", ")} imports it`
+        );
+        break;
+      }
+    }
+  }
 }
 
 if (problems.length > 0) {
