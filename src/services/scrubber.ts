@@ -94,7 +94,7 @@ function redactsAtAnyLength(key: string): boolean {
  * such as env-abc12345, is not an accessor.
  */
 const ENV_ACCESSOR_REGEX =
-  /^(?:(?:process|globalThis|global|Deno|Bun|this)\.env|os\.environ|(?:import\.meta\.)?env)(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]*\]|$)/;
+  /^(?:(?:process|globalThis|global|Deno|Bun|this)\.env|os\.environ|(?:import\.meta\.)?env)(?:\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^\]]*\])?$/;
 
 /** Shell and .env interpolation such as $DB_PASSWORD or ${DB_PASSWORD}. */
 const ENV_INTERPOLATION_REGEX = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$/;
