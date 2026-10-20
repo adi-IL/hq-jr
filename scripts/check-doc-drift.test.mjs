@@ -1,6 +1,13 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { readConfigDefaults, readEnvBlockDefaultsFrom } from "./check-doc-drift.mjs";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const script = join(repoRoot, "scripts", "check-doc-drift.mjs");
 
 function defaultsOf(parsed) {
   return parsed.defaults ?? parsed;
@@ -175,5 +182,77 @@ describe("readEnvBlockDefaultsFrom", () => {
     const parsed = readEnvBlockDefaultsFrom("PORT=8081 npm start\n", ".env.example");
     expect(defaultsOf(parsed).has("PORT")).toBe(false);
     expect(parsed.malformed ?? []).not.toContain("PORT");
+  });
+});
+
+describe("the drift check on a copy of the tree", () => {
+  /**
+   * Runs the check against a copy of the tree, so a test can change a file
+   * without changing the repository. The copy holds the tree the check reads.
+   */
+  function runCheck(change) {
+    const root = mkdtempSync(join(tmpdir(), "doc-drift-"));
+    try {
+      for (const entry of ["src", "docs", "README.md", ".env.example"]) {
+        cpSync(join(repoRoot, entry), join(root, entry), { recursive: true });
+      }
+      change(root);
+      try {
+        const output = execFileSync("node", [script, `--tree=${root}`], {
+          cwd: root,
+          encoding: "utf8",
+        });
+        return { output, code: 0 };
+      } catch (error) {
+        const err = error;
+        return { output: `${err.stdout ?? ""}${err.stderr ?? ""}`, code: err.status ?? 1 };
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("passes on the tree as it is", () => {
+    const { code } = runCheck(() => {});
+    expect(code).toBe(0);
+  });
+
+  it("reports a variable that .env.example names and config.ts does not define", () => {
+    const { output, code } = runCheck((root) => {
+      const file = join(root, ".env.example");
+      writeFileSync(file, `${readFileSync(file, "utf8")}HQ_JR_NOT_A_REAL_VAR=1\n`);
+    });
+    expect(code).toBe(1);
+    expect(output).toContain("HQ_JR_NOT_A_REAL_VAR");
+  });
+
+  it("reports a variable that the README names and config.ts does not define", () => {
+    const { output, code } = runCheck((root) => {
+      const file = join(root, "README.md");
+      const source = readFileSync(file, "utf8");
+      const anchor = "HQ_JR_MODEL_TIER1=gemini-3.8-flash";
+      expect(source).toContain(anchor);
+      writeFileSync(file, source.replace(anchor, `${anchor}\nHQ_JR_NOT_A_REAL_VAR=1`));
+    });
+    expect(code).toBe(1);
+    expect(output).toContain("HQ_JR_NOT_A_REAL_VAR");
+  });
+
+  it("reports a variable that config.ts defines and the docs do not name", () => {
+    const { output, code } = runCheck((root) => {
+      const file = join(root, "src", "config.ts");
+      const source = readFileSync(file, "utf8");
+      const anchor = "  HQ_JR_MODEL_TIER1:";
+      expect(source).toContain(anchor);
+      writeFileSync(
+        file,
+        source.replace(
+          anchor,
+          '  HQ_JR_NOT_A_REAL_VAR: z.string().default("x"),\n' + anchor
+        )
+      );
+    });
+    expect(code).toBe(1);
+    expect(output).toContain("HQ_JR_NOT_A_REAL_VAR");
   });
 });

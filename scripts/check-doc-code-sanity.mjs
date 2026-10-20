@@ -23,7 +23,16 @@ import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * The tree the check reads. It is the repository the script lives in, unless
+ * the caller names another tree with `--tree=<directory>`. A test that has to
+ * add files to the tree can then run the check against a copy of it, and the
+ * working tree is never touched.
+ */
+const treeArg = process.argv.slice(2).find((arg) => arg.startsWith("--tree="));
+const repoRoot = treeArg
+  ? treeArg.slice("--tree=".length)
+  : join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(repoRoot, p), "utf8");
 
 // A document path can be overridden so a test can run the check against a
@@ -33,6 +42,7 @@ const read = (p) => readFileSync(join(repoRoot, p), "utf8");
 const overrides = new Map(
   process.argv
     .slice(2)
+    .filter((arg) => !arg.startsWith("--"))
     .map((arg) => {
       const at = arg.indexOf("=");
       return at < 0 ? null : [arg.slice(0, at), arg.slice(at + 1)];
