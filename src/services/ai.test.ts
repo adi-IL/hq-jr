@@ -1287,13 +1287,13 @@ describe("deep review verdict contract", () => {
 
     const instruction = systemInstructionOf(spy);
     expect(instruction).toContain(
-      "APPROVE means the review found no issue worth raising. It is the default when the comments list is empty and nothing needs verification."
+      "APPROVE means the review found no blocking issue. A comment whose severity is SUGGESTION may accompany it. It is the default when the comments list is empty and nothing needs verification."
     );
     expect(instruction).toContain(
       "COMMENT means the review has observations worth surfacing, but none of them should block a merge."
     );
     expect(instruction).toContain(
-      "REQUEST_CHANGES means at least one finding is serious enough to block a merge. It requires at least one comment."
+      "REQUEST_CHANGES means at least one finding is serious enough to block a merge. A blocking finding is a comment whose severity is not SUGGESTION, or an unresolved prior issue."
     );
   });
 
@@ -1305,7 +1305,7 @@ describe("deep review verdict contract", () => {
     await runDeepReview("context");
 
     expect(systemInstructionOf(spy)).toContain(
-      "Never return REQUEST_CHANGES with an empty comments list."
+      "Never return REQUEST_CHANGES when you report no blocking finding."
     );
   });
 
@@ -1336,12 +1336,12 @@ describe("deep review verdict contract", () => {
     );
   });
 
-  it("lowers a REQUEST_CHANGES answer that carries no comments to COMMENT", async () => {
+  it("returns the model verdict unchanged so the caller resolves the final comment list", async () => {
     vi.spyOn(ai.models, "generateContent").mockResolvedValue({
       text: JSON.stringify({ summary: "Nothing found.", verdict: "REQUEST_CHANGES", comments: [] }),
     } as never);
 
-    await expect(runDeepReview("context")).resolves.toMatchObject({ verdict: "COMMENT" });
+    await expect(runDeepReview("context")).resolves.toMatchObject({ verdict: "REQUEST_CHANGES" });
   });
 
   it("keeps REQUEST_CHANGES when the review reports a comment", async () => {
@@ -1366,25 +1366,46 @@ describe("deep review verdict contract", () => {
     await expect(runDeepReview("context")).resolves.toMatchObject({ verdict: "REQUEST_CHANGES" });
   });
 
-  it("keeps the verdict of a review that reports comments", () => {
-    expect(resolveVerdict({ verdict: "APPROVE", comments: [] })).toBe("APPROVE");
-    expect(resolveVerdict({ verdict: "COMMENT", comments: [] })).toBe("COMMENT");
-    expect(resolveVerdict({ verdict: "REQUEST_CHANGES", comments: [] })).toBe("COMMENT");
+  const finding = (severity: "CRITICAL" | "WARNING" | "SUGGESTION") => ({
+    path: "src/auth.ts",
+    line: 2,
+    side: "RIGHT" as const,
+    severity,
+    category: "BUG" as const,
+    title: "Off by one",
+    body: "Fix the bound.",
+  });
+
+  it("downgrades REQUEST_CHANGES only when nothing blocking remains", () => {
+    expect(resolveVerdict({ verdict: "REQUEST_CHANGES", comments: [], unresolvedPriorIssues: [] })).toBe("COMMENT");
+    expect(resolveVerdict({ verdict: "REQUEST_CHANGES", comments: [finding("SUGGESTION")] })).toBe("COMMENT");
+    expect(resolveVerdict({ verdict: "REQUEST_CHANGES", comments: [finding("WARNING")] })).toBe("REQUEST_CHANGES");
+    expect(resolveVerdict({ verdict: "REQUEST_CHANGES", comments: [finding("CRITICAL")] })).toBe("REQUEST_CHANGES");
     expect(
       resolveVerdict({
         verdict: "REQUEST_CHANGES",
-        comments: [
-          {
-            path: "src/auth.ts",
-            line: 2,
-            side: "RIGHT",
-            severity: "WARNING",
-            category: "BUG",
-            title: "Off by one",
-            body: "Fix the bound.",
-          },
-        ],
+        comments: [],
+        unresolvedPriorIssues: ["The loop bound is still wrong."],
       })
     ).toBe("REQUEST_CHANGES");
+  });
+
+  it("downgrades APPROVE when a blocking finding is reported and keeps suggestions", () => {
+    expect(resolveVerdict({ verdict: "APPROVE", comments: [] })).toBe("APPROVE");
+    expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("SUGGESTION")] })).toBe("APPROVE");
+    expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("WARNING")] })).toBe("COMMENT");
+    expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("CRITICAL")] })).toBe("COMMENT");
+    expect(
+      resolveVerdict({
+        verdict: "APPROVE",
+        comments: [finding("SUGGESTION")],
+        unresolvedPriorIssues: ["The loop bound is still wrong."],
+      })
+    ).toBe("COMMENT");
+  });
+
+  it("leaves COMMENT unchanged", () => {
+    expect(resolveVerdict({ verdict: "COMMENT", comments: [] })).toBe("COMMENT");
+    expect(resolveVerdict({ verdict: "COMMENT", comments: [finding("CRITICAL")] })).toBe("COMMENT");
   });
 });
