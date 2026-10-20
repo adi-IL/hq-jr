@@ -31,15 +31,26 @@ jobs:
       - name: TruffleHog OSS Secret Scan
         uses: trufflesecurity/trufflehog@v3.88.5
         with:
+          # The action pins the scanner image separately. Left unset it pulls
+          # latest, so the scanner would change under the pinned action.
+          version: 3.88.5
           path: ./
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           head: ${{ github.sha }}
-          # The scrubber and chaos-monkey tests hold fake credential shaped
-          # fixtures on purpose, and TruffleHog scans every commit in the
-          # range, so a fixture that once sat in history keeps failing the
-          # scan even after it is rewritten. Only verified results fail the
-          # build; the real credential check is GitHub push protection.
-          extra_args: --only-verified
+          # Skip the two fixture files. Unverified secrets everywhere else,
+          # including private keys, still fail this step.
+          extra_args: --exclude-paths=.github/trufflehog-fixture-paths.txt
+
+      - name: TruffleHog verified scan of fixture paths
+        uses: trufflesecurity/trufflehog@v3.88.5
+        with:
+          version: 3.88.5
+          path: ./
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          head: ${{ github.sha }}
+          # Scan only those fixture paths, and only secrets that verify.
+          # The fake fixtures stay quiet. A live credential there fails the job.
+          extra_args: --include-paths=.github/trufflehog-fixture-paths.txt --only-verified
 
   build-and-test:
     name: Typecheck, Test, and Build

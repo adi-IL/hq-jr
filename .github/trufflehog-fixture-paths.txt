@@ -1,0 +1,2 @@
+^src/services/scrubber\.test\.ts$
+^src/chaos-monkey\.test\.ts$
