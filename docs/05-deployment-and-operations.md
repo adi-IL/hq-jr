@@ -37,6 +37,8 @@ The image also carries the deploy files at `/app/deploy` (`compose.yaml`, `updat
 
 Releases are tag driven. Pushing a `v*` tag runs `.github/workflows/release.yml`; nothing else starts a release.
 
+Every action the workflows use is pinned to a commit SHA, with the version in a trailing comment. A major tag can be moved, so the same workflow file can run different code over time; a commit SHA cannot. To upgrade an action, replace the SHA and the version comment together, and update the pin test in `scripts/bump-version.test.mjs`, which fails when any action is not pinned to a SHA.
+
 ```bash
 node scripts/bump-version.mjs
 git push origin HEAD
@@ -46,6 +48,8 @@ git push origin v0.1.9
 `scripts/bump-version.mjs` is the maintainer step that replaces the version bump the workflow used to do. It reads `package.json`, computes the next version as `patch(max(package.json version, npm latest version))`, writes it into `package.json` and `package-lock.json`, commits both as `chore: release X.Y.Z [skip release]`, and creates the annotated tag `vX.Y.Z`. It refuses to run on a dirty working tree, on a version whose tag already exists locally or on `origin`, when HEAD is a release commit whose tag was never created, and when the npm package points at a different repository. Every check fails closed: when `origin` or the npm registry cannot be read, the script stops instead of assuming the answer. If the commit succeeds but the tag fails, it prints the commit and the exact command to finish or undo the release. Use `--dry-run` to print the plan and `--help` for the options.
 
 The tag is the version. The workflow asserts that `vX.Y.Z` matches the `package.json` version of the tagged commit and fails the run when it does not, so the version must be committed before the tag is pushed.
+
+Every action in `.github/workflows/release.yml` and `.github/workflows/ci.yml` is pinned to a commit SHA with the release version in a trailing comment, because a major tag can be moved and the release pipeline must run the same code every time. To upgrade an action, replace the SHA with the one the new release tag points at and update the comment.
 
 The workflow runs five jobs:
 

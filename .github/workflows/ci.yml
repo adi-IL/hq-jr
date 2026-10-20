@@ -24,12 +24,12 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: TruffleHog OSS Secret Scan
-        uses: trufflesecurity/trufflehog@v3.88.5
+        uses: trufflesecurity/trufflehog@f19d6e5d2bef8a8ceca2b7d77ec447fc304f8078 # v3.88.5
         with:
           # The action pins the scanner image separately. Left unset it pulls
           # latest, so the scanner would change under the pinned action.
@@ -62,7 +62,7 @@ jobs:
       GOOGLE_CLOUD_LOCATION: global
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Guard against committed ADC credentials
         run: |
@@ -78,7 +78,7 @@ jobs:
           echo "no credential file under gcloud/"
 
       - name: Setup Node.js 22.x
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.x
           cache: "npm"
