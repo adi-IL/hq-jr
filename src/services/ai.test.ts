@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { Type } from "@google/genai";
 import {
@@ -529,6 +530,30 @@ describe("escalated deep review policy", () => {
 
     expect(models).toEqual([config.HQ_JR_MODEL_TIER2]);
     expect(outcome.escalated).toBe(false);
+  });
+});
+
+describe("model orchestration documentation", () => {
+  const readRepoFile = (name: string) => readFile(new URL(`../../${name}`, import.meta.url), "utf-8");
+
+  it("names the escalation output cap variable and the calls it applies to", async () => {
+    const env = await readRepoFile(".env.example");
+    const doc = await readRepoFile("docs/02-model-orchestration-and-vertex-adc.md");
+
+    expect(env).toContain("HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS=");
+    expect(env).not.toContain("HQ_JR_MAX_OUTPUT_TOKENS=");
+    expect(env).toContain("do not send maxOutputTokens");
+    expect(doc).toContain("`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`");
+  });
+
+  it("uses the config driven resolver in the snippet and states the compatibility change", async () => {
+    const doc = await readRepoFile("docs/02-model-orchestration-and-vertex-adc.md");
+
+    expect(doc).toContain("resolveDeepReviewModel(triage.overallRisk)");
+    expect(doc).not.toContain('riskAtLeast(triage.overallRisk, "HIGH")');
+    expect(doc).toContain("HQ_JR_MODEL_DISCUSSION");
+    expect(doc).toContain("HQ_JR_MODEL_REMEDIATION");
+    expect(doc).toContain("HQ_JR_MODEL_HEALTH");
   });
 });
 
