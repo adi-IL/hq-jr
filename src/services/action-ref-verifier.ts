@@ -154,9 +154,21 @@ function scrubSentences(text: string, droppedKeys: Set<string>): string {
   return out.trim();
 }
 
-/** True when the text names one of the actions whose claim was dropped. */
+/**
+ * True when the text names one of the actions whose claim was dropped. The
+ * name has to be the whole name, so `acme/setup` does not match
+ * `acme/setup-node`.
+ */
 function namesAction(text: string, refs: Ref[]): boolean {
-  return refs.some((r) => text.includes(`${r.owner}/${r.repo}`));
+  return refs.some((r) => {
+    const name = escapeRegExp(`${r.owner}/${r.repo}`);
+    return new RegExp(`(?<![\\w./:@-])${name}(?![\\w.-])`).test(text);
+  });
+}
+
+/** Escapes the characters that carry a meaning in a regular expression. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function dropNote(dropped: DroppedClaim[]): string {
