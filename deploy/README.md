@@ -35,11 +35,55 @@ The host keeps no git checkout. The deploy directory is materialized from the re
 
 ```bash
 # 1. Materialize the deploy files from the released image.
-docker pull ghcr.io/adi-il/hq-jr:latest
-docker create --name hqjr-deploy-extract ghcr.io/adi-il/hq-jr:latest
-docker cp hqjr-deploy-extract:/app/deploy/. /opt/hq-jr/deploy/
-docker rm hqjr-deploy-extract
+# docker create picks the container name, so a retry cannot collide with a leftover container.
+bash <<'EOF'
+set -euo pipefail
+image=ghcr.io/adi-il/hq-jr:latest
+dest=/opt/hq-jr/deploy
+docker pull "$image"
+container=""
+staging=""
+cleanup() {
+  if [ -n "$container" ]; then
+    docker rm -f "$container" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$staging" ]; then
+    rm -rf "$staging"
+  fi
+}
+trap cleanup EXIT
+container="$(docker create "$image")"
+staging="$(mktemp -d)"
+mkdir -p "$dest"
+docker cp "$container:/app/deploy/." "$staging/"
+shopt -s dotglob nullglob
+for file in "$staging"/*; do
+  [ -f "$file" ] || continue
+  name="$(basename "$file")"
+  if [ "$name" = compose.yaml ]; then
+    cp -f "$file" "$dest/compose.yaml.release"
+  else
+    cp -f "$file" "$dest/$name"
+  fi
+done
+if [ ! -f "$dest/compose.yaml.release" ]; then
+  echo "the image has no /app/deploy/compose.yaml" >&2
+  exit 1
+fi
+if [ ! -f "$dest/compose.yaml" ]; then
+  cp "$dest/compose.yaml.release" "$dest/compose.yaml"
+  echo "host had no compose.yaml; copied compose.yaml.release to compose.yaml"
+elif ! cmp -s "$dest/compose.yaml" "$dest/compose.yaml.release"; then
+  echo "left host compose.yaml in place; it differs from compose.yaml.release"
+else
+  echo "host compose.yaml matches compose.yaml.release"
+fi
+EOF
 ```
+
+`docker create` assigns the container id. The block removes that container when it finishes or stops on an error. Run the block again after an interruption. It does not use a fixed name.
+
+The image `compose.yaml` is written as `compose.yaml.release`. An existing host `compose.yaml` is left in place. Compose reads `compose.yaml`, so when that file is absent the block copies `compose.yaml.release` to `compose.yaml`. Edit `compose.yaml` before the first start if you need to pin an image digest. A later run of this block, and `refresh-deploy-files.sh`, does not replace it.
 
 Then follow [Credentials, start, and the update timer](#credentials-start-and-the-update-timer).
 
@@ -73,9 +117,23 @@ Every release that changes a deploy file has to be copied over by hand in this m
 
 ## Credentials, start, and the update timer
 
+The container does not start until `/opt/hq-jr/.env` holds the GitHub App values and the Vertex AI project. The image does not include a `docs/` directory. Set the values in this section.
+
+`APP_ID`, `PRIVATE_KEY`, and `WEBHOOK_SECRET` come from the GitHub App. Keep `PRIVATE_KEY` on one line and write its newlines as `\n`. Do not put spaces around `=`. `GOOGLE_CLOUD_PROJECT` is the Vertex AI project. `GOOGLE_CLOUD_LOCATION` is `global` unless the project uses another region. `HQ_JR_DB_PATH` must be `/app/data/hq-jr.db` so the database stays on the data volume. The image sets that path. This line keeps a copied example from pointing the database somewhere else. Set `WEBHOOK_PROXY_URL` only when GitHub delivers webhooks through a Smee channel.
+
 ```bash
-# 1. Create /opt/hq-jr/.env (see docs/05 for the values) and the ADC file.
-touch /opt/hq-jr/.env
+# 1. Create /opt/hq-jr/.env when it is missing or empty, then install the ADC file.
+# Fill the empty values before starting Compose. A second run leaves a filled file alone.
+if [ ! -s /opt/hq-jr/.env ]; then
+  cat > /opt/hq-jr/.env <<'ENV'
+APP_ID=
+PRIVATE_KEY=
+WEBHOOK_SECRET=
+GOOGLE_CLOUD_PROJECT=
+GOOGLE_CLOUD_LOCATION=global
+HQ_JR_DB_PATH=/app/data/hq-jr.db
+ENV
+fi
 chmod 600 /opt/hq-jr/.env
 sudo install -m 400 -o 1001 -g 1001 \
   ~/.config/gcloud/application_default_credentials.json /opt/hq-jr/gcloud/

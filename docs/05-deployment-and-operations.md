@@ -97,15 +97,57 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
 
    ```bash
    sudo install -d -o "$(id -un)" -g "$(id -gn)" /opt/hq-jr /opt/hq-jr/deploy
-   docker pull ghcr.io/adi-il/hq-jr:latest
-   docker create --name hqjr-deploy-extract ghcr.io/adi-il/hq-jr:latest
-   docker cp hqjr-deploy-extract:/app/deploy/. /opt/hq-jr/deploy/
-   docker rm hqjr-deploy-extract
+   # docker create picks the container name, so a retry cannot collide with a leftover container.
+   bash <<'EOF'
+   set -euo pipefail
+   image=ghcr.io/adi-il/hq-jr:latest
+   dest=/opt/hq-jr/deploy
+   docker pull "$image"
+   container=""
+   staging=""
+   cleanup() {
+     if [ -n "$container" ]; then
+       docker rm -f "$container" >/dev/null 2>&1 || true
+     fi
+     if [ -n "$staging" ]; then
+       rm -rf "$staging"
+     fi
+   }
+   trap cleanup EXIT
+   container="$(docker create "$image")"
+   staging="$(mktemp -d)"
+   mkdir -p "$dest"
+   docker cp "$container:/app/deploy/." "$staging/"
+   shopt -s dotglob nullglob
+   for file in "$staging"/*; do
+     [ -f "$file" ] || continue
+     name="$(basename "$file")"
+     if [ "$name" = compose.yaml ]; then
+       cp -f "$file" "$dest/compose.yaml.release"
+     else
+       cp -f "$file" "$dest/$name"
+     fi
+   done
+   if [ ! -f "$dest/compose.yaml.release" ]; then
+     echo "the image has no /app/deploy/compose.yaml" >&2
+     exit 1
+   fi
+   if [ ! -f "$dest/compose.yaml" ]; then
+     cp "$dest/compose.yaml.release" "$dest/compose.yaml"
+     echo "host had no compose.yaml; copied compose.yaml.release to compose.yaml"
+   elif ! cmp -s "$dest/compose.yaml" "$dest/compose.yaml.release"; then
+     echo "left host compose.yaml in place; it differs from compose.yaml.release"
+   else
+     echo "host compose.yaml matches compose.yaml.release"
+   fi
+   EOF
    ```
+
+   `docker create` assigns the container id. The block removes that container when it finishes or stops on an error, and a second run does not depend on a fixed name. The image `compose.yaml` is written as `compose.yaml.release`. An existing host `compose.yaml` is left in place. When `compose.yaml` is absent, the block copies `compose.yaml.release` to `compose.yaml`, which is the file Compose reads. Edit it before the first start if you need to pin an image digest.
 
    The alternative is to copy `deploy/` to the host by hand. Both modes are documented in [`deploy/README.md`](../deploy/README.md).
 
-2. Create `/opt/hq-jr/.env` from `.env.example`. At minimum:
+2. Create `/opt/hq-jr/.env`. An image-baked host has no checkout and no `docs/` directory. At minimum:
 
    ```dotenv
    APP_ID=123456
@@ -116,10 +158,19 @@ The reference host is a Linux VM running Docker. The repository ships the deploy
    HQ_JR_DB_PATH=/app/data/hq-jr.db
    ```
 
-   Keep `PRIVATE_KEY` on one line with escaped `\n` characters. Do not put spaces around `=`.
+   Keep `PRIVATE_KEY` on one line with escaped `\n` characters. Do not put spaces around `=`. The commands below create the file only when it is missing or empty. Replace the empty values before starting Compose. A second run leaves a filled file alone.
 
    ```bash
-   touch /opt/hq-jr/.env
+   if [ ! -s /opt/hq-jr/.env ]; then
+     cat > /opt/hq-jr/.env <<'ENV'
+   APP_ID=
+   PRIVATE_KEY=
+   WEBHOOK_SECRET=
+   GOOGLE_CLOUD_PROJECT=
+   GOOGLE_CLOUD_LOCATION=global
+   HQ_JR_DB_PATH=/app/data/hq-jr.db
+   ENV
+   fi
    chmod 600 /opt/hq-jr/.env
    ```
 
