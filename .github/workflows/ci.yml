@@ -34,11 +34,10 @@ jobs:
           path: ./
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           head: ${{ github.sha }}
-          # The scrubber tests hold fake credential shaped fixtures on purpose.
-          # Only verified results are reported, so a fake fixture can never
-          # fail the scan, while a live credential still does. No file is
-          # excluded from the scan.
-          extra_args: --only-verified
+          # The two test files listed in the filter hold fake credential
+          # fixtures. Exclude only those paths. The scan still reports
+          # unverified secrets everywhere else, including private keys.
+          extra_args: --exclude-paths=.github/trufflehog-exclude-paths.txt
 
   build-and-test:
     name: Lint, Typecheck, Test, and Build
