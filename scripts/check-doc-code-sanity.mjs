@@ -55,12 +55,8 @@ walk("src", [".ts"]);
 walk("scripts", [".mjs", ".js"]);
 walk("deploy", [".sh"]);
 
-const sourceSet = new Set(sourceFiles);
 const configSource = read("src/config.ts");
 const configVars = new Set(
-  [...configSource.matchAll(/^\s*([A-Z][A-Z0-9_]*):\s*z\./gm)].map((m) => m[1])
-);
-const allEnvVars = new Set(
   [...configSource.matchAll(/^\s*([A-Z][A-Z0-9_]*):\s*z\./gm)].map((m) => m[1])
 );
 
@@ -235,7 +231,7 @@ for (const doc of DOC_FILES) {
           !f.endsWith(".test.ts") &&
           !f.endsWith(".test.mjs") &&
           new RegExp(
-            `from\\s+["'][^"']*${moduleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\.js)?["']`
+            `from\\s+["'][^"']*(?:^|[/\\\\])${moduleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(\\.js)?["']`
           ).test(read(f))
       );
       if (importedBy.length > 0) {
