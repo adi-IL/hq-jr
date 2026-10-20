@@ -112,16 +112,18 @@ export function buildNoCodeChangesSummary(
 
 /**
  * Builds the check summary for a pull request where every modified file was
- * excluded by the noise filters. The excluded file list is capped and the
- * header states the true total, so a pull request that touches thousands of
- * lockfiles or generated bundles cannot push the summary past the character
- * limit GitHub accepts.
+ * excluded by the noise filters or dropped because the context budget ran
+ * out. The excluded file list is capped and the header states the true
+ * total, so a pull request that touches thousands of lockfiles or generated
+ * bundles cannot push the summary past the character limit GitHub accepts.
+ * The header names both reasons, because a file that was dropped for the
+ * budget was not an artifact.
  */
 export function buildExcludedFilesSummary(
   ignoredItems: Array<{ path: string; reason: string }>
 ): string {
   const base =
-    "Modified files were identified as non-reviewable artifacts (lockfiles, documentation, generated bundles):";
+    "Modified files were excluded from review, as non-reviewable artifacts or because the context budget ran out:";
   if (ignoredItems.length === 0) return base;
 
   return buildCappedFileListSummary({

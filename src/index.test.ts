@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import appFn, { buildDeepReviewBody } from "./index.js";
+import appFn, { buildDeepReviewBody, buildExcludedFilesSummary } from "./index.js";
 import { addRemediationCommit, acquireRunLock, releaseRunLock } from "./services/db.js";
+import { BUDGET_DROP_REASON } from "./services/context-packager.js";
 import * as aiModule from "./services/ai.js";
 import * as sandboxRunnerModule from "./services/sandbox-runner.js";
 import * as discussionModule from "./services/discussion.js";
@@ -511,7 +512,7 @@ rename to src/new/auth.ts
     expect(finalUpdate.output.title).toBe("Triage Passed: Excluded Files Only");
     const summary = finalUpdate.output.summary as string;
     expect(summary.length).toBeLessThan(65535);
-    expect(summary).toContain("Modified files were identified as non-reviewable artifacts");
+    expect(summary).toContain("Modified files were excluded from review");
     expect(summary).toContain("Excluded files (showing first 50 of 2000):");
   });
 
@@ -580,6 +581,81 @@ index 123..456 100644
     expect(summary.length).toBeLessThan(65535);
     expect(summary).toContain("All modified files are low risk or auto-generated. Deep review bypassed.");
     expect(summary).toContain("truncated");
+  });
+
+  it("caps the model summary in the deep review check summary", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth change",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "verbose model answer ".repeat(12000),
+      verdict: "COMMENT",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: {
+          number: 32,
+          state: "open",
+          title: "Auth change",
+          head: { sha: "sha-32", ref: "auth" },
+          user: { login: "alice" },
+        },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate.output.title).toBe("Review Completed: COMMENT");
+    const summary = finalUpdate.output.summary as string;
+    expect(summary.length).toBeLessThan(65535);
+    expect(summary).toContain("Found **0** observation(s).");
+    expect(summary).toContain("truncated");
+  });
+
+  it("does not describe a file dropped for the context budget as an artifact", () => {
+    const summary = buildExcludedFilesSummary([
+      { path: "src/big.ts", reason: BUDGET_DROP_REASON },
+    ]);
+
+    expect(summary).toContain("src/big.ts");
+    expect(summary).toContain(BUDGET_DROP_REASON);
+    // A file that was dropped for the budget was not a lockfile and not a
+    // generated bundle.
+    expect(summary.toLowerCase()).not.toContain("lockfile");
+    expect(summary.toLowerCase()).not.toContain("generated bundle");
+  });
+
+  it("keeps the artifact reasons in the excluded files summary", () => {
+    const summary = buildExcludedFilesSummary([
+      { path: "package-lock.json", reason: "Dependency lockfile: package-lock.json" },
+      { path: "src/big.ts", reason: BUDGET_DROP_REASON },
+    ]);
+
+    expect(summary).toContain("package-lock.json");
+    expect(summary).toContain("Dependency lockfile: package-lock.json");
+    expect(summary).toContain(BUDGET_DROP_REASON);
   });
 
   it("still fails the check when the review itself errors", async () => {
