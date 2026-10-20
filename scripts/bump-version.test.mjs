@@ -542,7 +542,28 @@ describe("release workflow", () => {
   });
 
   it("keeps the checkout that the provenance attestation needs", () => {
-    expect(publishJob).toMatch(/uses: actions\/checkout@v\d/);
+    expect(publishJob).toMatch(/uses: actions\/checkout@[0-9a-f]{40}/);
+  });
+
+  it("pins every action to a commit sha", () => {
+    for (const job of [prepareJob, publishJob, imageJob, releaseJob]) {
+      for (const line of job.split("\n")) {
+        const uses = /^\s*uses:\s*(\S+)/.exec(line);
+        if (uses === null) continue;
+        if (uses[1].startsWith("./")) continue;
+        expect(uses[1], `unpinned action: ${line.trim()}`).toMatch(/@[0-9a-f]{40}$/);
+      }
+    }
+  });
+
+  it("pins the actions in the ci workflow to a commit sha", () => {
+    const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+    for (const line of ci.split("\n")) {
+      const uses = /^\s*uses:\s*(\S+)/.exec(line);
+      if (uses === null) continue;
+      if (uses[1].startsWith("./")) continue;
+      expect(uses[1], `unpinned action: ${line.trim()}`).toMatch(/@[0-9a-f]{40}$/);
+    }
   });
 
   it("resolves the tag to a commit once and exposes it", () => {
