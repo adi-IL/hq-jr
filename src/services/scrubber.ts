@@ -80,6 +80,9 @@ const BRACKET_ACCESS_SUFFIX_REGEX = /\[[^\]\r\n]*\]$/;
  * closes the statement it appears in. A bracketed value keeps its brackets.
  */
 function splitTrailingPunctuation(value: string): { core: string; trailing: string } {
+  if (value.startsWith(REDACTION_PLACEHOLDER)) {
+    return { core: REDACTION_PLACEHOLDER, trailing: value.slice(REDACTION_PLACEHOLDER.length) };
+  }
   if (value.startsWith("[") && value.endsWith("]")) {
     return { core: value, trailing: "" };
   }

@@ -67,6 +67,14 @@ MIIEowIBAAKCAQEA0Y1+examplePrivateDataKey1234567890abcdefghijklmnopqrstuvwxyz
     expect(redactedCount).toBe(0);
   });
 
+  it("keeps a value that was already redacted intact", () => {
+    const raw = "apiKey = sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789;";
+    const { scrubbed, redactedCount } = scrubSecrets(raw);
+
+    expect(scrubbed).toBe("apiKey = [REDACTED_SECRET];");
+    expect(redactedCount).toBe(1);
+  });
+
   it("counts a redacted key once", () => {
     const raw = "const apiKey = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456789';";
     const { scrubbed, redactedCount } = scrubSecrets(raw);
