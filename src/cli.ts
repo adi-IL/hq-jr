@@ -77,16 +77,37 @@ export function formatDeepReviewHeader(outcome: { model: string; fellBack: boole
 }
 
 /**
+ * Notice printed before the deep review call starts. A high thinking model
+ * call can run for minutes, so the operator sees which model is running
+ * instead of an idle CLI. The routing is known before the call, so this line
+ * is written as soon as the decision to escalate is known.
+ */
+export function formatDeepReviewPendingLine(model: string): string {
+  return `Running deep review on ${model}...`;
+}
+
+/**
  * Runs the deep review for the CLI and returns the header that names the
- * model that produced the verdict.
+ * model that produced the verdict. The model that is about to run is reported
+ * through `onStart` before the call, so the output does not go quiet while a
+ * long escalated call is in flight.
  */
 export async function runCliDeepReview(params: {
   overallRisk: RiskLevel;
   reviewPrompt: string;
   log?: (payload: Record<string, unknown>, message: string) => void;
+  /** Called with the model that is about to run, before the call starts. */
+  onStart?: (model: string) => void;
 }): Promise<{ header: string; result: DeepReviewResult }> {
+  const minRisk = config.HQ_JR_ESCALATION_MIN_RISK;
+  // The routing is resolved with the same threshold the escalation helper uses,
+  // so the pending line names the model that is about to run.
+  const routing = resolveDeepReviewRouting(params.overallRisk, minRisk);
+  params.onStart?.(routing.model);
+
   const deepReview = await runEscalatedDeepReview({
     overallRisk: params.overallRisk,
+    minRisk,
     run: (model, role) => runDeepReview(params.reviewPrompt, { model, role }),
     log: params.log,
   });
@@ -213,6 +234,8 @@ ${escapeUntrustedTags(context.promptPayload)}
       console.warn(
         `${message}: ${payload.err instanceof Error ? payload.err.message : String(payload.err)}`
       ),
+    // Printed before the call, so a long escalated call does not look hung.
+    onStart: (model) => console.log(formatDeepReviewPendingLine(model)),
   });
   console.log(header);
   console.log(`\nVerdict: ${review.verdict}`);

@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import appFn from "./index.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import appFn, { buildDeepReviewBody } from "./index.js";
 import { addRemediationCommit, acquireRunLock, releaseRunLock } from "./services/db.js";
 import * as aiModule from "./services/ai.js";
 import * as sandboxRunnerModule from "./services/sandbox-runner.js";
 import * as discussionModule from "./services/discussion.js";
+import { formatDeepReviewPendingLine, runCliDeepReview } from "./cli.js";
 import { config } from "./config.js";
 
 describe("hq-jr Event Handlers & Security Guards", () => {
@@ -1079,5 +1080,205 @@ index 123..456 100644
         body: expect.stringContaining("Merged"),
       })
     );
+  });
+
+  it("caps a verbose deep review summary in the review body", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth rewrite",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "verbose model answer ".repeat(12000),
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        {
+          path: "src/auth.ts",
+          line: 2,
+          side: "RIGHT",
+          severity: "CRITICAL",
+          category: "SECURITY",
+          title: "Logs in login path",
+          body: "Remove the log.",
+        },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 90, state: "open", head: { sha: "sha-90", ref: "verbose" }, title: "Verbose review" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    const body = octokitMock.pulls.createReview.mock.calls[0][0].body as string;
+    expect(body.length).toBeLessThan(65535);
+    expect(body).toContain("## hq-jr Automated Code Review");
+    expect(body).toContain("**Verdict:** `REQUEST_CHANGES`");
+    expect(body).toContain("truncated");
+  });
+
+  it("caps the 422 fallback body that carries the inline comments", async () => {
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Auth rewrite",
+      overallRisk: "HIGH",
+      files: [{ path: "src/auth.ts", risk: "HIGH", reason: "Auth", shouldReview: true }],
+    });
+    vi.spyOn(aiModule, "runDeepReview").mockResolvedValueOnce({
+      summary: "verbose model answer ".repeat(12000),
+      verdict: "COMMENT",
+      resolvedPriorIssues: [],
+      unresolvedPriorIssues: [],
+      comments: [
+        {
+          path: "src/auth.ts",
+          line: 2,
+          side: "RIGHT",
+          severity: "CRITICAL",
+          category: "SECURITY",
+          title: "Logs in login path",
+          body: "verbose inline body ".repeat(4000),
+        },
+      ],
+      requiresSandboxVerification: false,
+      sandboxProbes: [],
+    });
+    octokitMock.pulls.createReview
+      .mockRejectedValueOnce(Object.assign(new Error("Validation Failed"), { status: 422 }))
+      .mockResolvedValueOnce({ data: { id: 202 } });
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: `diff --git a/src/auth.ts b/src/auth.ts
+index 123..456 100644
+--- a/src/auth.ts
++++ b/src/auth.ts
+@@ -1,3 +1,4 @@
+ export function login() {
++  console.log("login");
+   return true;
+ }`,
+    });
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        pull_request: { number: 91, state: "open", head: { sha: "sha-91", ref: "fallback" }, title: "Verbose review" },
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        sender: { login: "developer", type: "User" },
+      },
+    });
+
+    expect(octokitMock.pulls.createReview).toHaveBeenCalledTimes(2);
+    const fallback = octokitMock.pulls.createReview.mock.calls[1][0].body as string;
+    expect(fallback.length).toBeLessThan(65535);
+    expect(fallback).toContain("## hq-jr Automated Code Review");
+    expect(fallback).toContain("**Verdict:** `COMMENT`");
+    expect(fallback).toContain("### Inline Comments (Attached as Summary due to diff positioning):");
+    expect(fallback).toContain("truncated");
+  });
+});
+
+describe("deep review body budget", () => {
+  it("keeps the structure of the body and marks the cut", () => {
+    const body = buildDeepReviewBody({
+      summary: "verbose model answer ".repeat(12000),
+      verdict: "REQUEST_CHANGES",
+      resolvedPriorIssues: ["fixed the race"],
+      unresolvedPriorIssues: ["the lock is still missing"],
+      orphanComments: ["- **src/auth.ts:9** [WARNING]: note outside the diff"],
+      inlineComments: [{ path: "src/auth.ts", line: 2, side: "RIGHT", body: "fix this" }],
+    });
+
+    expect(body.length).toBeLessThan(65535);
+    expect(body).toContain("## hq-jr Automated Code Review");
+    expect(body).toContain("**Verdict:** `REQUEST_CHANGES`");
+    expect(body).toContain("### ✅ Resolved Issues from Prior Review");
+    expect(body).toContain("### ⚠️ Remaining Open Issues from Prior Review");
+    expect(body).toContain("### Additional File Observations (Outside Modified Diff Lines)");
+    expect(body).toContain("### Inline Comments (Attached as Summary due to diff positioning):");
+    expect(body).toContain("fixed the race");
+    expect(body).toContain("the lock is still missing");
+    expect(body).toContain("truncated");
+  });
+
+  it("leaves a short review body untouched", () => {
+    expect(buildDeepReviewBody({ summary: "short", verdict: "APPROVE" })).toBe(
+      "## hq-jr Automated Code Review\n\nshort\n\n**Verdict:** `APPROVE`"
+    );
+  });
+});
+
+describe("CLI deep review output", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const deepReviewResult = {
+    summary: "ok",
+    verdict: "COMMENT" as const,
+    resolvedPriorIssues: [],
+    unresolvedPriorIssues: [],
+    comments: [],
+    requiresSandboxVerification: false,
+    sandboxProbes: [],
+  };
+
+  it("names the model that is about to run before the deep review call", async () => {
+    const order: string[] = [];
+    vi.spyOn(aiModule, "runDeepReview").mockImplementation(async (_prompt, options) => {
+      order.push(`call:${options?.model}`);
+      return deepReviewResult;
+    });
+
+    const started: string[] = [];
+    await runCliDeepReview({
+      overallRisk: "HIGH",
+      reviewPrompt: "prompt",
+      onStart: (model) => {
+        started.push(model);
+        order.push(`start:${model}`);
+      },
+    });
+
+    expect(started).toEqual([config.HQ_JR_MODEL_ESCALATION]);
+    // The pending line is written before the model call starts.
+    expect(order[0]).toBe(`start:${config.HQ_JR_MODEL_ESCALATION}`);
+    expect(order[1]).toBe(`call:${config.HQ_JR_MODEL_ESCALATION}`);
+    expect(formatDeepReviewPendingLine(config.HQ_JR_MODEL_ESCALATION)).toContain(
+      config.HQ_JR_MODEL_ESCALATION
+    );
+  });
+
+  it("names the fallback model in the header after the escalation model fails", async () => {
+    vi.spyOn(aiModule, "runDeepReview")
+      .mockRejectedValueOnce(new Error("escalation model unavailable"))
+      .mockResolvedValueOnce(deepReviewResult);
+
+    const started: string[] = [];
+    const { header } = await runCliDeepReview({
+      overallRisk: "HIGH",
+      reviewPrompt: "prompt",
+      onStart: (model) => started.push(model),
+    });
+
+    expect(started).toEqual([config.HQ_JR_MODEL_ESCALATION]);
+    expect(header).toContain(config.HQ_JR_MODEL_TIER2);
+    expect(header).toContain("fallback");
   });
 });

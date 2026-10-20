@@ -137,10 +137,14 @@ export function buildExcludedFilesSummary(
  * Cuts model supplied text to the check summary budget and marks it as
  * truncated, so a reader can tell a cut summary from a short one.
  */
-function capSummaryText(text: string, maxChars: number): string {
+function capSummaryText(
+  text: string,
+  maxChars: number,
+  notice: string = SUMMARY_TEXT_TRUNCATION_NOTICE
+): string {
   if (text.length <= maxChars) return text;
-  const room = Math.max(0, maxChars - SUMMARY_TEXT_TRUNCATION_NOTICE.length);
-  return text.slice(0, room) + SUMMARY_TEXT_TRUNCATION_NOTICE;
+  const room = Math.max(0, maxChars - notice.length);
+  return text.slice(0, room) + notice;
 }
 
 /**
@@ -156,6 +160,105 @@ export function buildTriagePassedSummary(triageSummary: string): string {
     MAX_CHECK_SUMMARY_CHARS - header.length - footer.length
   );
   return `${header}${text}${footer}`;
+}
+
+/**
+ * Budget for the review body. GitHub rejects a review body longer than 65535
+ * characters, so the body uses the same budget as the check summaries.
+ */
+const MAX_REVIEW_BODY_CHARS = MAX_CHECK_SUMMARY_CHARS;
+/** Notice that marks model supplied review text as cut. */
+const REVIEW_TEXT_TRUNCATION_NOTICE =
+  "\n\n... [model text truncated to fit the review body limit]";
+/** Heading of the pull request review body. */
+const REVIEW_BODY_HEADING = "## hq-jr Automated Code Review";
+/** Heading of the section with the prior issues that are fixed. */
+const RESOLVED_ISSUES_HEADING = "### ✅ Resolved Issues from Prior Review";
+/** Heading of the section with the prior issues that are still open. */
+const UNRESOLVED_ISSUES_HEADING = "### ⚠️ Remaining Open Issues from Prior Review";
+/** Heading of the section with the observations that have no diff line. */
+const ORPHAN_OBSERVATIONS_HEADING =
+  "### Additional File Observations (Outside Modified Diff Lines)";
+/** Heading of the section with the inline comments the 422 fallback attaches. */
+const INLINE_COMMENTS_HEADING =
+  "### Inline Comments (Attached as Summary due to diff positioning):";
+/** Smallest room a section keeps when the body budget runs out. */
+const REVIEW_SECTION_MIN_CHARS = 240;
+
+export interface DeepReviewBodyInput {
+  /** Model supplied review summary. */
+  summary: string;
+  /** Model supplied verdict. */
+  verdict: string;
+  /** Prior issues that are fixed. */
+  resolvedPriorIssues?: string[];
+  /** Prior issues that are still open. */
+  unresolvedPriorIssues?: string[];
+  /** Observations that could not be anchored to a diff line. */
+  orphanComments?: string[];
+  /** Inline comments the 422 fallback attaches to the body. */
+  inlineComments?: Array<{ path: string; line: number; side: string; body: string }>;
+  /** Budget for the whole body. */
+  maxChars?: number;
+}
+
+/**
+ * Builds the pull request review body. The model supplied text is cut to the
+ * review body budget, so a verbose answer cannot push the body past the
+ * character limit GitHub accepts. The heading, the summary, the verdict line
+ * and the issue sections keep their place, and every cut is marked so a reader
+ * can tell a cut review from a short one.
+ */
+export function buildDeepReviewBody(input: DeepReviewBodyInput): string {
+  const maxChars = input.maxChars ?? MAX_REVIEW_BODY_CHARS;
+
+  const sections: Array<{ heading: string; lines: string[] }> = [];
+  const resolved = (input.resolvedPriorIssues ?? []).map((issue) => `- ${issue}`);
+  if (resolved.length > 0) sections.push({ heading: RESOLVED_ISSUES_HEADING, lines: resolved });
+  const unresolved = (input.unresolvedPriorIssues ?? []).map((issue) => `- ${issue}`);
+  if (unresolved.length > 0) sections.push({ heading: UNRESOLVED_ISSUES_HEADING, lines: unresolved });
+  const orphan = input.orphanComments ?? [];
+  if (orphan.length > 0) sections.push({ heading: ORPHAN_OBSERVATIONS_HEADING, lines: orphan });
+  const inline = (input.inlineComments ?? []).map(
+    (comment) => `- **${comment.path}:${comment.line}** (${comment.side}):\n${comment.body}`
+  );
+  if (inline.length > 0) sections.push({ heading: INLINE_COMMENTS_HEADING, lines: inline });
+
+  const verdictLine = `**Verdict:** \`${input.verdict}\``;
+  // The heading, the verdict line and the section headings are the fixed part
+  // of the body. Everything else is model supplied text that can be cut.
+  const headingsLength = sections.reduce((sum, section) => sum + section.heading.length + 3, 0);
+  let budget = Math.max(
+    0,
+    maxChars - REVIEW_BODY_HEADING.length - 2 - verdictLine.length - 2 - headingsLength
+  );
+
+  // The summary carries the verdict, so it keeps the largest share of the
+  // budget. Every section keeps a minimum, so the structure of the body
+  // survives a verbose answer.
+  const sectionFloor =
+    sections.length > 0
+      ? Math.min(REVIEW_SECTION_MIN_CHARS, Math.floor(budget / (sections.length + 1)))
+      : 0;
+  const summary = capSummaryText(
+    input.summary ?? "",
+    Math.max(0, budget - sectionFloor * sections.length),
+    REVIEW_TEXT_TRUNCATION_NOTICE
+  );
+  budget -= summary.length;
+
+  const cutSections = sections.map((section, index) => {
+    const room = Math.max(0, Math.floor(budget / (sections.length - index)));
+    const text = capSummaryText(section.lines.join("\n"), room, REVIEW_TEXT_TRUNCATION_NOTICE);
+    budget -= text.length;
+    return { heading: section.heading, text };
+  });
+
+  let body = `${REVIEW_BODY_HEADING}\n\n${summary}\n\n${verdictLine}`;
+  for (const section of cutSections) {
+    body += `\n\n${section.heading}\n${section.text}`;
+  }
+  return body;
 }
 
 export function buildReviewPrompt(params: {
@@ -630,19 +733,15 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         }
       }
 
-      let reviewBody = `## hq-jr Automated Code Review\n\n${review.summary}\n\n**Verdict:** \`${review.verdict}\``;
-
-      if (review.resolvedPriorIssues && review.resolvedPriorIssues.length > 0) {
-        reviewBody += `\n\n### ✅ Resolved Issues from Prior Review\n${review.resolvedPriorIssues.map((i) => `- ${i}`).join("\n")}`;
-      }
-
-      if (review.unresolvedPriorIssues && review.unresolvedPriorIssues.length > 0) {
-        reviewBody += `\n\n### ⚠️ Remaining Open Issues from Prior Review\n${review.unresolvedPriorIssues.map((i) => `- ${i}`).join("\n")}`;
-      }
-
-      if (orphanComments.length > 0) {
-        reviewBody += `\n\n### Additional File Observations (Outside Modified Diff Lines)\n${orphanComments.join("\n")}`;
-      }
+      // The model supplied summary and the issue lists are cut to the review
+      // body budget, so a verbose answer cannot make GitHub reject the review.
+      const reviewBody = buildDeepReviewBody({
+        summary: review.summary,
+        verdict: review.verdict,
+        resolvedPriorIssues: review.resolvedPriorIssues,
+        unresolvedPriorIssues: review.unresolvedPriorIssues,
+        orphanComments,
+      });
 
       if (validComments.length > 0 || orphanComments.length > 0 || previousReview) {
         try {
@@ -661,10 +760,21 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
               { reviewErr: reviewErr.message },
               "Inline comment position rejected by GitHub (HTTP 422). Falling back to review summary."
             );
-            let fallbackBody = reviewBody + "\n\n### Inline Comments (Attached as Summary due to diff positioning):\n";
-            for (const vc of validComments) {
-              fallbackBody += `\n- **${vc.path}:${vc.line}** (${vc.side}):\n${vc.body}\n`;
-            }
+            // The fallback body carries the inline comments, so it is built
+            // from the same budget instead of appending to the review body.
+            const fallbackBody = buildDeepReviewBody({
+              summary: review.summary,
+              verdict: review.verdict,
+              resolvedPriorIssues: review.resolvedPriorIssues,
+              unresolvedPriorIssues: review.unresolvedPriorIssues,
+              orphanComments,
+              inlineComments: validComments.map((vc) => ({
+                path: vc.path,
+                line: vc.line,
+                side: vc.side,
+                body: vc.body,
+              })),
+            });
             await octokit.pulls.createReview({
               owner,
               repo: repoName,
@@ -723,6 +833,10 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
               ? "success"
               : "neutral";
 
+        // The model supplied summary is cut to the check summary budget, so a
+        // verbose answer cannot make GitHub reject the check run update.
+        const summaryHeader = "### Summary\n\n";
+        const summaryFooter = `\n\nFound **${review.comments.length}** observation(s).`;
         await octokit.checks.update({
           owner,
           repo: repoName,
@@ -731,7 +845,10 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           conclusion,
           output: {
             title: `Review Completed: ${review.verdict}`,
-            summary: `### Summary\n\n${review.summary}\n\nFound **${review.comments.length}** observation(s).`,
+            summary: `${summaryHeader}${capSummaryText(
+              review.summary,
+              MAX_CHECK_SUMMARY_CHARS - summaryHeader.length - summaryFooter.length
+            )}${summaryFooter}`,
           },
         });
       }
