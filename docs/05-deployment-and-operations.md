@@ -37,8 +37,6 @@ The image also carries the deploy files at `/app/deploy` (`compose.yaml`, `updat
 
 Releases are tag driven. Pushing a `v*` tag runs `.github/workflows/release.yml`; nothing else starts a release.
 
-Every action the workflows use is pinned to a commit SHA, with the version in a trailing comment. A major tag can be moved, so the same workflow file can run different code over time; a commit SHA cannot. To upgrade an action, replace the SHA and the version comment together, and update the pin test in `scripts/bump-version.test.mjs`, which fails when any action is not pinned to a SHA.
-
 ```bash
 node scripts/bump-version.mjs
 git push origin HEAD

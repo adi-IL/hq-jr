@@ -546,7 +546,7 @@ describe("release workflow", () => {
   });
 
   it("pins every action to a commit sha", () => {
-    for (const job of [prepareJob, publishJob, imageJob, releaseJob]) {
+    for (const job of [prepareJob, laterJobs]) {
       for (const line of job.split("\n")) {
         const uses = /^\s*uses:\s*(\S+)/.exec(line);
         if (uses === null) continue;
