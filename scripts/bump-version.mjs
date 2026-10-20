@@ -55,11 +55,50 @@ export function computeNextVersion(current, npmLatest) {
   return [base[0], base[1], base[2] + 1].join(".");
 }
 
+const QUOTED_VALUE = /^(['"`])([\s\S]*)\1$/;
+
+/** A value the registry printed inside a matching pair of quotes, without the quotes. */
+function stripQuotes(value) {
+  const trimmed = String(value).trim();
+  const quoted = QUOTED_VALUE.exec(trimmed);
+  return quoted ? quoted[2].trim() : trimmed;
+}
+
+/** The release version a release tag names, or null when the tag is not a vMAJOR.MINOR.PATCH tag. */
+export function parseReleaseTag(tag) {
+  const match = /^v(\d+\.\d+\.\d+)$/.exec(String(tag ?? "").trim());
+  return match ? match[1] : null;
+}
+
+/**
+ * Throws unless the tag names the package version, and returns that version.
+ *
+ * The release workflow runs this against the package.json of the commit the
+ * tag points at, so the check describes what the release actually contains.
+ */
+export function assertReleaseVersion(tag, packageVersion) {
+  const version = parseReleaseTag(tag);
+  if (!version) {
+    throw new ReleaseError(
+      `tag '${tag}' is not a vMAJOR.MINOR.PATCH tag. Release tags look like v0.1.9.`
+    );
+  }
+  const pkgVersion = String(packageVersion ?? "").trim();
+  if (version !== pkgVersion) {
+    throw new ReleaseError(
+      `tag '${tag}' does not match the package.json version '${pkgVersion}'. ` +
+        "The tag is the release version, so package.json must already carry " +
+        `${version} before the tag is pushed.`
+    );
+  }
+  return version;
+}
+
 /** Highest X.Y.Z version printed by `npm view <name> version`, or null when it printed nothing. */
 export function pickNpmLatest(stdout) {
   const lines = String(stdout)
     .split("\n")
-    .map((line) => line.trim().replace(/^'(.*)'$/, "$1"))
+    .map((line) => stripQuotes(line))
     .filter(Boolean);
   if (lines.length === 0) return null;
   let best = null;
@@ -210,6 +249,11 @@ annotated tag vX.Y.Z.
 
 Options:
   --dry-run   Print the plan without writing, committing, or tagging.
+  --check-release-version <tag> <package-version>
+              Print the release version the tag names when it matches the
+              package version, and fail when it does not. The release workflow
+              uses this to check the tag against the package.json of the commit
+              the tag points at.
   --help      Show this message and exit.
 `);
 }
@@ -234,6 +278,18 @@ export function main(argv, repoRoot) {
     }
     return run("npm", args);
   };
+
+  if (argv[0] === "--check-release-version") {
+    const tag = argv[1];
+    const packageVersion = argv[2];
+    if (!tag || !packageVersion) {
+      throw new ReleaseError(
+        "--check-release-version needs a tag and the package version to check it against."
+      );
+    }
+    process.stdout.write(`${assertReleaseVersion(tag, packageVersion)}\n`);
+    return;
+  }
 
   let dryRun = false;
   for (const arg of argv) {
@@ -399,12 +455,12 @@ export function main(argv, repoRoot) {
   console.log(`Pushing ${tag} starts the release workflow.`);
 }
 
-function pickLastLine(stdout) {
+export function pickLastLine(stdout) {
   const lines = String(stdout)
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
-  const value = lines[lines.length - 1];
+  const value = stripQuotes(lines[lines.length - 1] ?? "");
   return value && value !== "undefined" ? value : null;
 }
 
