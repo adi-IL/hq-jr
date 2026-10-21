@@ -5,12 +5,12 @@
 <h1 align="center">hq-jr</h1>
 
 <p align="center">
-  <strong>The self-hosted pull request reviewer that reproduces the break before it speaks.</strong>
+  <strong>The self-hosted pull request reviewer that can reproduce suspicious breaks in an isolated sandbox.</strong>
 </p>
 
 <p align="center">
   Self-hosted GitHub App that reviews pull requests with Vertex AI, tracks prior findings across pushes,
-  and reproduces suspicious bugs in a sandbox before completing the check run.
+  and reproduces suspicious bugs in an isolated sandbox before completing the sandbox check run.
 </p>
 
 <p align="center">
@@ -27,9 +27,9 @@
 
 ### Why hq-jr
 
-- **Sandbox proof.** Suspicious findings run in an isolated Antigravity container, and `hq-jr` polls for a reproduction verdict before completing the check run.
-- **Mention manners.** Human discussion threads stay quiet until someone mentions `@hq-jr`.
-- **Self-hosted on Vertex.** Diffs go to Vertex AI in your own Google Cloud project, not to a third-party SaaS.
+- **Sandbox proof.** Suspicious findings run in an isolated Antigravity container, and `hq-jr` polls for a reproduction verdict before completing the sandbox check run.
+- **Mention manners.** Human discussion threads stay quiet until someone mentions `@hq-jr`, unless `hq-jr` started the thread.
+- **Self-hosted on Vertex.** Review diffs are scrubbed for secrets before calling Vertex AI in your Google Cloud project. When Tier 3 runs, the Antigravity sandbox container clones the pull request branch to execute the reproduction test.
 
 ---
 
@@ -94,14 +94,14 @@ Defaults match [`src/config.ts`](src/config.ts). Tier 1 and Tier 2 default to `g
 
 Each workload reads its own model variable: triage (`HQ_JR_MODEL_TIER1`), deep review (`HQ_JR_MODEL_TIER2`), escalation (`HQ_JR_MODEL_ESCALATION`), discussion replies (`HQ_JR_MODEL_DISCUSSION`), remediation synthesis (`HQ_JR_MODEL_REMEDIATION`), and the health probe (`HQ_JR_MODEL_HEALTH`).
 
-#### Cost and latency per pull request
+#### Review stages and spend controls
 
-| Stage | Role | Default model or agent | When it runs | Cost control |
+| Stage | Role | Default model or agent | When it runs | Spend control |
 | :--- | :--- | :--- | :--- | :--- |
-| **0. Filter and scrubber** | Drop generated files and redact secrets | Local CPU (`src/services/file-filter.ts`, `src/services/scrubber.ts`) | Every pull request webhook | Spends zero tokens on ignored files and redacts secrets before any Vertex call. |
+| **0. Filter and scrubber** | Drop generated files and redact secrets | Local CPU (`src/services/file-filter.ts`, `src/services/scrubber.ts`) | Pull request review runs (open, sync, reopen, `@hq-jr review`, or Checks re-run) | Spends zero tokens on ignored files and redacts secrets before any Vertex call. |
 | **1. Tier 1 triage** | Classify per-file risk (`LOW`, `MEDIUM`, or `HIGH`) and `shouldReview` | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER1`) | Pull requests with reviewable hunks | Uses a narrow JSON schema and exits early when no file requires deep review. |
-| **2. Tier 2 deep review** | Line-anchored semantic and security review | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER2`) | `shouldReview` files below `HQ_JR_ESCALATION_MIN_RISK` | Handles `LOW` and `MEDIUM` pull requests on Flash. |
-| **2b. Tier 2 escalation** | High-risk deep review | `gemini-4-argon` (`HQ_JR_MODEL_ESCALATION`) | Triage `overallRisk` at or above `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`) | Reserves Argon (about 2.7x Flash per token) for high-risk changes and caps output at `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` (`32768`). |
+| **2. Tier 2 deep review** | Line-anchored semantic and security review | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER2`) | Triage `overallRisk` below `HQ_JR_ESCALATION_MIN_RISK`, across all `shouldReview` files | Handles pull requests below the escalation threshold on Flash. |
+| **2b. Tier 2 escalation** | Escalated deep review | `gemini-4-argon` (`HQ_JR_MODEL_ESCALATION`) | Triage `overallRisk` at or above `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`) | Gated by `HQ_JR_ESCALATION_MIN_RISK` (`HIGH` by default) and capped at `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` (`32768`). |
 | **3. Tier 3 sandbox** | Reproduction test in an isolated container | `antigravity-preview-05-2026` (`HQ_JR_AGENT_TIER3`) | `requiresSandboxVerification` or manual re-run | Runs only when a finding requires executable proof. |
 
 ---

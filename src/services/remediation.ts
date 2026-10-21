@@ -209,7 +209,7 @@ export async function executeRemediation(params: {
     const fallbackSnippets = synthesizedFiles
       .map(
         (f) =>
-          `#### \`${f.path}\`\n\`\`\`${fenceLanguageForPath(f.path)}\n${scrubSecrets(f.content).scrubbed.slice(0, 1500)}${f.content.length > 1500 ? "\n// ... [truncated for PR comment length]" : ""}\n\`\`\``
+          `#### \`${f.path}\`\n\`\`\`${fenceLanguageForPath(f.path)}\n${scrubSecrets(f.content).scrubbed.slice(0, 1500)}\n\`\`\`${f.content.length > 1500 ? "\n_[truncated for PR comment length]_" : ""}`
       )
       .join("\n\n");
 
