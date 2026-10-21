@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 320" width="880" height="320" role="img" aria-label="hq-jr pull request review and sandbox verification preview">
+  <defs>
+    <linearGradient id="cardBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#161b22" />
+      <stop offset="100%" stop-color="#0d1117" />
+    </linearGradient>
+    <linearGradient id="btnGreen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2ea043" />
+      <stop offset="100%" stop-color="#238636" />
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="876" height="316" rx="14" fill="url(#cardBg)" stroke="#30363d" stroke-width="2" />
+  <rect x="2" y="2" width="876" height="40" rx="14" fill="#161b22" />
+  <line x1="2" y1="42" x2="878" y2="42" stroke="#30363d" stroke-width="1.5" />
+  <circle cx="22" cy="22" r="5" fill="#f85149" opacity="0.85" />
+  <circle cx="38" cy="22" r="5" fill="#d29922" opacity="0.85" />
+  <circle cx="54" cy="22" r="5" fill="#3fb950" opacity="0.85" />
+  <text x="74" y="26" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="12" font-weight="700" fill="#f0f6fc">hq-jr</text>
+  <text x="118" y="26" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8b949e">Pull request #42 on Vertex AI</text>
+  <rect x="572" y="11" width="290" height="22" rx="11" fill="#0d1117" stroke="#30363d" stroke-width="1" />
+  <text x="717" y="25" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="#58a6ff">Scrub, triage, Argon, sandbox</text>
+  <g transform="translate(16, 54)">
+    <rect x="0" y="0" width="416" height="250" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1.5" />
+    <rect x="0" y="0" width="416" height="34" rx="10" fill="#161b22" />
+    <line x1="0" y1="34" x2="416" y2="34" stroke="#30363d" stroke-width="1" />
+    <text x="14" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#f0f6fc">Diff scrubber and risk escalation</text>
+    <rect x="262" y="8" width="142" height="18" rx="9" fill="#3d1d20" stroke="#f85149" stroke-width="1" />
+    <text x="333" y="20" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" font-weight="700" fill="#ff7b72">HIGH: gemini-4-argon</text>
+    <text x="14" y="52" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="#8b949e">src/auth/token-session.ts</text>
+    <text x="402" y="52" text-anchor="end" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="#d29922">scrubber: 1 redacted</text>
+    <rect x="12" y="60" width="392" height="68" rx="6" fill="#161b22" stroke="#21262d" stroke-width="1" />
+    <rect x="13" y="64" width="390" height="20" fill="#2d1b1e" />
+    <text x="20" y="78" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="#ff7b72">- const SECRET = "</text>
+    <rect x="139" y="66" width="126" height="15" rx="3" fill="#3b2300" stroke="#d29922" stroke-width="0.8" />
+    <text x="202" y="77" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" font-weight="700" fill="#e3b341">[REDACTED_SECRET]</text>
+    <text x="268" y="78" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="#ff7b72">";</text>
+    <rect x="13" y="84" width="390" height="20" fill="#12261e" />
+    <text x="20" y="98" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="#7ee787">+ const claims = decodeJwt(header);</text>
+    <rect x="13" y="104" width="390" height="20" fill="#12261e" />
+    <text x="20" y="118" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="#7ee787">+ return acl.canAccess(claims.user.id);</text>
+    <rect x="12" y="138" width="392" height="100" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.2" />
+    <rect x="12" y="138" width="392" height="26" rx="8" fill="#1f2937" />
+    <text x="24" y="155" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" font-weight="700" fill="#58a6ff">hq-jr</text>
+    <rect x="66" y="143" width="64" height="16" rx="4" fill="#3d1d20" />
+    <text x="98" y="154" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="9.5" font-weight="700" fill="#ff7b72">CRITICAL</text>
+    <text x="140" y="155" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="#8b949e">model: gemini-4-argon (HIGH risk)</text>
+    <text x="24" y="182" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" fill="#c9d1d9">Expired token leaves <tspan font-family="ui-monospace, monospace" fill="#ff7b72">claims.user</tspan> undefined</text>
+    <text x="24" y="200" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" fill="#c9d1d9">and throws an unhandled TypeError before the ACL check.</text>
+    <text x="24" y="224" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="#3fb950">requiresSandboxVerification: true (sent to Tier 3)</text>
+  </g>
+  <g transform="translate(448, 54)">
+    <rect x="0" y="0" width="416" height="250" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1.5" />
+    <rect x="0" y="0" width="416" height="34" rx="10" fill="#161b22" />
+    <line x1="0" y1="34" x2="416" y2="34" stroke="#30363d" stroke-width="1" />
+    <circle cx="20" cy="17" r="8" fill="#238636" />
+    <path d="M16 17 L19 20 L25 14" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    <text x="34" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="700" fill="#f0f6fc">hq-jr AI Sandbox Verification</text>
+    <rect x="292" y="8" width="112" height="18" rx="9" fill="#12261e" stroke="#3fb950" stroke-width="1" />
+    <text x="348" y="20" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10" font-weight="700" fill="#3fb950">REPRO VERIFIED</text>
+    <text x="14" y="54" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" font-weight="700" fill="#58a6ff">Adversarial Test Execution Matrix</text>
+    <rect x="12" y="64" width="392" height="38" rx="6" fill="#161b22" stroke="#21262d" stroke-width="1" />
+    <circle cx="28" cy="83" r="6" fill="#238636" />
+    <path d="M25 83 L27.5 85.5 L31.5 80.5" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" />
+    <text x="42" y="80" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" font-weight="700" fill="#3fb950">baselinePassed: true</text>
+    <text x="42" y="95" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#8b949e">Baseline test suite passes in an isolated container</text>
+    <rect x="12" y="108" width="392" height="38" rx="6" fill="#161b22" stroke="#21262d" stroke-width="1" />
+    <circle cx="28" cy="127" r="6" fill="#238636" />
+    <path d="M25 127 L27.5 129.5 L31.5 124.5" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" />
+    <text x="42" y="124" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" font-weight="700" fill="#3fb950">reproduced: true</text>
+    <text x="42" y="139" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#8b949e">Synthesized reproduction test triggers TypeError on PR head</text>
+    <rect x="12" y="152" width="392" height="38" rx="6" fill="#161b22" stroke="#21262d" stroke-width="1" />
+    <circle cx="28" cy="171" r="6" fill="#238636" />
+    <path d="M25 171 L27.5 173.5 L31.5 168.5" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" />
+    <text x="42" y="168" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" font-weight="700" fill="#3fb950">patchCured: true</text>
+    <text x="42" y="183" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" fill="#8b949e">Candidate fix passes the reproduction test and baseline suite</text>
+    <rect x="12" y="202" width="182" height="34" rx="6" fill="url(#btnGreen)" stroke="#3fb950" stroke-width="1.2" />
+    <text x="103" y="223" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11.5" font-weight="700" fill="#ffffff">[Commit Repro Test]</text>
+    <rect x="204" y="202" width="118" height="34" rx="6" fill="#21262d" stroke="#30363d" stroke-width="1" />
+    <text x="263" y="223" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="11" fill="#c9d1d9">Re-run Sandbox</text>
+    <text x="332" y="223" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace" font-size="10.5" fill="#8b949e">@hq-jr fix</text>
+  </g>
+</svg>
