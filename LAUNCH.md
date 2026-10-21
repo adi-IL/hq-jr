@@ -4,7 +4,7 @@ Maintainer posts these manually. Agents must not post to HN, Twitter/X, or Reddi
 
 ## One-liner
 
-The junior engineer who won't say LGTM until the break reproduces.
+The self-hosted PR reviewer that reproduces the break before it speaks.
 
 ## Show HN (suggested)
 

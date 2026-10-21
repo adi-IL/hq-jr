@@ -1,23 +1,17 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Headquarter Junior logo" width="300" />
+  <img src="assets/logo.svg" alt="hq-jr logo" width="340" />
 </p>
 
 <h1 align="center">hq-jr</h1>
 
 <p align="center">
-  <strong>The junior engineer who won't say LGTM until the break reproduces.</strong>
+  <strong>The self-hosted PR reviewer that reproduces the break before it speaks.</strong>
 </p>
 
 <p align="center">
   Self-hosted GitHub App that reviews PRs with Vertex AI, remembers past findings,
   and can reproduce bugs in a sandbox before it speaks.
 </p>
-
-### Why hq-jr
-
-- **Sandbox proof.** Suspicious findings can be dispatched to an isolated Antigravity container; hq-jr polls for a real verdict (not success-on-dispatch). Tier 3 remains experimental until validated in your environment.
-- **Mention manners.** Peer-to-peer PR chat is ignored until someone addresses `@hq-jr`.
-- **Self-hosted on Vertex.** Runs in your account. Diffs go to your GCP project via Vertex AI, not a third-party review SaaS.
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License Apache-2.0" /></a>
@@ -27,17 +21,27 @@
   <a href="https://sqlite.org/"><img src="https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white" alt="SQLite WAL" /></a>
 </p>
 
+<p align="center">
+  <img src="assets/pr-proof-preview.svg" alt="hq-jr PR review and sandbox verification preview" width="840" />
+</p>
+
+### Why hq-jr
+
+- **Sandbox proof.** Suspicious findings can be dispatched to an isolated Antigravity container; hq-jr polls for a real verdict (not success-on-dispatch).
+- **Mention manners.** Peer-to-peer PR chat is ignored until someone addresses `@hq-jr`.
+- **Self-hosted on Vertex.** Runs in your account. Diffs go to your GCP project via Vertex AI, not a third-party review SaaS.
+
 ---
 
-Junior sits on your webhook path. Humans skim diffs and type LGTM. Junior does not skim.
+`hq-jr` sits on your webhook path. Humans skim diffs and type LGTM. `hq-jr` does not skim.
 
-It filters noise, scrubs credentials from diff text, then runs a two-step review path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. The deep review runs on `gemini-4-argon` instead of `gemini-3.8-flash` when the triage risk reaches the escalation threshold. Prior findings prefer unresolved hq-jr review threads, with the latest hq-jr review and SQLite WAL as fallback when thread state is unavailable. When a break looks real, experimental Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
+It filters noise, scrubs credentials from diff text, then runs a two-step review path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. The deep review runs on `gemini-4-argon` instead of `gemini-3.8-flash` when the triage risk reaches the escalation threshold. Prior findings prefer unresolved hq-jr review threads, with the latest hq-jr review and SQLite WAL as fallback when thread state is unavailable. When a break looks real, Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
 
 ### Generic AI review bots vs hq-jr
 
 | Dimension | Generic AI review bots | hq-jr |
 | :--- | :--- | :--- |
-| **Verification** | Guesses from completions. | Polls Tier 3 sandbox for a real verdict before concluding the check (experimental). |
+| **Verification** | Guesses from completions. | Polls Tier 3 sandbox for a real verdict before concluding the check. |
 | **Memory** | Stateless; repeats nags after force-push. | Unresolved hq-jr review threads first; SQLite WAL fallback across pushes. |
 | **Noise** | Reviews lockfiles and vendor junk. | Heuristic filter + Tier 1 triage skip low-risk diffs. |
 | **Etiquette** | Hijacks human threads. | Speaks when `@hq-jr` is mentioned (or hq-jr started the thread). |
@@ -73,7 +77,7 @@ flowchart TD
     
     Argon --> Output["Post Line Comments (with HTTP 422 Fallback) & Complete Check Run"]
     Tier2 --> Output
-    Output -->|"requiresSandboxVerification"| Tier3["Tier 3: Antigravity Sandbox (experimental)"]
+    Output -->|"requiresSandboxVerification"| Tier3["Tier 3: Antigravity Sandbox"]
     
     Route -->|"@hq-jr fix / merge"| RBAC{"Caller write or admin?"}
     RBAC -->|"Yes"| Remediate["Autonomous Remediation: synthesizeFileFix & Branch Commit"]
@@ -101,12 +105,22 @@ Defaults match [`src/config.ts`](src/config.ts). Tier 1 and Tier 2 use `gemini-3
    - Argon costs roughly 2.7x Flash per token, so the gate keeps it off low-risk changes.
    - If the escalation call fails, the review retries once on `HQ_JR_MODEL_TIER2` and logs the fallback. A model-access or quota failure on the escalation model does not fail the review on its own. If the Tier 2 retry also fails, the review fails and that is reported rather than masked.
    - The escalated deep review runs with an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). The cap is keyed on the role of the call, not on the model id, so pointing both tiers at the same model does not change what is capped.
-5. **Tier 3: Sandbox Verification (experimental)** (CLI & runner):
+5. **Tier 3: Sandbox Verification** (CLI & runner):
    - Antigravity agent (`HQ_JR_AGENT_TIER3`, default `antigravity-preview-05-2026`) for empirical reproduction in isolated containers via `src/cli.ts` / [`src/services/sandbox-runner.ts`](src/services/sandbox-runner.ts).
    - After dispatch the Check Run stays `in_progress` while `pollSandboxInteraction` waits for a verdict; conclusion is success/failure/neutral from that result (not success-on-dispatch).
    - Treat as experimental until you validate live Antigravity in your environment.
 
 Each workload picks its own model, so raising one does not raise the others: triage (`HQ_JR_MODEL_TIER1`), deep review (`HQ_JR_MODEL_TIER2`), escalation (`HQ_JR_MODEL_ESCALATION`), discussion replies (`HQ_JR_MODEL_DISCUSSION`), remediation synthesis (`HQ_JR_MODEL_REMEDIATION`), and the health probe (`HQ_JR_MODEL_HEALTH`).
+
+#### Per-PR Cost & Latency
+
+| Stage | Role | Default Model / Agent | When It Runs | Why It Keeps Vertex Spend Low |
+| :--- | :--- | :--- | :--- | :--- |
+| **0. Heuristic & Scrubber** | Filter lockfiles/artifacts & redact secrets | Local CPU (`src/services/file-filter.ts`, `src/services/scrubber.ts`) | Every PR webhook | Zero model tokens on ignored files; strips credentials before any Vertex call. |
+| **1. Tier 1 Triage** | Classify per-file risk (`LOW` / `MEDIUM` / `HIGH`) & `shouldReview` | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER1`) | Diffs with reviewable hunks | Compact prompt + narrow JSON schema; exits early when no file requires deep audit. |
+| **2. Tier 2 Deep Review** | Line-anchored semantic & security review | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER2`) | `shouldReview` files below `HQ_JR_ESCALATION_MIN_RISK` | Fast Flash pass handles routine `LOW` and `MEDIUM` PRs at baseline token cost. |
+| **2b. Tier 2 Escalation** | High-risk deep audit | `gemini-4-argon` (`HQ_JR_MODEL_ESCALATION`) | Triage `overallRisk >= HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`) | Argon (~2.7x Flash/token) is gated to high-risk PRs and bounded by `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` (`32768`). |
+| **3. Tier 3 Sandbox** | Empirical reproduction in isolated container | `antigravity-preview-05-2026` (`HQ_JR_AGENT_TIER3`) | `requiresSandboxVerification` or manual re-run | Runs only when a finding requires executable proof. |
 
 ---
 
@@ -159,17 +173,16 @@ npm install
 Create a `.env` from [`.env.example`](.env.example):
 
 ```bash
-# Probot / GitHub App Credentials
+# 1. Required: GitHub App & Google Cloud Project
 APP_ID=123456
 PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
 WEBHOOK_SECRET=your_webhook_secret
-WEBHOOK_PROXY_URL=https://smee.io/your_smee_channel # Optional for local development
-
-# Google Cloud Vertex AI
 GOOGLE_CLOUD_PROJECT=your-gcp-project-id
+
+# 2. Optional: Model Routing & Runtime Defaults (match src/config.ts)
+WEBHOOK_PROXY_URL=https://smee.io/your_smee_channel # Optional for local development
 GOOGLE_CLOUD_LOCATION=global
 
-# Model Configuration (defaults match src/config.ts)
 HQ_JR_MODEL_TIER1=gemini-3.8-flash
 HQ_JR_MODEL_TIER2=gemini-3.8-flash
 # Optional: HQ_JR_MODEL_TIER2=gemini-3.1-pro-preview

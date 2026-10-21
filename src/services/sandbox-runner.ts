@@ -6,6 +6,7 @@ import {
   type PollSandboxResult,
   type SandboxVerdict,
 } from "./ai.js";
+import { config } from "../config.js";
 import { SandboxProbeRequest } from "../schemas/review.js";
 import {
   upsertSandboxJob,
@@ -206,7 +207,7 @@ export function formatSandboxCheckRunSummary(params: {
     return (
       `## 🧪 Tier 3 Antigravity Sandbox Verification\n\n` +
       statusLine +
-      `- **Agent Harness:** \`antigravity-preview-05-2026\`\n` +
+      `- **Agent Harness:** \`${config.HQ_JR_AGENT_TIER3}\`\n` +
       `- **Interaction ID:** \`${interactionId}\`\n` +
       `- **Target Branch:** \`${branch}\` (PR #${pullNumber})\n` +
       `- **Baseline Command:** \`${testCommand}\`\n` +
