@@ -1176,7 +1176,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           owner,
           repo: repoName,
           issue_number: pullNumber,
-          body: `🛠️ **hq-jr** received remediation request from @${user.login}. Fetching prior audit findings, synthesizing code fixes with High Thinking, and generating remediation branch/commit...`,
+          body: `🛠️ **hq-jr** received remediation request from @${user.login}. Fetching prior audit findings, synthesizing code fixes, and generating remediation branch/commit...`,
         });
 
         const prResponse = await context.octokit.pulls.get({
@@ -1315,7 +1315,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           owner,
           repo: repoName,
           issue_number: pullNumber,
-          body: `🤖 **hq-jr** received review command from @${user.login}. Starting automated code review with High Thinking - line-by-line diff comments will appear directly under **Files changed**...`,
+          body: `🤖 **hq-jr** received review command from @${user.login}. Starting automated code review. Line-by-line diff comments will appear under **Files changed**.`,
         });
 
         const prResponse = await context.octokit.pulls.get({

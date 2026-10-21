@@ -14,9 +14,29 @@ export interface RemediationResult {
   message: string;
 }
 
-/**
- * Synthesizes a bug-fixed version of a file by applying review findings using Gemini with High Thinking.
- */
+const FENCE_LANGUAGE_BY_EXT: Record<string, string> = {
+  ".ts": "typescript",
+  ".tsx": "typescript",
+  ".js": "javascript",
+  ".jsx": "javascript",
+  ".mjs": "javascript",
+  ".cjs": "javascript",
+  ".py": "python",
+  ".rs": "rust",
+  ".go": "go",
+  ".sh": "bash",
+  ".json": "json",
+  ".yml": "yaml",
+  ".yaml": "yaml",
+  ".md": "markdown",
+};
+
+function fenceLanguageForPath(filePath: string): string {
+  const dot = filePath.lastIndexOf(".");
+  if (dot < 0) return "";
+  return FENCE_LANGUAGE_BY_EXT[filePath.slice(dot).toLowerCase()] ?? "";
+}
+
 export async function synthesizeFileFix(params: {
   filePath: string;
   originalContent: string;
@@ -189,7 +209,7 @@ export async function executeRemediation(params: {
     const fallbackSnippets = synthesizedFiles
       .map(
         (f) =>
-          `#### \`${f.path}\`\n\`\`\`typescript\n${scrubSecrets(f.content).scrubbed.slice(0, 1500)}${f.content.length > 1500 ? "\n// ... [truncated for PR comment length]" : ""}\n\`\`\``
+          `#### \`${f.path}\`\n\`\`\`${fenceLanguageForPath(f.path)}\n${scrubSecrets(f.content).scrubbed.slice(0, 1500)}\n\`\`\`${f.content.length > 1500 ? "\n_[truncated for PR comment length]_" : ""}`
       )
       .join("\n\n");
 
@@ -198,7 +218,7 @@ export async function executeRemediation(params: {
       branchName: "",
       commitSha: "",
       filesModified: synthesizedFiles.map((f) => f.path),
-      message: `❌ **Permission Required to Commit:** \`hq-jr\` lacks \`Contents: Read and write\` permission on GitHub to create branches and commits.\n\n### How to enable automated remediation:\n1. Open **[GitHub App Permissions](https://github.com/settings/apps/hq-jr/permissions)**\n2. Set **Repository permissions > Contents** to **Read and write** and save.\n3. Open **[Installed GitHub Apps](https://github.com/settings/installations)**, click **Configure** next to \`hq-jr\`, and click **Accept new permissions**.\n\n---\n\n### 💡 Synthesized Fixes (Ready to Apply):\n${fallbackSnippets}`,
+      message: `❌ **Permission Required to Commit:** \`hq-jr\` lacks \`Contents: Read and write\` permission on GitHub to create branches and commits.\n\n### How to enable automated remediation:\n1. Open **[GitHub App Permissions](https://github.com/settings/apps)**\n2. Set **Repository permissions > Contents** to **Read and write** and save.\n3. Open **[Installed GitHub Apps](https://github.com/settings/installations)**, click **Configure** next to \`hq-jr\`, and click **Accept new permissions**.\n\n---\n\n### 💡 Synthesized Fixes (Ready to Apply):\n${fallbackSnippets}`,
     };
   }
 
