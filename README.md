@@ -5,12 +5,12 @@
 <h1 align="center">hq-jr</h1>
 
 <p align="center">
-  <strong>The self-hosted PR reviewer that reproduces the break before it speaks.</strong>
+  <strong>The self-hosted pull request reviewer that reproduces the break before it speaks.</strong>
 </p>
 
 <p align="center">
-  Self-hosted GitHub App that reviews PRs with Vertex AI, remembers past findings,
-  and can reproduce bugs in a sandbox before it speaks.
+  Self-hosted GitHub App that reviews pull requests with Vertex AI, tracks prior findings across pushes,
+  and reproduces suspicious bugs in a sandbox before completing the check run.
 </p>
 
 <p align="center">
@@ -22,117 +22,99 @@
 </p>
 
 <p align="center">
-  <img src="assets/pr-proof-preview.svg" alt="hq-jr PR review and sandbox verification preview" width="840" />
+  <img src="assets/pr-proof-preview.svg" alt="hq-jr pull request review and sandbox verification preview" width="840" />
 </p>
 
 ### Why hq-jr
 
-- **Sandbox proof.** Suspicious findings can be dispatched to an isolated Antigravity container; hq-jr polls for a real verdict (not success-on-dispatch).
-- **Mention manners.** Peer-to-peer PR chat is ignored until someone addresses `@hq-jr`.
-- **Self-hosted on Vertex.** Runs in your account. Diffs go to your GCP project via Vertex AI, not a third-party review SaaS.
+- **Sandbox proof.** Suspicious findings run in an isolated Antigravity container, and `hq-jr` polls for a reproduction verdict before completing the check run.
+- **Mention manners.** Human discussion threads stay quiet until someone mentions `@hq-jr`.
+- **Self-hosted on Vertex.** Diffs go to Vertex AI in your own Google Cloud project, not to a third-party SaaS.
 
 ---
 
-`hq-jr` sits on your webhook path. Humans skim diffs and type LGTM. `hq-jr` does not skim.
-
-It filters noise, scrubs credentials from diff text, then runs a two-step review path: triage (narrow schema) then deep review. Both steps use High Thinking; triage is cheaper because the prompt and JSON schema are smaller. The deep review runs on `gemini-4-argon` instead of `gemini-3.8-flash` when the triage risk reaches the escalation threshold. Prior findings prefer unresolved hq-jr review threads, with the latest hq-jr review and SQLite WAL as fallback when thread state is unavailable. When a break looks real, Tier 3 dispatches Antigravity and polls for a reproduction verdict. Tag `@hq-jr fix` (explicit command only) if you want a remediation branch.
+`hq-jr` filters generated noise, redacts credentials from diff text, and runs a two-step review pipeline. Tier 1 triage uses a narrow JSON schema to classify risk per file. Tier 2 runs a deep review on files that require it and escalates high-risk pull requests from `gemini-3.8-flash` to `gemini-4-argon`. Prior findings come from unresolved `hq-jr` review threads, with the latest `hq-jr` review and SQLite WAL as a fallback. When a finding requires runtime proof, Tier 3 dispatches an Antigravity container and polls for the verdict. Collaborators can comment `@hq-jr fix` to generate a remediation branch.
 
 ### Generic AI review bots vs hq-jr
 
 | Dimension | Generic AI review bots | hq-jr |
 | :--- | :--- | :--- |
-| **Verification** | Guesses from completions. | Polls Tier 3 sandbox for a real verdict before concluding the check. |
-| **Memory** | Stateless; repeats nags after force-push. | Unresolved hq-jr review threads first; SQLite WAL fallback across pushes. |
-| **Noise** | Reviews lockfiles and vendor junk. | Heuristic filter + Tier 1 triage skip low-risk diffs. |
-| **Etiquette** | Hijacks human threads. | Speaks when `@hq-jr` is mentioned (or hq-jr started the thread). |
-| **Hosting** | Third-party SaaS sees your diffs. | Self-hosted; Vertex AI in *your* GCP project. |
-| **Secrets** | Raw diffs to vendor endpoints. | Scrubber redacts common tokens/keys before model calls. |
+| **Verification** | Guesses from static completions. | Polls the Tier 3 sandbox for a reproduction verdict before concluding the check. |
+| **Memory** | Stateless across force-pushes. | Reads unresolved `hq-jr` review threads first, with SQLite WAL fallback across pushes. |
+| **Noise** | Reviews lockfiles and vendor bundles. | Heuristic filter and Tier 1 triage skip low-risk diffs. |
+| **Etiquette** | Replies inside human threads uninvited. | Replies only when `@hq-jr` is mentioned or when `hq-jr` started the thread. |
+| **Hosting** | Sends diffs to a third-party SaaS. | Runs self-hosted against Vertex AI in your Google Cloud project. |
+| **Secrets** | Sends raw diffs to model endpoints. | Scrubs common tokens and keys before model calls. |
 
 ---
 
-## Architecture Overview
+## Architecture
 
 ```mermaid
 flowchart TD
-    PR["GitHub Webhook: PR / Comment / Check Run"] --> Ingress["Probot Webhook Ingress: HMAC SHA-256"]
+    PR["GitHub Webhook: PR, Comment, or Check Run"] --> Ingress["Probot Webhook Ingress: HMAC SHA-256"]
     Ingress --> Route{"Event Router"}
     
     Route -->|"PR Discussion Comment"| AntiHijack{"Is @hq-jr mentioned or hq-jr the thread root?"}
     AntiHijack -->|"Yes"| Disc["Discussion Engine: replyToDiscussion"]
     Disc --> PostReply["Post PR Thread Reply"]
-    AntiHijack -->|"No"| Ignore["Ignore (Human Peer Review)"]
+    AntiHijack -->|"No"| Ignore["Ignore Human Peer Review"]
     
-    Route -->|"PR Open, Sync, Reopen, @hq-jr review, or a Checks re-run"| Filter["Diff Parser & Heuristic Filter"]
+    Route -->|"PR Open, Sync, Reopen, @hq-jr review, or Checks re-run"| Filter["Diff Parser and Heuristic Filter"]
     Filter -->|"Zero Reviewable Hunks"| FastPass["Complete Check Run: Neutral"]
     Filter -->|"Every File Excluded by the Noise Filter"| ExcludedPass["Complete Check Run: Success"]
-    Filter -->|"Reviewable Diffs"| Scrubber["Secret & Credential Scrubber"]
-    Scrubber --> Tier1["Tier 1: Triage + High Thinking"]
+    Filter -->|"Reviewable Diffs"| Scrubber["Secret and Credential Scrubber"]
+    Scrubber --> Tier1["Tier 1: Triage"]
     
     Tier1 --> TriageDecision{"Any shouldReview files?"}
-    TriageDecision -->|"No"| LowRiskExit["Complete Check Run: Success (Low Risk)"]
+    TriageDecision -->|"No"| LowRiskExit["Complete Check Run: Success"]
     TriageDecision -->|"Yes"| Memory["Prior Review Memory: review-memory.ts"]
     Memory --> Gate{"Triage risk >= HQ_JR_ESCALATION_MIN_RISK?"}
     Gate -->|"Yes"| Argon["Tier 2 Escalation: Gemini 4 Argon"]
-    Gate -->|"No"| Tier2["Tier 2: Deep Review + High Thinking"]
+    Gate -->|"No"| Tier2["Tier 2: Deep Review"]
     
-    Argon --> Output["Post Line Comments (with HTTP 422 Fallback) & Complete Check Run"]
+    Argon --> Output["Post Line Comments and Complete Check Run"]
     Tier2 --> Output
     Output -->|"requiresSandboxVerification"| Tier3["Tier 3: Antigravity Sandbox"]
     
-    Route -->|"@hq-jr fix / merge"| RBAC{"Caller write or admin?"}
-    RBAC -->|"Yes"| Remediate["Autonomous Remediation: synthesizeFileFix & Branch Commit"]
+    Route -->|"@hq-jr fix or merge"| RBAC{"Caller has write or admin?"}
+    RBAC -->|"Yes"| Remediate["Remediation: synthesizeFileFix and Branch Commit"]
     RBAC -->|"No"| Deny["Post Access Denied Notice"]
 ```
 
-### Multi-Tier AI Review Funnel
+### Review stages
 
-Defaults match [`src/config.ts`](src/config.ts). Tier 1 and Tier 2 use `gemini-3.8-flash`. A high-risk change escalates the deep review to `gemini-4-argon`. Override any of them via env.
+Defaults match [`src/config.ts`](src/config.ts). Tier 1 and Tier 2 default to `gemini-3.8-flash`. High-risk changes escalate Tier 2 to `gemini-4-argon`.
 
-1. **Pre-AI Heuristic Filter & Diff Parser** ([`src/services/file-filter.ts`](src/services/file-filter.ts), [`src/services/diff-parser.ts`](src/services/diff-parser.ts)):
-   - Excludes lockfiles, compiled artifacts (`dist/`, `build/`), vendor bundles, minified JS, and binary assets.
-   - Parses unified diffs including quoted paths, Git submodules (`160000`), and permission changes.
-   - Passes content through the credential scrubber ([`src/services/scrubber.ts`](src/services/scrubber.ts)).
-2. **Tier 1: Triage** ([`src/services/ai.ts`](src/services/ai.ts)):
-   - **Gemini 3.8 Flash** with **High Thinking** (`HQ_JR_MODEL_TIER1`), narrow triage prompt and schema.
-   - Sets per-file **overall risk** as `LOW` | `MEDIUM` | `HIGH` and `shouldReview`; skips deep review for low-risk changes.
-3. **Tier 2: Deep Semantic Audit** ([`src/services/ai.ts`](src/services/ai.ts)):
-   - **Gemini 3.8 Flash** with **High Thinking** (`HQ_JR_MODEL_TIER2`; optional override e.g. `gemini-3.1-pro-preview`), wider review prompt.
-   - Finding **severity** is `CRITICAL` | `WARNING` | `SUGGESTION` (separate from triage risk).
-   - Loads prior findings via [`src/services/review-memory.ts`](src/services/review-memory.ts).
-   - Line-anchored comments with suggestion blocks; HTTP 422 fallback if lines drift.
-4. **Tier 2 Escalation: Gemini 4 Argon** ([`src/services/ai.ts`](src/services/ai.ts)):
-   - When the triage **overall risk** reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), the deep review runs on `gemini-4-argon` instead (`HQ_JR_MODEL_ESCALATION`).
-   - Argon costs roughly 2.7x Flash per token, so the gate keeps it off low-risk changes.
-   - If the escalation call fails, the review retries once on `HQ_JR_MODEL_TIER2` and logs the fallback. A model-access or quota failure on the escalation model does not fail the review on its own. If the Tier 2 retry also fails, the review fails and that is reported rather than masked.
-   - The escalated deep review runs with an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). The cap is keyed on the role of the call, not on the model id, so pointing both tiers at the same model does not change what is capped.
-5. **Tier 3: Sandbox Verification** (CLI & runner):
-   - Antigravity agent (`HQ_JR_AGENT_TIER3`, default `antigravity-preview-05-2026`) for empirical reproduction in isolated containers via `src/cli.ts` / [`src/services/sandbox-runner.ts`](src/services/sandbox-runner.ts).
-   - After dispatch the Check Run stays `in_progress` while `pollSandboxInteraction` waits for a verdict; conclusion is success/failure/neutral from that result (not success-on-dispatch).
-   - Treat as experimental until you validate live Antigravity in your environment.
+1. **Diff filter and parser.** [`src/services/file-filter.ts`](src/services/file-filter.ts) and [`src/services/diff-parser.ts`](src/services/diff-parser.ts) exclude lockfiles, build outputs (`dist/`, `build/`), vendor bundles, minified JavaScript, and binary assets. The parser handles quoted paths, Git submodules (`160000`), and mode changes, then passes diff text through [`src/services/scrubber.ts`](src/services/scrubber.ts).
+2. **Tier 1 triage.** [`src/services/ai.ts`](src/services/ai.ts) calls `HQ_JR_MODEL_TIER1` (`gemini-3.8-flash`) with a compact prompt and schema. It assigns each file a risk level (`LOW`, `MEDIUM`, or `HIGH`) and a `shouldReview` flag, and skips deep review when no file needs it.
+3. **Tier 2 deep review.** [`src/services/ai.ts`](src/services/ai.ts) calls `HQ_JR_MODEL_TIER2` (`gemini-3.8-flash`), loads prior findings from [`src/services/review-memory.ts`](src/services/review-memory.ts), and posts line-anchored comments with `CRITICAL`, `WARNING`, or `SUGGESTION` severity. If GitHub rejects a line anchor with HTTP 422, `hq-jr` appends the finding to the review summary.
+4. **Tier 2 escalation.** When the triage overall risk reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), [`src/services/ai.ts`](src/services/ai.ts) routes the deep review to `HQ_JR_MODEL_ESCALATION` (`gemini-4-argon`) with an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). If the escalation call fails, `hq-jr` logs the failure and retries once on `HQ_JR_MODEL_TIER2`.
+5. **Tier 3 sandbox check.** [`src/services/sandbox-runner.ts`](src/services/sandbox-runner.ts) and [`src/cli.ts`](src/cli.ts) dispatch `HQ_JR_AGENT_TIER3` (default `antigravity-preview-05-2026`) to reproduce the issue in an isolated container. The check run stays `in_progress` while `pollSandboxInteraction` waits for the verdict. Treat Tier 3 as experimental until you validate live Antigravity in your environment.
 
-Each workload picks its own model, so raising one does not raise the others: triage (`HQ_JR_MODEL_TIER1`), deep review (`HQ_JR_MODEL_TIER2`), escalation (`HQ_JR_MODEL_ESCALATION`), discussion replies (`HQ_JR_MODEL_DISCUSSION`), remediation synthesis (`HQ_JR_MODEL_REMEDIATION`), and the health probe (`HQ_JR_MODEL_HEALTH`).
+Each workload reads its own model variable: triage (`HQ_JR_MODEL_TIER1`), deep review (`HQ_JR_MODEL_TIER2`), escalation (`HQ_JR_MODEL_ESCALATION`), discussion replies (`HQ_JR_MODEL_DISCUSSION`), remediation synthesis (`HQ_JR_MODEL_REMEDIATION`), and the health probe (`HQ_JR_MODEL_HEALTH`).
 
-#### Per-PR Cost & Latency
+#### Cost and latency per pull request
 
-| Stage | Role | Default Model / Agent | When It Runs | Why It Keeps Vertex Spend Low |
+| Stage | Role | Default model or agent | When it runs | Cost control |
 | :--- | :--- | :--- | :--- | :--- |
-| **0. Heuristic & Scrubber** | Filter lockfiles/artifacts & redact secrets | Local CPU (`src/services/file-filter.ts`, `src/services/scrubber.ts`) | Every PR webhook | Zero model tokens on ignored files; strips credentials before any Vertex call. |
-| **1. Tier 1 Triage** | Classify per-file risk (`LOW` / `MEDIUM` / `HIGH`) & `shouldReview` | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER1`) | Diffs with reviewable hunks | Compact prompt + narrow JSON schema; exits early when no file requires deep audit. |
-| **2. Tier 2 Deep Review** | Line-anchored semantic & security review | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER2`) | `shouldReview` files below `HQ_JR_ESCALATION_MIN_RISK` | Fast Flash pass handles routine `LOW` and `MEDIUM` PRs at baseline token cost. |
-| **2b. Tier 2 Escalation** | High-risk deep audit | `gemini-4-argon` (`HQ_JR_MODEL_ESCALATION`) | Triage `overallRisk >= HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`) | Argon (~2.7x Flash/token) is gated to high-risk PRs and bounded by `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` (`32768`). |
-| **3. Tier 3 Sandbox** | Empirical reproduction in isolated container | `antigravity-preview-05-2026` (`HQ_JR_AGENT_TIER3`) | `requiresSandboxVerification` or manual re-run | Runs only when a finding requires executable proof. |
+| **0. Filter and scrubber** | Drop generated files and redact secrets | Local CPU (`src/services/file-filter.ts`, `src/services/scrubber.ts`) | Every pull request webhook | Spends zero tokens on ignored files and redacts secrets before any Vertex call. |
+| **1. Tier 1 triage** | Classify per-file risk (`LOW`, `MEDIUM`, or `HIGH`) and `shouldReview` | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER1`) | Pull requests with reviewable hunks | Uses a narrow JSON schema and exits early when no file requires deep review. |
+| **2. Tier 2 deep review** | Line-anchored semantic and security review | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER2`) | `shouldReview` files below `HQ_JR_ESCALATION_MIN_RISK` | Handles `LOW` and `MEDIUM` pull requests on Flash. |
+| **2b. Tier 2 escalation** | High-risk deep review | `gemini-4-argon` (`HQ_JR_MODEL_ESCALATION`) | Triage `overallRisk` at or above `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`) | Reserves Argon (about 2.7x Flash per token) for high-risk changes and caps output at `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` (`32768`). |
+| **3. Tier 3 sandbox** | Reproduction test in an isolated container | `antigravity-preview-05-2026` (`HQ_JR_AGENT_TIER3`) | `requiresSandboxVerification` or manual re-run | Runs only when a finding requires executable proof. |
 
 ---
 
-## Interactive GitHub Experience
+## GitHub commands and checks
 
-- **Inline Diff Comments**: Comments and suggested replacements on the **Files changed** tab.
-- **GitHub Check Runs**: Status via `hq-jr AI Code Review`.
-- **Interactive PR Chat**: Mention `@hq-jr` to ask questions. Human-to-human threads stay quiet.
-- **On-Demand Review**: `@hq-jr review`, `@hq-jr audit`, `@hq-jr scan`, or `@hq-jr diff`.
-- **Remediation with RBAC**: Explicit `@hq-jr fix` / `@hq-jr patch` / `@hq-jr remediate` (optional `and merge`) only; loose wording like "how to fix naming" does not trigger. Synthesizes branch `hq-jr/fix-pr-<id>`. Requires collaborator `admin` or `write`.
-- **Commit repro test**: Check action **Commit Repro Test** or `@hq-jr commit-repro` commits the synthesized test from the sandbox check summary. Requires collaborator `admin` or `write`.
-- **Re-run sandbox**: Check action **Re-run Sandbox** re-dispatches Tier 3 with prior probes when available. Requires collaborator `admin` or `write`.
+- **Inline diff comments.** Posts line comments and suggested replacements on the **Files changed** tab.
+- **Check runs.** Reports status under `hq-jr AI Code Review` and `hq-jr AI Sandbox Verification`.
+- **Pull request chat.** Mention `@hq-jr` to ask a question in a review thread. Human-to-human threads stay quiet.
+- **On-demand review.** Comment `@hq-jr review`, `@hq-jr audit`, `@hq-jr scan`, or `@hq-jr diff` to trigger a full review.
+- **Remediation with RBAC.** Comment `@hq-jr fix`, `@hq-jr patch`, or `@hq-jr remediate` (with optional `and merge`) to synthesize fixes onto branch `hq-jr/fix-pr-<id>`. Requires collaborator `admin` or `write` permission.
+- **Commit reproduction test.** Click **Commit Repro Test** in the Checks tab or comment `@hq-jr commit-repro` to commit the synthesized reproduction test onto the pull request branch. Requires collaborator `admin` or `write` permission.
+- **Re-run sandbox.** Click **Re-run Sandbox** in the Checks tab to re-dispatch Tier 3 with prior probes. Requires collaborator `admin` or `write` permission.
 
 ---
 
@@ -141,16 +123,16 @@ Each workload picks its own model, so raising one does not raise the others: tri
 ### Prerequisites
 
 - Node.js >= 22.12.0
-- Google Cloud Project with Vertex AI API enabled and Application Default Credentials (ADC):
+- A Google Cloud project with the Vertex AI API enabled and Application Default Credentials (ADC):
   ```bash
   gcloud auth application-default login
   gcloud config set project <PROJECT_ID>
   ```
-- GitHub App registered (or via the Probot manifest flow).
+- A registered GitHub App, or one created through the Probot manifest flow.
 
 ### Installation
 
-**CLI (published package):**
+Install the published CLI globally:
 
 ```bash
 npm i -g hq-jr
@@ -158,9 +140,7 @@ hq-jr --help
 hq-jr health
 ```
 
-The global install is the **CLI** (`health`, `review`, `sandbox-test`). It does not start the GitHub App webhook server. For the App daemon use from-source / Docker below (`npm start`).
-
-**GitHub App / from source:**
+The global install provides the CLI (`health`, `review`, `sandbox-test`). It does not start the GitHub App webhook server. To run the webhook server, clone the repository or use the Docker image below:
 
 ```bash
 git clone https://github.com/adi-IL/hq-jr.git
@@ -168,19 +148,19 @@ cd hq-jr
 npm install
 ```
 
-### Environment Configuration
+### Environment variables
 
-Create a `.env` from [`.env.example`](.env.example):
+Create `.env` from [`.env.example`](.env.example):
 
 ```bash
-# 1. Required: GitHub App & Google Cloud Project
+# Required variables for the GitHub App and Google Cloud project
 APP_ID=123456
 PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
 WEBHOOK_SECRET=your_webhook_secret
 GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 
-# 2. Optional: Model Routing & Runtime Defaults (match src/config.ts)
-WEBHOOK_PROXY_URL=https://smee.io/your_smee_channel # Optional for local development
+# Optional model and runtime defaults matching src/config.ts
+WEBHOOK_PROXY_URL=https://smee.io/your_smee_channel
 GOOGLE_CLOUD_LOCATION=global
 
 HQ_JR_MODEL_TIER1=gemini-3.8-flash
@@ -198,20 +178,18 @@ PORT=3000
 NODE_ENV=development
 ```
 
-### Running Locally
+### Run locally
 
 ```bash
 npm run build
 npm test
-npm start        # Probot App daemon
-npm run dev      # watches src/index.ts and its imports; does not start the Probot server
+npm start        # Starts the Probot webhook server
+npm run dev      # Watches src/index.ts without starting the Probot server
 ```
 
-### Docker Quickstart (Linux)
+### Run with Docker on Linux
 
-Published image (App daemon):
-
-On Linux, stage an ADC file readable by the container user (uid 1001):
+Stage an ADC file that container uid 1001 can read, then run the published image:
 
 ```bash
 sudo install -d -m 700 -o 1001 -g 1001 /etc/hq-jr/gcloud
@@ -229,9 +207,9 @@ docker run --rm -p 127.0.0.1:3000:3000 \
   ghcr.io/adi-il/hq-jr:latest
 ```
 
-The mount contains only the ADC file. On Docker Desktop, share the ADC file through the VM and mount its host path. On a GCE VM whose service account has the Vertex AI scope, omit the mount and `GOOGLE_APPLICATION_CREDENTIALS`. The data volume keeps SQLite across container replacement.
+The `/etc/hq-jr/gcloud` mount holds only the ADC file. On Docker Desktop, share the ADC file through the VM and mount its host path. On a Google Compute Engine VM whose service account has the Vertex AI scope, omit the mount and `GOOGLE_APPLICATION_CREDENTIALS`. The `hq-jr-data` volume preserves SQLite across container restarts.
 
-Build from source:
+To build and run the image from source:
 
 ```bash
 docker build -t hq-jr:local .
@@ -243,7 +221,7 @@ docker run --rm -p 127.0.0.1:3000:3000 \
   hq-jr:local
 ```
 
-Image runs Probot under `tini` (PID 1) with `probot` on `PATH`, as the unprivileged `hqjr` user (uid 1001). For the reference Compose deployment, update timer, and Cloud Run options, see [docs/05-deployment-and-operations.md](docs/05-deployment-and-operations.md).
+The container runs Probot under `tini` (PID 1) as the unprivileged `hqjr` user (uid 1001). See [docs/05-deployment-and-operations.md](docs/05-deployment-and-operations.md) for the Docker Compose setup, systemd update timer, and Cloud Run deployment.
 
 ---
 

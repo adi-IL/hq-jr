@@ -14,30 +14,29 @@ export interface RemediationResult {
   message: string;
 }
 
+const FENCE_LANGUAGE_BY_EXT: Record<string, string> = {
+  ".ts": "typescript",
+  ".tsx": "typescript",
+  ".js": "javascript",
+  ".jsx": "javascript",
+  ".mjs": "javascript",
+  ".cjs": "javascript",
+  ".py": "python",
+  ".rs": "rust",
+  ".go": "go",
+  ".sh": "bash",
+  ".json": "json",
+  ".yml": "yaml",
+  ".yaml": "yaml",
+  ".md": "markdown",
+};
+
 function fenceLanguageForPath(filePath: string): string {
-  const lower = filePath.toLowerCase();
-  if (lower.endsWith(".ts") || lower.endsWith(".tsx")) return "typescript";
-  if (
-    lower.endsWith(".js") ||
-    lower.endsWith(".jsx") ||
-    lower.endsWith(".mjs") ||
-    lower.endsWith(".cjs")
-  ) {
-    return "javascript";
-  }
-  if (lower.endsWith(".py")) return "python";
-  if (lower.endsWith(".rs")) return "rust";
-  if (lower.endsWith(".go")) return "go";
-  if (lower.endsWith(".sh")) return "bash";
-  if (lower.endsWith(".json")) return "json";
-  if (lower.endsWith(".yml") || lower.endsWith(".yaml")) return "yaml";
-  if (lower.endsWith(".md")) return "markdown";
-  return "";
+  const dot = filePath.lastIndexOf(".");
+  if (dot < 0) return "";
+  return FENCE_LANGUAGE_BY_EXT[filePath.slice(dot).toLowerCase()] ?? "";
 }
 
-/**
- * Synthesizes a bug-fixed version of a file by applying review findings using Gemini with High Thinking.
- */
 export async function synthesizeFileFix(params: {
   filePath: string;
   originalContent: string;

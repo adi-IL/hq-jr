@@ -1315,7 +1315,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           owner,
           repo: repoName,
           issue_number: pullNumber,
-          body: `🤖 **hq-jr** received review command from @${user.login}. Starting automated code review - line-by-line diff comments will appear directly under **Files changed**...`,
+          body: `🤖 **hq-jr** received review command from @${user.login}. Starting automated code review. Line-by-line diff comments will appear under **Files changed**.`,
         });
 
         const prResponse = await context.octokit.pulls.get({
