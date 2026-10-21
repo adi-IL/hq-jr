@@ -1,32 +1,30 @@
-# Launch draft (do not auto-post)
+# Launch draft
 
-Maintainer posts these manually. Agents must not post to HN, Twitter/X, or Reddit.
+The maintainer posts these manually. Agents must not post to Hacker News, X, or Reddit.
 
-## One-liner
+## One-line summary
 
-The self-hosted PR reviewer that reproduces the break before it speaks.
+The self-hosted pull request reviewer that reproduces the break before it speaks.
 
-## Show HN (suggested)
+## Show HN draft
 
-**Title:** Show HN: hq-jr – self-hosted PR review that reproduces bugs before it speaks
+Title: `Show HN: hq-jr, a self-hosted PR reviewer that reproduces bugs in a sandbox`
 
-**Body:**
+Body:
 
-hq-jr is a self-hosted GitHub App (Probot) that reviews pull requests with Vertex AI in your own GCP project.
+`hq-jr` is a self-hosted GitHub App built on Probot. It reviews pull requests with Vertex AI inside your own Google Cloud project.
 
-What it owns:
-- Empirical sandbox proof (experimental Tier 3 / Antigravity) before strong claims
-- Mention manners (`@hq-jr` gating so peer chat stays quiet)
-- Self-hosted on Vertex (diffs stay in your cloud, not a third-party review SaaS)
+- **Sandbox verification.** Suspicious findings run in an isolated Antigravity container, and `hq-jr` waits for the reproduction verdict before completing the check run.
+- **Mention gating.** Human review threads stay quiet until a comment mentions `@hq-jr`.
+- **Self-hosted privacy.** Diffs are scrubbed for secrets before model calls and stay inside your Google Cloud project.
 
-Also: SQLite WAL review memory across pushes, credential scrubbing before model calls, and optional `@hq-jr fix` remediation with write/admin RBAC.
+`hq-jr` also tracks prior findings in GitHub review threads with a SQLite WAL fallback, and it can generate a fix branch on `@hq-jr fix` for collaborators with `write` or `admin` access.
 
-Repo: https://github.com/adi-IL/hq-jr
+Repository: https://github.com/adi-IL/hq-jr
 npm: https://www.npmjs.com/package/hq-jr
 
-## Checklist for Aditya
+## Maintainer checklist
 
-- [ ] Confirm Security Advisories enabled on the public repo
-- [ ] Optional: rotate any secrets that ever lived in old private notes
-- [ ] Post Show HN / social yourself when ready
-- [ ] Optional: GitHub Pages homepage later (homepage currently points at the repo)
+- [ ] Confirm Security Advisories are enabled on the public repository.
+- [ ] Rotate any secrets that ever lived in old private notes.
+- [ ] Post to Show HN when ready.
