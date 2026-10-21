@@ -268,7 +268,7 @@ describe("remediation service", () => {
     });
 
     expect(result.success).toBe(false);
-    expect(result.message).toContain("fork PR");
+    expect(result.message).toContain("when the PR head repository is missing");
     expect(result.message).toContain("unknown");
     expect(mockOctokit.repos.getContent).not.toHaveBeenCalled();
     expect(mockOctokit.git.createBlob).not.toHaveBeenCalled();

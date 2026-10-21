@@ -99,8 +99,16 @@ export async function executeRemediation(params: {
     };
   }
 
-  // Fail closed on fork PRs: never push remediation commits into another repository's head.
+  // Fail closed on fork or deleted-head PRs: never push remediation commits unless the head repo matches.
   const expectedHeadRepo = `${owner}/${repo}`;
+  const buildHeadRepoRefusalMessage = (actual: string | undefined): string => {
+    const reason = actual ? "to fork PRs" : "when the PR head repository is missing";
+    return (
+      `⚠️ **hq-jr** refuses to push remediation commits ${reason} ` +
+      `(head repo: \`${actual || "unknown"}\`, expected \`${expectedHeadRepo}\`). ` +
+      `Apply the suggested fixes manually or open the PR from a branch in this repository.`
+    );
+  };
   const headRepoFullName = pr?.head?.repo?.full_name as string | undefined;
   if (!headRepoFullName || headRepoFullName !== expectedHeadRepo) {
     return {
@@ -108,10 +116,7 @@ export async function executeRemediation(params: {
       branchName: "",
       commitSha: "",
       filesModified: [],
-      message:
-        `⚠️ **hq-jr** refuses to push remediation commits to fork PRs ` +
-        `(head repo: \`${headRepoFullName || "unknown"}\`, expected \`${expectedHeadRepo}\`). ` +
-        `Apply the suggested fixes manually or open the PR from a branch in this repository.`,
+      message: buildHeadRepoRefusalMessage(headRepoFullName),
     };
   }
 
@@ -224,10 +229,7 @@ export async function executeRemediation(params: {
           branchName: "",
           commitSha: "",
           filesModified: [],
-          message:
-            `⚠️ **hq-jr** refuses to push remediation commits to fork PRs ` +
-            `(head repo: \`${latestHeadRepo || "unknown"}\`, expected \`${expectedHeadRepo}\`). ` +
-            `Apply the suggested fixes manually or open the PR from a branch in this repository.`,
+          message: buildHeadRepoRefusalMessage(latestHeadRepo),
         };
       }
       if (latestPr?.head?.sha && latestPr.head.sha !== pr.head.sha) {
