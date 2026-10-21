@@ -125,7 +125,9 @@ export function getDatabase(customPath?: string): Database.Database {
   }
 
   if (!defaultDbInstance) {
-    const dbPath = config.HQ_JR_DB_PATH;
+    // Under a test runner, never create or write the real on-disk database.
+    const isTestEnv = config.NODE_ENV === "test" || Boolean(process.env.VITEST);
+    const dbPath = isTestEnv ? ":memory:" : config.HQ_JR_DB_PATH;
     if (dbPath !== ":memory:") {
       mkdirSync(dirname(dbPath), { recursive: true });
     }

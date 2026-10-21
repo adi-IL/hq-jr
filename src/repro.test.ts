@@ -116,7 +116,11 @@ describe("Root Cause Bug Reproductions", () => {
       pulls: {
         get: vi.fn().mockResolvedValue({
           data: {
-            head: { sha: "new-sha-2222", ref: "feature-branch" },
+            head: {
+              sha: "new-sha-2222",
+              ref: "feature-branch",
+              repo: { full_name: "owner/repo" },
+            },
           },
         }),
       },
@@ -135,7 +139,7 @@ describe("Root Cause Bug Reproductions", () => {
       repo: "repo",
       pullNumber: 12,
       pr: {
-        head: { sha: "initial-sha-1111", ref: "feature-branch" },
+        head: { sha: "initial-sha-1111", ref: "feature-branch", repo: { full_name: "owner/repo" } },
       },
       issues: [
         {
