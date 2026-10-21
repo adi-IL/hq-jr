@@ -64,6 +64,117 @@ describe("remediation service", () => {
     expect(mockOctokit.git.createCommit).toHaveBeenCalled();
   });
 
+  it("refuses to push remediation commits to fork PRs", async () => {
+    const mockOctokit = {
+      repos: {
+        getContent: vi.fn().mockResolvedValue({
+          data: {
+            content: Buffer.from("export function originalCode() {}").toString("base64"),
+          },
+        }),
+      },
+      git: {
+        createBlob: vi.fn().mockResolvedValue({ data: { sha: "blob-sha-123" } }),
+        getCommit: vi.fn().mockResolvedValue({ data: { tree: { sha: "base-tree-sha" } } }),
+        createTree: vi.fn().mockResolvedValue({ data: { sha: "new-tree-sha" } }),
+        createCommit: vi.fn().mockResolvedValue({ data: { sha: "new-commit-sha" } }),
+        createRef: vi.fn().mockResolvedValue({ data: {} }),
+        updateRef: vi.fn().mockResolvedValue({ data: {} }),
+      },
+      pulls: {
+        create: vi.fn().mockResolvedValue({
+          data: { html_url: "https://github.com/owner/repo/pull/10" },
+        }),
+      },
+    };
+
+    const result = await executeRemediation({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      pr: {
+        head: {
+          ref: "feature-branch",
+          sha: "parent-sha-000",
+          repo: { full_name: "fork-user/repo" },
+        },
+      },
+      issues: [
+        {
+          id: 1,
+          path: "src/api.ts",
+          line: 10,
+          side: "RIGHT",
+          title: "Unhandled exception",
+          body: "Add try/catch block",
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.branchName).toBe("");
+    expect(result.commitSha).toBe("");
+    expect(result.message).toContain("fork PR");
+    expect(mockOctokit.git.createBlob).not.toHaveBeenCalled();
+    expect(mockOctokit.git.updateRef).not.toHaveBeenCalled();
+    expect(mockOctokit.repos.getContent).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the re-fetched PR head belongs to a fork", async () => {
+    const mockOctokit = {
+      repos: {
+        getContent: vi.fn().mockResolvedValue({
+          data: {
+            content: Buffer.from("export function originalCode() {}").toString("base64"),
+          },
+        }),
+      },
+      git: {
+        createBlob: vi.fn().mockResolvedValue({ data: { sha: "blob-sha-123" } }),
+        getCommit: vi.fn().mockResolvedValue({ data: { tree: { sha: "base-tree-sha" } } }),
+        createTree: vi.fn().mockResolvedValue({ data: { sha: "new-tree-sha" } }),
+        createCommit: vi.fn().mockResolvedValue({ data: { sha: "new-commit-sha" } }),
+        createRef: vi.fn().mockResolvedValue({ data: {} }),
+        updateRef: vi.fn().mockResolvedValue({ data: {} }),
+      },
+      pulls: {
+        get: vi.fn().mockResolvedValue({
+          data: {
+            head: {
+              ref: "feature-branch",
+              sha: "parent-sha-000",
+              repo: { full_name: "fork-user/repo" },
+            },
+          },
+        }),
+      },
+    };
+
+    const result = await executeRemediation({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      pr: { head: { ref: "feature-branch", sha: "parent-sha-000" } },
+      issues: [
+        {
+          id: 1,
+          path: "src/api.ts",
+          line: 10,
+          side: "RIGHT",
+          title: "Unhandled exception",
+          body: "Add try/catch block",
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("fork PR");
+    expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
+    expect(mockOctokit.git.updateRef).not.toHaveBeenCalled();
+  });
+
   it("handles case where no issues are provided", async () => {
     const mockOctokit = {};
     const result = await executeRemediation({

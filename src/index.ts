@@ -29,6 +29,9 @@ export function isSafeReproTestPath(path: string | undefined | null): boolean {
 export const REMEDIATE_COMMAND_RE =
   /@hq-jr(?:\[bot\])?\s+(fix|patch|remediate)(\s+and\s+merge)?\b/i;
 export const COMMIT_REPRO_COMMAND_RE = /@hq-jr(?:\[bot\])?\s+commit-repro\b/i;
+/** Explicit merge command addressed to @hq-jr. Questions and chat are not commands. */
+export const MERGE_COMMAND_RE =
+  /@hq-jr(?:\[bot\])?\s+(?:please\s+)?(?:close\s+(?:the\s+)?(?:issue|#\d+|it)\s+and\s+)?(?:merge(?:\s+(?:it|this|pr|pull\s+request))?|auto-?merge)(?:\s+and\s+close\s+(?:the\s+)?(?:issue|#\d+|it))?\b/i;
 
 /**
  * Renders untrusted text as a Markdown inline code span. Entity references are
@@ -434,14 +437,17 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
       };
     }
 
-    // Prefer the synthesized-test section (heading + optional path in parentheses + fence).
-    const sectionMatch = summaryText.match(
-      /###\s*Synthesized Reproduction Test(?:\s*\(([^)]+)\))?[\s\S]*?```(?:rust|typescript|javascript|python|go)?\s*([\s\S]*?)```/i
-    );
+    // Use the LAST synthesized-test section (heading + optional path in parentheses + fence).
+    // Model text earlier in the summary can spoof the heading; the runner appends the real one.
+    // No fallback to arbitrary fenced blocks: only a dedicated section is a valid repro test.
+    const reproSectionRe =
+      /^###\s*Synthesized Reproduction Test(?:\s*\(([^)\r\n]+)\))?\s*\r?\n+```(?:[a-zA-Z0-9_+-]+)?[ \t]*\r?\n([\s\S]*?)```/gim;
+    let sectionMatch: RegExpExecArray | null = null;
+    for (const match of summaryText.matchAll(reproSectionRe)) {
+      sectionMatch = match as RegExpExecArray;
+    }
     const extractedPath = sectionMatch?.[1]?.trim() || undefined;
-    const testCode = sectionMatch?.[2]?.trim()
-      || summaryText.match(/```(?:rust|typescript|javascript|python|go)?\s*([\s\S]*?)```/)?.[1]?.trim()
-      || null;
+    const testCode = sectionMatch?.[2]?.trim() || null;
 
     if (!testCode) {
       return {
@@ -1320,7 +1326,8 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
 
       const hasNegativeMerge = /\b(?:do not|don't|no|never)\s+merge\b/i.test(body);
       const isMergeOnlyCommand =
-        /\b(?:merge(?:\s+it|\s+this)?|auto-?merge)\b/i.test(body) &&
+        MERGE_COMMAND_RE.test(body) &&
+        !/\?/.test(body) &&
         !hasNegativeMerge;
 
       if (isMergeOnlyCommand) {
@@ -1353,11 +1360,25 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         });
         const pr = prResponse.data;
 
-        let closedIssueNotice = "";
+        let linkedIssueNum: number | null = null;
         if (lower.includes("close") && (lower.includes("issue") || lower.includes("it"))) {
           const issueMatch = body.match(/#(\d+)/) || (pr.body || "").match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
           if (issueMatch) {
-            const linkedIssueNum = parseInt(issueMatch[1], 10);
+            linkedIssueNum = parseInt(issueMatch[1], 10);
+          }
+        }
+
+        try {
+          await context.octokit.pulls.merge({
+            owner,
+            repo: repoName,
+            pull_number: pullNumber,
+            merge_method: "squash",
+          });
+
+          // Close the linked issue only after the merge actually succeeded.
+          let closedIssueNotice = "";
+          if (linkedIssueNum !== null) {
             try {
               await context.octokit.issues.update({
                 owner,
@@ -1370,15 +1391,6 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
               app.log.warn({ closeErr, linkedIssueNum }, "Could not close linked issue");
             }
           }
-        }
-
-        try {
-          await context.octokit.pulls.merge({
-            owner,
-            repo: repoName,
-            pull_number: pullNumber,
-            merge_method: "squash",
-          });
 
           await context.octokit.issues.createComment({
             owner,
@@ -1422,7 +1434,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
                 owner,
                 repo: repoName,
                 issue_number: pullNumber,
-                body: `🔄 **Auto-Merge Enabled:** Direct merge could not complete immediately (${errorMsg}). Auto-merge has been armed for PR #${pullNumber}${closedIssueNotice} upon request by @${user.login}.`,
+                body: `🔄 **Auto-Merge Enabled:** Direct merge could not complete immediately (${errorMsg}). Auto-merge has been armed for PR #${pullNumber} upon request by @${user.login}.`,
               });
               return;
             }

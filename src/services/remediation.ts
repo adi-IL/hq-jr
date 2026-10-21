@@ -99,6 +99,22 @@ export async function executeRemediation(params: {
     };
   }
 
+  // Fail closed on fork PRs: never push remediation commits into another repository's head.
+  const expectedHeadRepo = `${owner}/${repo}`;
+  const headRepoFullName = pr?.head?.repo?.full_name as string | undefined;
+  if (headRepoFullName && headRepoFullName !== expectedHeadRepo) {
+    return {
+      success: false,
+      branchName: "",
+      commitSha: "",
+      filesModified: [],
+      message:
+        `⚠️ **hq-jr** refuses to push remediation commits to fork PRs ` +
+        `(head repo: \`${headRepoFullName}\`, expected \`${expectedHeadRepo}\`). ` +
+        `Apply the suggested fixes manually or open the PR from a branch in this repository.`,
+    };
+  }
+
   // 1. Group issues by file
   const issuesByFile = new Map<string, PriorReviewIssue[]>();
   for (const issue of issues) {
@@ -201,6 +217,19 @@ export async function executeRemediation(params: {
         repo,
         pull_number: pullNumber,
       });
+      const latestHeadRepo = latestPr?.head?.repo?.full_name as string | undefined;
+      if (latestHeadRepo && latestHeadRepo !== expectedHeadRepo) {
+        return {
+          success: false,
+          branchName: "",
+          commitSha: "",
+          filesModified: [],
+          message:
+            `⚠️ **hq-jr** refuses to push remediation commits to fork PRs ` +
+            `(head repo: \`${latestHeadRepo}\`, expected \`${expectedHeadRepo}\`). ` +
+            `Apply the suggested fixes manually or open the PR from a branch in this repository.`,
+        };
+      }
       if (latestPr?.head?.sha && latestPr.head.sha !== pr.head.sha) {
         return {
           success: false,

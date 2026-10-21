@@ -91,6 +91,24 @@ export function detectTestCommand(filePaths: string[]): string {
   return "npm test";
 }
 
+/** Hard cap for a sandbox check summary, below GitHub's 65,535-char limit. */
+export const MAX_SANDBOX_SUMMARY_CHARS = 60000;
+/** Longest single matrix cell kept when rendering untrusted probe metadata. */
+const MAX_MATRIX_CELL_CHARS = 500;
+/** Most probes rendered in the matrix table. */
+const MAX_MATRIX_PROBES = 50;
+/** Longest verification goal kept in the summary header. */
+const MAX_VERIFICATION_GOAL_CHARS = 4000;
+
+/** Keeps a value inside one Markdown table cell: no pipes, no line breaks, no stray backticks. */
+function escapeTableCell(value: string): string {
+  return value
+    .replace(/[\r\n]+/g, " ")
+    .replace(/`/g, "'")
+    .slice(0, MAX_MATRIX_CELL_CHARS)
+    .replace(/\|/g, "\\|");
+}
+
 export function formatSandboxCheckRunSummary(params: {
   pullNumber: number;
   branch: string;
@@ -116,16 +134,22 @@ export function formatSandboxCheckRunSummary(params: {
 
   let matrixTable = "";
   if (probes.length > 0) {
-    const rows = probes.map(
-      (p, idx) =>
-        `| #${idx + 1} | \`${p.targetFile}${p.targetLine ? `:${p.targetLine}` : ""}\` | \`${p.archetype}\` | \`${p.expectedFailureKind}\` | ${p.failureHypothesis} |`
-    );
+    const rows = probes.slice(0, MAX_MATRIX_PROBES).map((p, idx) => {
+      const target = `${p.targetFile}${p.targetLine ? `:${p.targetLine}` : ""}`;
+      return (
+        `| #${idx + 1} | \`${escapeTableCell(target)}\` | \`${escapeTableCell(p.archetype)}\` | ` +
+        `\`${escapeTableCell(p.expectedFailureKind)}\` | ${escapeTableCell(p.failureHypothesis)} |`
+      );
+    });
     matrixTable =
       `\n### 📊 Adversarial Test Execution Matrix\n\n` +
       `| # | Target Component | Archetype | Expected Mode | Hypothesis |\n` +
       `|:---:|---|:---:|:---:|---|\n` +
       rows.join("\n") +
       `\n`;
+    if (probes.length > MAX_MATRIX_PROBES) {
+      matrixTable += `\n_${probes.length - MAX_MATRIX_PROBES} more probes omitted._\n`;
+    }
   }
 
   const statusLine =
@@ -133,36 +157,62 @@ export function formatSandboxCheckRunSummary(params: {
       ? `- **Status:** Running in remote Linux container (polling interaction)\n`
       : `- **Status:** ${pollStatus || "completed"}\n`;
 
-  let verdictSection = "";
-  if (phase === "verdict" && verdict) {
-    verdictSection =
+  const renderVerdictSection = (summaryText: string, testCode?: string): string => {
+    if (phase !== "verdict" || !verdict) return "";
+    let verdictSection =
       `\n### Verdict\n` +
       `- **baselinePassed:** \`${String(verdict.baselinePassed)}\`\n` +
       `- **reproduced:** \`${String(verdict.reproduced)}\`\n` +
       `- **patchCured:** \`${String(verdict.patchCured)}\`\n` +
-      (verdict.summary ? `\n${verdict.summary}\n` : "");
-    if (verdict.synthesizedTestCode) {
+      (summaryText ? `\n${summaryText}\n` : "");
+    if (testCode) {
       const lang = guessFenceLang(verdict.testFilePath, testCommand);
       const pathNote = verdict.testFilePath ? ` (${verdict.testFilePath})` : "";
       verdictSection +=
         `\n### Synthesized Reproduction Test${pathNote}\n\n` +
-        `\`\`\`${lang}\n${verdict.synthesizedTestCode}\n\`\`\`\n`;
+        `\`\`\`${lang}\n${testCode}\n\`\`\`\n`;
     }
-  }
+    return verdictSection;
+  };
 
-  return (
+  const assemble = (goal: string, summaryText: string, testCode?: string): string =>
     `## 🧪 Tier 3 Antigravity Sandbox Verification\n\n` +
     statusLine +
     `- **Agent Harness:** \`antigravity-preview-05-2026\`\n` +
     `- **Interaction ID:** \`${interactionId}\`\n` +
     `- **Target Branch:** \`${branch}\` (PR #${pullNumber})\n` +
     `- **Baseline Command:** \`${testCommand}\`\n` +
-    `- **Objective:** ${verificationGoal}\n` +
+    `- **Objective:** ${goal}\n` +
     matrixTable +
-    verdictSection +
+    renderVerdictSection(summaryText, testCode) +
     `\n### 🛠️ One-Click Test Adoption\n` +
-    `Maintainers can adopt the synthesized reproduction test directly into the PR by clicking **"Commit Repro Test"** in the Checks tab action header or typing \`@hq-jr commit-repro\` in PR comments.`
-  );
+    `Maintainers can adopt the synthesized reproduction test directly into the PR by clicking **"Commit Repro Test"** in the Checks tab action header or typing \`@hq-jr commit-repro\` in PR comments.`;
+
+  let goal = verificationGoal.slice(0, MAX_VERIFICATION_GOAL_CHARS);
+  let summaryText = verdict?.summary ?? "";
+  let testCode = verdict?.synthesizedTestCode || undefined;
+  let output = assemble(goal, summaryText, testCode);
+
+  if (output.length > MAX_SANDBOX_SUMMARY_CHARS && summaryText) {
+    const excess = output.length - MAX_SANDBOX_SUMMARY_CHARS;
+    summaryText = summaryText.slice(0, Math.max(0, summaryText.length - excess));
+    output = assemble(goal, summaryText, testCode);
+  }
+  if (output.length > MAX_SANDBOX_SUMMARY_CHARS && goal) {
+    const excess = output.length - MAX_SANDBOX_SUMMARY_CHARS;
+    goal = goal.slice(0, Math.max(0, goal.length - excess));
+    output = assemble(goal, summaryText, testCode);
+  }
+  if (output.length > MAX_SANDBOX_SUMMARY_CHARS && testCode) {
+    const excess = output.length - MAX_SANDBOX_SUMMARY_CHARS;
+    // Keep a short test fragment so the closing fence stays valid.
+    testCode = testCode.slice(0, Math.max(200, testCode.length - excess));
+    output = assemble(goal, summaryText, testCode);
+  }
+
+  return output.length > MAX_SANDBOX_SUMMARY_CHARS
+    ? output.slice(0, MAX_SANDBOX_SUMMARY_CHARS)
+    : output;
 }
 
 function guessFenceLang(testFilePath?: string, testCommand?: string): string {

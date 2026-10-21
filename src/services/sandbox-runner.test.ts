@@ -78,6 +78,76 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
       expect(summary).toContain("```typescript");
       expect(summary).toContain("expect(true).toBe(true);");
     });
+
+    it("escapes pipes and newlines in probe table cells", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 42,
+        branch: "fix/player-leak",
+        testCommand: "npm test",
+        verificationGoal: "Verify escaping",
+        interactionId: "ix-escape",
+        probes: [
+          {
+            targetFile: "src/a|b.ts",
+            targetLine: 3,
+            archetype: "SUB|PROCESS",
+            failureHypothesis: "Leaks | breaks\nsecond line",
+            expectedFailureKind: "PANIC|ABORT",
+            suggestedPatch: "",
+          },
+        ],
+      });
+
+      expect(summary).toContain("src/a\\|b.ts:3");
+      expect(summary).toContain("SUB\\|PROCESS");
+      expect(summary).toContain("PANIC\\|ABORT");
+      expect(summary).toContain("Leaks \\| breaks second line");
+      const row = summary.split("\n").find((line) => line.startsWith("| #1 |"));
+      expect(row).toBeDefined();
+      expect(row).toContain("second line");
+      expect(summary).not.toContain("breaks\nsecond line");
+    });
+
+    it("caps an oversized verdict summary at 60000 characters", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 7,
+        branch: "main",
+        testCommand: "npm test",
+        verificationGoal: "repro",
+        interactionId: "ix-big",
+        phase: "verdict",
+        verdict: {
+          reproduced: true,
+          patchCured: true,
+          summary: "s".repeat(90000),
+          synthesizedTestCode: "x".repeat(90000),
+          testFilePath: "tests/repro.test.ts",
+        },
+      });
+
+      expect(summary.length).toBeLessThanOrEqual(60000);
+      expect(summary).toContain("```typescript");
+      expect(summary).toMatch(/```typescript[\s\S]*\n```\n\n### 🛠️ One-Click/);
+    });
+
+    it("caps an oversized summary without a test code block", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 7,
+        branch: "main",
+        testCommand: "npm test",
+        verificationGoal: "g".repeat(90000),
+        interactionId: "ix-big-goal",
+        phase: "verdict",
+        verdict: {
+          reproduced: false,
+          baselinePassed: true,
+          summary: "s".repeat(90000),
+        },
+      });
+
+      expect(summary.length).toBeLessThanOrEqual(60000);
+      expect(summary).not.toContain("```");
+    });
   });
 
   describe("mapVerdictToConclusion", () => {
