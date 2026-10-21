@@ -7,6 +7,7 @@ import {
   SYNTHESIZED_REPRO_MARKER,
 } from "./sandbox-runner.js";
 import * as aiModule from "./ai.js";
+import { config } from "../config.js";
 import { getDatabase } from "./db.js";
 import type Database from "better-sqlite3";
 
@@ -58,6 +59,18 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
       expect(summary).toContain("Raw mode leaks if terminal setup throws");
       expect(summary).toContain("Commit Repro Test");
       expect(summary).toContain("Running in remote Linux container");
+    });
+
+    it("renders config.HQ_JR_AGENT_TIER3 as the agent harness", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 42,
+        branch: "fix/player-leak",
+        testCommand: "cargo test",
+        verificationGoal: "Verify terminal raw mode cleanup on init panic",
+        interactionId: "interaction-abc-123",
+      });
+
+      expect(summary).toContain(`- **Agent Harness:** \`${config.HQ_JR_AGENT_TIER3}\``);
     });
 
     it("embeds synthesized test code in verdict phase summary", () => {
