@@ -9,7 +9,7 @@ import { executeRemediation } from "./services/remediation.js";
 import { scrubSecrets } from "./services/scrubber.js";
 import { verifyReviewActionRefs } from "./services/action-ref-verifier.js";
 import { addRemediationCommit, hasRemediationCommit, acquireRunLock, releaseRunLock, saveReviewFindings, getSandboxJobByCheckRun, resolveFindingsMissingFromCurrent, pruneResolvedFindings } from "./services/db.js";
-import { executeSandboxCheckRun, resumeStaleSandboxJobs, singleFlight } from "./services/sandbox-runner.js";
+import { executeSandboxCheckRun, resumeStaleSandboxJobs, singleFlight, SYNTHESIZED_REPRO_MARKER } from "./services/sandbox-runner.js";
 import type { SandboxProbeRequest } from "./schemas/review.js";
 import { isHqJrLogin } from "./hq-jr-login.js";
 
@@ -438,12 +438,23 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
     }
 
     // Use the LAST synthesized-test section (heading + optional path in parentheses + fence).
-    // Model text earlier in the summary can spoof the heading; the runner appends the real one.
-    // No fallback to arbitrary fenced blocks: only a dedicated section is a valid repro test.
+    // A full sandbox summary must carry the runner marker before the section, so model text
+    // earlier in the verdict cannot spoof the heading. Bare sections stay supported for
+    // legacy snippets that have no sandbox header.
     const reproSectionRe =
       /^###\s*Synthesized Reproduction Test(?:\s*\(([^)\r\n]+)\))?\s*\r?\n+```(?:[a-zA-Z0-9_+-]+)?[ \t]*\r?\n([\s\S]*?)```/gim;
+    const isFullSandboxSummary =
+      summaryText.includes("## 🧪 Tier 3 Antigravity Sandbox Verification") ||
+      summaryText.includes("### Verdict") ||
+      summaryText.includes(SYNTHESIZED_REPRO_MARKER);
+    const sectionRe = isFullSandboxSummary
+      ? new RegExp(
+          `${SYNTHESIZED_REPRO_MARKER}\\s*\\r?\\n###\\s*Synthesized Reproduction Test(?:\\s*\\(([^)\\r\\n]+)\\))?\\s*\\r?\\n+\`\`\`(?:[a-zA-Z0-9_+-]+)?[ \\t]*\\r?\\n([\\s\\S]*?)\`\`\``,
+          "gim"
+        )
+      : reproSectionRe;
     let sectionMatch: RegExpExecArray | null = null;
-    for (const match of summaryText.matchAll(reproSectionRe)) {
+    for (const match of summaryText.matchAll(sectionRe)) {
       sectionMatch = match as RegExpExecArray;
     }
     const extractedPath = sectionMatch?.[1]?.trim() || undefined;
@@ -1361,7 +1372,10 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         const pr = prResponse.data;
 
         let linkedIssueNum: number | null = null;
-        if (lower.includes("close") && (lower.includes("issue") || lower.includes("it"))) {
+        if (
+          lower.includes("close") &&
+          (lower.includes("issue") || lower.includes("it") || /#\d+/.test(body))
+        ) {
           const issueMatch = body.match(/#(\d+)/) || (pr.body || "").match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
           if (issueMatch) {
             linkedIssueNum = parseInt(issueMatch[1], 10);

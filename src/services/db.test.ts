@@ -36,13 +36,21 @@ describe("Persistent SQLite Store (db.ts)", () => {
 
   it("uses an in-memory database by default under Vitest and does not create ./data/hq-jr.db", () => {
     closeDatabase();
+    const existedBefore = existsSync("./data/hq-jr.db");
+    const prevEnv = process.env.HQ_JR_DB_PATH;
+    process.env.HQ_JR_DB_PATH = "./data/hq-jr.db";
     const defaultDb = getDatabase();
     try {
       expect(defaultDb.name).toBe(":memory:");
+      expect(existsSync("./data/hq-jr.db")).toBe(existedBefore);
     } finally {
+      if (prevEnv === undefined) {
+        delete process.env.HQ_JR_DB_PATH;
+      } else {
+        process.env.HQ_JR_DB_PATH = prevEnv;
+      }
       closeDatabase();
     }
-    expect(existsSync("./data/hq-jr.db")).toBe(false);
   });
 
   describe("Remediation Commits", () => {

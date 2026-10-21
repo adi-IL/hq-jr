@@ -102,7 +102,7 @@ export async function executeRemediation(params: {
   // Fail closed on fork PRs: never push remediation commits into another repository's head.
   const expectedHeadRepo = `${owner}/${repo}`;
   const headRepoFullName = pr?.head?.repo?.full_name as string | undefined;
-  if (headRepoFullName && headRepoFullName !== expectedHeadRepo) {
+  if (!headRepoFullName || headRepoFullName !== expectedHeadRepo) {
     return {
       success: false,
       branchName: "",
@@ -110,7 +110,7 @@ export async function executeRemediation(params: {
       filesModified: [],
       message:
         `⚠️ **hq-jr** refuses to push remediation commits to fork PRs ` +
-        `(head repo: \`${headRepoFullName}\`, expected \`${expectedHeadRepo}\`). ` +
+        `(head repo: \`${headRepoFullName || "unknown"}\`, expected \`${expectedHeadRepo}\`). ` +
         `Apply the suggested fixes manually or open the PR from a branch in this repository.`,
     };
   }
@@ -218,7 +218,7 @@ export async function executeRemediation(params: {
         pull_number: pullNumber,
       });
       const latestHeadRepo = latestPr?.head?.repo?.full_name as string | undefined;
-      if (latestHeadRepo && latestHeadRepo !== expectedHeadRepo) {
+      if (!latestHeadRepo || latestHeadRepo !== expectedHeadRepo) {
         return {
           success: false,
           branchName: "",
@@ -226,7 +226,7 @@ export async function executeRemediation(params: {
           filesModified: [],
           message:
             `⚠️ **hq-jr** refuses to push remediation commits to fork PRs ` +
-            `(head repo: \`${latestHeadRepo}\`, expected \`${expectedHeadRepo}\`). ` +
+            `(head repo: \`${latestHeadRepo || "unknown"}\`, expected \`${expectedHeadRepo}\`). ` +
             `Apply the suggested fixes manually or open the PR from a branch in this repository.`,
         };
       }

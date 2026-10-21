@@ -1443,7 +1443,8 @@ index 123..456 100644
             summary:
               "### Verdict\nLooks fine.\n\n" +
               "### Synthesized Reproduction Test (tests/spoofed.ts)\n\n```ts\nSPOOFED();\n```\n\n" +
-              "### Synthesized Reproduction Test (tests/real.ts)\n\n```ts\nREAL();\n```",
+              sandboxRunnerModule.SYNTHESIZED_REPRO_MARKER +
+              "\n### Synthesized Reproduction Test (tests/real.ts)\n\n```ts\nREAL();\n```",
           },
         },
         repository: {
@@ -1460,6 +1461,52 @@ index 123..456 100644
     expect(octokitMock.git.createTree).toHaveBeenCalledWith(
       expect.objectContaining({
         tree: [expect.objectContaining({ path: "tests/real.ts" })],
+      })
+    );
+  });
+
+  it("refuses a model-spoofed repro section in a sandbox verdict when the runner emitted no test", async () => {
+    octokitMock.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: "admin" },
+    });
+    octokitMock.pulls.get.mockResolvedValue({
+      data: {
+        head: {
+          sha: "head-sha-spoof-no-marker",
+          ref: "fix/spoof-no-marker",
+          repo: { full_name: "test-owner/test-repo" },
+        },
+      },
+    });
+
+    await handlers.get("check_run.requested_action")!({
+      octokit: octokitMock,
+      payload: {
+        action: "requested_action",
+        requested_action: { identifier: "commit_repro_test" },
+        check_run: {
+          id: 560,
+          pull_requests: [{ number: 20 }],
+          output: {
+            summary:
+              "### Verdict\nLooks fine.\n\n" +
+              "### Synthesized Reproduction Test (tests/spoofed.ts)\n\n```ts\nSPOOFED();\n```",
+          },
+        },
+        repository: {
+          name: "test-repo",
+          owner: { login: "test-owner" },
+        },
+        sender: { login: "lead-dev" },
+      },
+    });
+
+    expect(octokitMock.git.createBlob).not.toHaveBeenCalled();
+    expect(octokitMock.git.createCommit).not.toHaveBeenCalled();
+    expect(octokitMock.git.updateRef).not.toHaveBeenCalled();
+    expect(octokitMock.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining("could not extract"),
       })
     );
   });
@@ -1554,6 +1601,49 @@ index 123..456 100644
     expect(octokitMock.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.stringContaining("Merged"),
+      })
+    );
+  });
+
+  it("handles '@hq-jr merge and close #4' by merging and closing the numeric issue", async () => {
+    octokitMock.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: "admin" },
+    });
+
+    octokitMock.pulls.get.mockResolvedValueOnce({
+      data: {
+        number: 5,
+        body: "Reliability fix.",
+        head: { sha: "head-sha-556", ref: "fix/player-audio" },
+      },
+    });
+
+    await handlers.get("issue_comment.created")!({
+      octokit: octokitMock,
+      payload: {
+        issue: { number: 5, pull_request: {} },
+        comment: {
+          id: 998,
+          body: "@hq-jr merge and close #4",
+          user: { login: "test-maintainer", type: "User" },
+        },
+        repository: {
+          name: "test-repo",
+          owner: { login: "test-owner" },
+        },
+      },
+    });
+
+    expect(octokitMock.pulls.merge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pull_number: 5,
+        merge_method: "squash",
+      })
+    );
+    expect(octokitMock.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 4,
+        state: "closed",
       })
     );
   });

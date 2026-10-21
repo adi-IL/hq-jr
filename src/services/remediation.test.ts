@@ -43,7 +43,11 @@ describe("remediation service", () => {
       repo: "repo",
       pullNumber: 9,
       pr: {
-        head: { ref: "feature-branch", sha: "parent-sha-000" },
+        head: {
+          ref: "feature-branch",
+          sha: "parent-sha-000",
+          repo: { full_name: "owner/repo" },
+        },
         base: { ref: "main", sha: "main-sha-000" },
       },
       issues: [
@@ -156,7 +160,7 @@ describe("remediation service", () => {
       owner: "owner",
       repo: "repo",
       pullNumber: 9,
-      pr: { head: { ref: "feature-branch", sha: "parent-sha-000" } },
+      pr: { head: { ref: "feature-branch", sha: "parent-sha-000", repo: { full_name: "owner/repo" } } },
       issues: [
         {
           id: 1,
@@ -172,6 +176,7 @@ describe("remediation service", () => {
     expect(result.success).toBe(false);
     expect(result.message).toContain("fork PR");
     expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
+    expect(mockOctokit.git.createCommit).not.toHaveBeenCalled();
     expect(mockOctokit.git.updateRef).not.toHaveBeenCalled();
   });
 
@@ -212,7 +217,7 @@ describe("remediation service", () => {
       owner: "owner",
       repo: "repo",
       pullNumber: 9,
-      pr: { head: { ref: "feature", sha: "sha" } },
+      pr: { head: { ref: "feature", sha: "sha", repo: { full_name: "owner/repo" } } },
       issues: [
         {
           id: 1,
@@ -230,5 +235,44 @@ describe("remediation service", () => {
     expect(result.message).toContain("Contents: Read and write");
     expect(result.message).toContain("Synthesized Fixes (Ready to Apply)");
     expect(result.filesModified).toContain("src/broken.ts");
+  });
+
+  it("refuses remediation when the PR head repo is missing", async () => {
+    const mockOctokit = {
+      repos: {
+        getContent: vi.fn(),
+      },
+      git: {
+        createBlob: vi.fn(),
+        createCommit: vi.fn(),
+        updateRef: vi.fn(),
+      },
+    };
+
+    const result = await executeRemediation({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      pr: { head: { ref: "feature", sha: "sha" } },
+      issues: [
+        {
+          id: 1,
+          path: "src/api.ts",
+          line: 10,
+          side: "RIGHT",
+          title: "Unhandled exception",
+          body: "Add try/catch block",
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("fork PR");
+    expect(result.message).toContain("unknown");
+    expect(mockOctokit.repos.getContent).not.toHaveBeenCalled();
+    expect(mockOctokit.git.createBlob).not.toHaveBeenCalled();
+    expect(mockOctokit.git.createCommit).not.toHaveBeenCalled();
+    expect(mockOctokit.git.updateRef).not.toHaveBeenCalled();
   });
 });
