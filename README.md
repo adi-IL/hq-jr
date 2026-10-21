@@ -5,7 +5,7 @@
 <h1 align="center">hq-jr</h1>
 
 <p align="center">
-  <strong>The self-hosted pull request reviewer that can reproduce suspicious breaks in an isolated sandbox.</strong>
+  <strong>Headquarter Judge and Runner (`hq-jr`): the self-hosted pull request reviewer that can reproduce suspicious breaks in an isolated sandbox.</strong>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 
 - **Sandbox proof.** Suspicious findings run in an isolated Antigravity container, and `hq-jr` polls for a reproduction verdict before completing the sandbox check run.
 - **Mention manners.** Human discussion threads stay quiet until someone mentions `@hq-jr`, unless `hq-jr` started the thread.
-- **Self-hosted on Vertex.** Review diffs are scrubbed for secrets before calling Vertex AI in your Google Cloud project. When Tier 3 runs, the Antigravity sandbox container clones the pull request branch to execute the reproduction test.
+- **Self-hosted on Vertex.** Review diffs are scrubbed for secrets before calling Vertex AI in your Google Cloud project. When Tier 3 runs on a same-repository pull request, the Antigravity sandbox container clones the branch to execute the reproduction test.
 
 ---
 
