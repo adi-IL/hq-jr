@@ -511,7 +511,10 @@
       var keyEl = document.getElementById("viz-tooltip-key");
       var valEl = document.getElementById("viz-tooltip-val");
       var labelEl = document.getElementById("viz-tooltip-label");
-      if (keyEl) keyEl.style.background = item.color;
+      if (keyEl) {
+        keyEl.style.backgroundColor = item.color;
+        keyEl.setAttribute("data-viz-key", key);
+      }
       if (valEl) valEl.textContent = item.value;
       if (labelEl) labelEl.textContent = item.label;
     }
