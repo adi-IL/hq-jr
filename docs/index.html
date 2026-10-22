@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hq-jr: Headquarter Judge and Runner</title>
+  <meta name="description" content="Self-hosted GitHub App that reviews pull requests on Vertex AI and reproduces suspicious breaks in an isolated sandbox.">
+  <meta name="theme-color" content="#000000">
+  <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="./assets/favicon.ico" sizes="any">
+  <link rel="icon" href="./assets/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="./assets/favicon-16.png" type="image/png" sizes="16x16">
+  <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" sizes="180x180">
+  <link rel="manifest" href="./site.webmanifest">
+  <link rel="stylesheet" href="./assets/vercel-brand.css">
+  <script src="./app.js" defer></script>
+</head>
+<body class="vbg-report dark-theme" data-theme="dark">
+  <nav class="vbg-nav" aria-label="Primary">
+    <div class="vbg-nav-inner">
+      <div class="vbg-nav-brand">
+        <img src="./assets/logo.svg" width="108" height="36" alt="hq-jr: Headquarter Judge and Runner">
+        <span class="vbg-tag">v0.1.11</span>
+        <span class="vbg-tag">Apache-2.0</span>
+        <span class="vbg-tag vbg-tag-green">Node &gt;= 22.12.0</span>
+      </div>
+      <div class="vbg-nav-links">
+        <a href="#proof">1. Proof</a>
+        <a href="#funnel">2. Funnel</a>
+        <a href="#ingestion">3. Scrubber</a>
+        <a href="#sandbox">4. Sandbox</a>
+        <a href="#comparison">5. RBAC</a>
+        <a href="#ops">6. Ops &amp; Env</a>
+        <a href="https://github.com/adi-IL/hq-jr" class="vbg-tag vbg-tag-blue">github.com/adi-IL/hq-jr</a>
+      </div>
+    </div>
+  </nav>
+  <main class="vbg-shell">
+    <header id="proof" class="vbg-section vbg-opening">
+      <div class="vbg-grid-12">
+        <div class="vbg-col-5">
+          <div class="vbg-meta-label">Self-hosted GitHub App on Google Cloud Vertex AI ADC</div>
+          <h1>Headquarter Judge and Runner (<code>hq-jr</code>)</h1>
+          <p>The self-hosted pull request reviewer that reproduces suspicious breaks in an isolated sandbox before it posts a verdict.</p>
+          <p><code>hq-jr</code> strips lockfiles and secrets locally, triages diffs on <code>gemini-3.8-flash</code>, escalates high-risk pull requests to <code>gemini-4-argon</code>, and runs dual-commit red and green trials on <code>antigravity-preview-05-2026</code>.</p>
+          <div class="vbg-cmd-list">
+            <div class="vbg-cmd-row">
+              <code><span style="color:var(--vbg-accent-blue)">&gt;</span> npm i -g hq-jr &amp;&amp; hq-jr health</code>
+              <button type="button" class="vbg-btn" data-copy="npm i -g hq-jr && hq-jr health">Copy</button>
+            </div>
+            <div class="vbg-cmd-row">
+              <code><span style="color:var(--vbg-accent-blue)">&gt;</span> docker pull ghcr.io/adi-il/hq-jr:latest</code>
+              <button type="button" class="vbg-btn" data-copy="docker pull ghcr.io/adi-il/hq-jr:latest">Copy</button>
+            </div>
+          </div>
+          <div class="vbg-stat-strip">
+            <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Stage 0 noise filter cost</div>
+              <div class="vbg-stat-val">0 tokens</div>
+              <div class="vbg-stat-desc">Drops 9 lockfiles, 23 binary extensions, and 11 build directory prefixes locally.</div>
+            </div>
+            <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Credential scrubber rules</div>
+              <div class="vbg-stat-val">9 + 18</div>
+              <div class="vbg-stat-desc">Regex families and generic assignment keys scrubbed into <code>[REDACTED_SECRET]</code>.</div>
+            </div>
+            <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Argon output cap</div>
+              <div class="vbg-stat-val">32,768</div>
+              <div class="vbg-stat-desc">Max output token cap (<code>maxOutputTokens</code>) on <code>gemini-4-argon</code> escalation.</div>
+            </div>
+            <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Sandbox heartbeat lease</div>
+              <div class="vbg-stat-val">45s lease</div>
+              <div class="vbg-stat-desc">SQLite WAL <code>sandbox_jobs</code> lease across 180s max sandbox polling.</div>
+            </div>
+          </div>
+        </div>
+        <div class="vbg-col-7">
+          <div class="vbg-meta-label">Interactive 6-stage PR #42 execution trace inspector</div>
+          <div class="vbg-stage-tabs" role="tablist" aria-label="PR execution stages">
+            <button type="button" class="vbg-btn vbg-custom-stage-active" role="tab" aria-selected="true" data-trace-stage="0">0. Scrub</button>
+            <button type="button" class="vbg-btn" role="tab" aria-selected="false" data-trace-stage="1">1. Triage</button>
+            <button type="button" class="vbg-btn" role="tab" aria-selected="false" data-trace-stage="2">2b. Argon</button>
+            <button type="button" class="vbg-btn" role="tab" aria-selected="false" data-trace-stage="3">3. Sandbox</button>
+            <button type="button" class="vbg-btn" role="tab" aria-selected="false" data-trace-stage="4">4. Memory</button>
+            <button type="button" class="vbg-btn" role="tab" aria-selected="false" data-trace-stage="5">5. RBAC Fix</button>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;">
+            <h3 id="trace-stage-title" style="margin:0;">Stage 0: Heuristic Filter &amp; Scrubber</h3>
+            <span id="trace-stage-badge" class="vbg-tag vbg-tag-blue">0 tokens · Local CPU</span>
+          </div>
+          <div id="trace-stage-module" class="vbg-meta-label" style="margin-top:4px;">src/services/file-filter.ts · src/services/scrubber.ts</div>
+          <p id="trace-stage-summary" style="margin-top:8px;">Drops lockfiles, build artifacts, and binaries before any model call. Classifies remaining files by risk weight (SECURITY = 10 down to DOCUMENTATION = 1) and redacts credentials into [REDACTED_SECRET] while preserving env reads.</p>
+          <div class="vbg-code-grid">
+            <div class="vbg-code-box">
+              <div id="trace-input-label" class="vbg-meta-label">Raw unified diff hunk (src/auth/token-session.ts + package-lock.json)</div>
+              <pre><code id="trace-input-code">diff --git a/package-lock.json b/package-lock.json
+  -&gt; classifyFile: OTHER (weight 0, ignored: true, 0 tokens)
+
+diff --git a/src/auth/token-session.ts b/src/auth/token-session.ts
+  -&gt; classifyFile: SECURITY (weight 10, matched root: 'auth', 'token')
+- const SECRET = "[REDACTED_SECRET]";
++ const issuer = process.env.JWT_ISSUER || "[REDACTED_SECRET]";
++ const claims = decodeJwt(header);
++ return acl.canAccess(claims.user.id);</code></pre>
+            </div>
+            <div class="vbg-code-box">
+              <div id="trace-output-label" class="vbg-meta-label">Scrubber &amp; Context Packager Output</div>
+              <pre><code id="trace-output-code">{
+  "reviewableFiles": 1,
+  "ignoredFiles": [
+    "package-lock.json"
+  ],
+  "category": "SECURITY",
+  "riskWeight": 10,
+  "secretsRedacted": 2,
+  "envReadsPreserved": [
+    "process.env.JWT_ISSUER"
+  ],
+  "wrappedTag": "&lt;untrusted_diff&gt;"
+}</code></pre>
+            </div>
+          </div>
+          <img src="./assets/pr-proof-preview.svg" width="880" height="320" class="vbg-svg-frame" alt="hq-jr pull request review and sandbox verification preview">
+        </div>
+      </div>
+    </header>
+    <section id="funnel" class="vbg-section">
+      <div class="vbg-section-head">
+        <div class="vbg-meta-label">Section 2 · Multi-tier review routing and Vertex AI spend controls</div>
+        <h2>Five-stage review funnel and interactive spend configurator</h2>
+        <p>Most pull requests exit early on local heuristics or <code>gemini-3.8-flash</code> triage. Only high-risk reviews escalate to <code>gemini-4-argon</code>, and only suspicious breaks run in the isolated sandbox.</p>
+      </div>
+      <div class="vbg-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th>Default model or runtime</th>
+              <th>Config variable</th>
+              <th>What runs</th>
+              <th>Spend guard</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Stage 0: Filter and scrubber</strong></td>
+              <td><code>Local CPU</code></td>
+              <td><code>src/services/file-filter.ts</code><br><code>src/services/scrubber.ts</code></td>
+              <td>Drops 9 lockfiles, 23 binary extensions, and 11 build directory prefixes. Ranks files by risk weight and scrubs secrets into <code>[REDACTED_SECRET]</code>.</td>
+              <td><code>0 tokens</code> spent on ignored files; caps payload at <code>30,000</code> chars per file and <code>120,000</code> chars total.</td>
+            </tr>
+            <tr>
+              <td><strong>Stage 1: Tier 1 triage</strong></td>
+              <td><code>gemini-3.8-flash</code></td>
+              <td><code>HQ_JR_MODEL_TIER1</code></td>
+              <td>Scores per-file risk (<code>LOW</code>, <code>MEDIUM</code>, <code>HIGH</code>) and sets <code>shouldReview</code> under <code>TRIAGE_RESPONSE_SCHEMA</code> with <code>ThinkingLevel.HIGH</code>.</td>
+              <td>Completes Check Run as <code>success</code> immediately when no file sets <code>shouldReview: true</code>.</td>
+            </tr>
+            <tr>
+              <td><strong>Stage 2: Tier 2 deep review</strong></td>
+              <td><code>gemini-3.8-flash</code></td>
+              <td><code>HQ_JR_MODEL_TIER2</code></td>
+              <td>Runs full structured code review, line-anchored patch synthesis, and Octokit GitHub Action SHA/tag verification when risk is below the escalation gate. Optional override: <code>gemini-3.1-pro-preview</code>.</td>
+              <td>Handles standard pull requests on Flash pricing without invoking Argon.</td>
+            </tr>
+            <tr>
+              <td><strong>Stage 2b: Tier 2 escalation</strong></td>
+              <td><code>gemini-4-argon</code></td>
+              <td><code>HQ_JR_MODEL_ESCALATION</code><br><code>HQ_JR_ESCALATION_MIN_RISK=HIGH</code></td>
+              <td>Escalates deep review when <code>overallRisk &gt;= HQ_JR_ESCALATION_MIN_RISK</code> (~2.7x Flash token rate). Falls back once to <code>HQ_JR_MODEL_TIER2</code> on quota or access error.</td>
+              <td><code>HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS=32768</code> output cap; <code>assertCompleteResponse</code> rejects truncated JSON.</td>
+            </tr>
+            <tr>
+              <td><strong>Stage 3: Tier 3 sandbox</strong></td>
+              <td><code>antigravity-preview-05-2026</code></td>
+              <td><code>HQ_JR_AGENT_TIER3</code></td>
+              <td>Synthesizes adversarial reproduction probes and runs dual-commit red and green trials inside an isolated Linux container when <code>requiresSandboxVerification: true</code>.</td>
+              <td>Hard <code>150,000</code> total token cap (<code>agent_config.max_total_tokens</code>) and <code>180,000 ms</code> polling cap.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="vbg-grid-12 vbg-calculator">
+        <div class="vbg-col-5">
+          <div class="vbg-meta-label">Workload presets and parameters</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+            <button type="button" class="vbg-btn" data-calc-preset="team">Team (250 PRs/mo)</button>
+            <button type="button" class="vbg-btn vbg-custom-stage-active" data-calc-preset="org">Org default (600 PRs/mo)</button>
+            <button type="button" class="vbg-btn" data-calc-preset="strict">Strict gate (1,500 PRs/mo)</button>
+          </div>
+          <div class="vbg-calc-field">
+            <label for="calc-prs">Monthly pull requests (10 to 50,000)</label>
+            <input id="calc-prs" type="number" min="10" max="50000" value="600">
+          </div>
+          <div class="vbg-calc-field">
+            <label for="calc-noise">Stage 0 noise-only PR share (% lockfiles/docs/binaries)</label>
+            <input id="calc-noise" type="number" min="0" max="90" value="25">
+          </div>
+          <div class="vbg-calc-field">
+            <label for="calc-high-risk">High-risk deep review share (%)</label>
+            <input id="calc-high-risk" type="number" min="0" max="100" value="15">
+          </div>
+          <div class="vbg-calc-field">
+            <label for="calc-sandbox">Tier 3 sandbox verification trigger share (%)</label>
+            <input id="calc-sandbox" type="number" min="0" max="100" value="8">
+          </div>
+          <div class="vbg-calc-field">
+            <label for="calc-min-risk">Escalation threshold (<code>HQ_JR_ESCALATION_MIN_RISK</code>)</label>
+            <select id="calc-min-risk">
+              <option value="HIGH" selected>HIGH (default: only high-risk PRs hit Argon)</option>
+              <option value="MEDIUM">MEDIUM (medium + high risk hit Argon)</option>
+              <option value="LOW">LOW (all deep reviews hit Argon)</option>
+            </select>
+          </div>
+          <div id="calc-status" class="vbg-meta-label" aria-live="polite">Updated model for 600 monthly PRs with HQ_JR_ESCALATION_MIN_RISK=HIGH.</div>
+        </div>
+        <div class="vbg-col-7">
+          <div class="vbg-stat-strip">
+            <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Estimated monthly spend</div>
+              <div id="res-monthly-cost" class="vbg-stat-val">$39.05</div>
+              <div class="vbg-stat-delta"><span class="vbg-status-dot" aria-hidden="true"></span><span id="res-monthly-detail">73% lower vs $144.31 un-gated Argon</span></div>
+            </div>
+            <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Argon escalated reviews</div>
+              <div id="res-argon-count" class="vbg-stat-val">54 PRs</div>
+              <div id="res-argon-detail" class="vbg-stat-desc">15% of 360 deep reviews (HIGH gate)</div>
+            </div>
+            <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Early-exit pull requests</div>
+              <div id="res-zero-token" class="vbg-stat-val">240 PRs</div>
+              <div id="res-zero-detail" class="vbg-stat-desc">150 Stage 0 filter + 90 Tier 1 low-risk exit</div>
+            </div>
+            <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Sandbox reproduction trials</div>
+              <div id="res-sandbox-count" class="vbg-stat-val">29 PRs</div>
+              <div id="res-sandbox-detail" class="vbg-stat-desc">Tier 3 Antigravity dual-commit runs</div>
+            </div>
+          </div>
+          <figure class="vbg-chart" style="margin:14px 0 0;">
+            <div class="vbg-viz-toolbar">
+              <figcaption class="vbg-meta-label" style="margin:0;">Ordinal PR volume funnel (5 stages) &amp; monthly spend composition (4 series)</figcaption>
+              <div class="vbg-viz-controls">
+                <button type="button" class="vbg-btn vbg-custom-stage-active" aria-pressed="true" data-chart-view="chart">Chart view</button>
+                <button type="button" class="vbg-btn" aria-pressed="false" data-chart-view="table">Table view</button>
+                <button type="button" class="vbg-btn" aria-pressed="false" data-viz-texture-toggle="true" title="Add 45 and 135 degree textures to the chart bars and spend segments for color-vision readability. Switches to Chart view when the table is showing.">45°/135° Texture</button>
+              </div>
+            </div>
+            <div id="viz-tooltip" class="vbg-viz-tooltip" role="status" aria-live="polite">
+              <span id="viz-tooltip-key" class="vbg-tooltip-key" aria-hidden="true"></span>
+              <span id="viz-tooltip-val" class="vbg-tooltip-val">600 PRs · 100% of incoming ($0.00)</span>
+              <span id="viz-tooltip-label" class="vbg-tooltip-label">Stage 0: Incoming PRs (hover or focus any bar)</span>
+            </div>
+            <div id="viz-chart-panel">
+              <div class="vbg-bar-list" role="list" aria-label="Five-stage pull request volume funnel">
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage0">
+                  <div class="vbg-bar-head"><span>Stage 0: Incoming PRs</span><span id="val-stage0">600 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage0" class="vbg-bar-fill vbg-bar-fill-ord-1" style="width:100%"></div></div>
+                </div>
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage1">
+                  <div class="vbg-bar-head"><span>Stage 1: Tier 1 Flash Triage</span><span id="val-stage1">450 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage1" class="vbg-bar-fill vbg-bar-fill-ord-2" style="width:75%"></div></div>
+                </div>
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage2Flash">
+                  <div class="vbg-bar-head"><span>Stage 2: Tier 2 Flash Deep Review</span><span id="val-stage2-flash">306 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage2-flash" class="vbg-bar-fill vbg-bar-fill-ord-3" style="width:51%"></div></div>
+                </div>
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage2Argon">
+                  <div class="vbg-bar-head"><span>Stage 2b: Tier 2 Argon Escalation</span><span id="val-stage2-argon">54 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage2-argon" class="vbg-bar-fill vbg-bar-fill-ord-4" style="width:9%"></div></div>
+                </div>
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage3">
+                  <div class="vbg-bar-head"><span>Stage 3: Tier 3 Antigravity Sandbox</span><span id="val-stage3">29 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage3" class="vbg-bar-fill vbg-bar-fill-ord-5" style="width:5%"></div></div>
+                </div>
+              </div>
+              <div class="vbg-stack-block">
+                <div class="vbg-bar-head">
+                  <span>Monthly spend share by model tier (2px surface gap)</span>
+                  <span id="val-spend-total">$39.05 / mo</span>
+                </div>
+                <div class="vbg-stack-track" role="list" aria-label="Monthly spend breakdown by tier">
+                  <div id="seg-spend-triage" class="vbg-stack-seg vbg-stack-seg-1" role="listitem" tabindex="0" data-viz-stage="spendTriage" style="width:17%" aria-label="Tier 1 Flash Triage spend"></div>
+                  <div id="seg-spend-flash" class="vbg-stack-seg vbg-stack-seg-2" role="listitem" tabindex="0" data-viz-stage="spendFlash" style="width:44%" aria-label="Tier 2 Flash Deep spend"></div>
+                  <div id="seg-spend-argon" class="vbg-stack-seg vbg-stack-seg-3" role="listitem" tabindex="0" data-viz-stage="spendArgon" style="width:29%" aria-label="Tier 2b Argon Escalation spend"></div>
+                  <div id="seg-spend-sandbox" class="vbg-stack-seg vbg-stack-seg-4" role="listitem" tabindex="0" data-viz-stage="spendSandbox" style="width:10%" aria-label="Tier 3 Antigravity Sandbox spend"></div>
+                </div>
+                <div class="vbg-viz-legend" aria-label="Spend series legend">
+                  <span class="vbg-legend-item"><span class="vbg-legend-swatch vbg-legend-swatch-1" style="background-color:var(--series-1)"></span><span id="leg-spend-triage">Tier 1 Triage ($6.58)</span></span>
+                  <span class="vbg-legend-item"><span class="vbg-legend-swatch vbg-legend-swatch-2" style="background-color:var(--series-2)"></span><span id="leg-spend-flash">Tier 2 Flash ($17.21)</span></span>
+                  <span class="vbg-legend-item"><span class="vbg-legend-swatch vbg-legend-swatch-3" style="background-color:var(--series-3)"></span><span id="leg-spend-argon">Tier 2b Argon ($11.34)</span></span>
+                  <span class="vbg-legend-item"><span class="vbg-legend-swatch vbg-legend-swatch-4" style="background-color:var(--series-4)"></span><span id="leg-spend-sandbox">Tier 3 Sandbox ($3.92)</span></span>
+                </div>
+              </div>
+            </div>
+            <div id="viz-table-panel" class="vbg-table-wrap" style="margin-bottom:12px;" hidden>
+              <table aria-label="Funnel and monthly spend data table">
+                <thead>
+                  <tr>
+                    <th>Funnel stage</th>
+                    <th>Model or runtime</th>
+                    <th>PR volume</th>
+                    <th>Share of incoming</th>
+                    <th>Monthly spend</th>
+                  </tr>
+                </thead>
+                <tbody id="viz-table-body">
+                  <tr>
+                    <td>Stage 0: Incoming PRs</td>
+                    <td><code>Local CPU</code></td>
+                    <td id="tbl-prs-0">600 PRs</td>
+                    <td id="tbl-pct-0">100%</td>
+                    <td id="tbl-cost-0">$0.00</td>
+                  </tr>
+                  <tr>
+                    <td>Stage 1: Tier 1 Flash Triage</td>
+                    <td><code>gemini-3.8-flash</code></td>
+                    <td id="tbl-prs-1">450 PRs</td>
+                    <td id="tbl-pct-1">75%</td>
+                    <td id="tbl-cost-1">$6.58</td>
+                  </tr>
+                  <tr>
+                    <td>Stage 2: Tier 2 Flash Deep Review</td>
+                    <td><code>gemini-3.8-flash</code></td>
+                    <td id="tbl-prs-2">306 PRs</td>
+                    <td id="tbl-pct-2">51%</td>
+                    <td id="tbl-cost-2">$17.21</td>
+                  </tr>
+                  <tr>
+                    <td>Stage 2b: Tier 2 Argon Escalation</td>
+                    <td><code>gemini-4-argon</code></td>
+                    <td id="tbl-prs-2b">54 PRs</td>
+                    <td id="tbl-pct-2b">9%</td>
+                    <td id="tbl-cost-2b">$11.34</td>
+                  </tr>
+                  <tr>
+                    <td>Stage 3: Tier 3 Antigravity Sandbox</td>
+                    <td><code>antigravity-preview-05-2026</code></td>
+                    <td id="tbl-prs-3">29 PRs</td>
+                    <td id="tbl-pct-3">5%</td>
+                    <td id="tbl-cost-3">$3.92</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </figure>
+          <div class="vbg-code-box">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span class="vbg-meta-label" style="margin:0;">Generated .env routing configuration</span>
+              <button type="button" class="vbg-btn" data-copy-target="#calc-env-output">Copy .env</button>
+            </div>
+            <pre><code id="calc-env-output">GOOGLE_CLOUD_PROJECT=your-gcp-project-id
+GOOGLE_CLOUD_LOCATION=global
+HQ_JR_MODEL_TIER1=gemini-3.8-flash
+HQ_JR_MODEL_TIER2=gemini-3.8-flash
+HQ_JR_MODEL_ESCALATION=gemini-4-argon
+HQ_JR_ESCALATION_MIN_RISK=HIGH
+HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS=32768
+HQ_JR_AGENT_TIER3=antigravity-preview-05-2026</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ingestion" class="vbg-section">
+      <div class="vbg-section-head">
+        <div class="vbg-meta-label">Section 3 · Deterministic diff filtering and syntax-aware secret redaction</div>
+        <h2>Stage 0 ingestion filter and credential scrubber</h2>
+        <p>Before any prompt reaches Vertex AI, <code>classifyFile</code> ranks paths by security weight and <code>scrubSecrets</code> strips credentials while keeping environment variable reads intact.</p>
+      </div>
+      <div class="vbg-grid-12">
+        <div class="vbg-col-6" style="padding:0;">
+          <div class="vbg-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Weight</th>
+                  <th>Reviewable</th>
+                  <th>Matching rules in <code>src/services/file-filter.ts</code></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>SECURITY</code></td>
+                  <td><code>10</code></td>
+                  <td>Yes</td>
+                  <td>Word roots <code>auth</code>, <code>credential</code>, <code>crypto</code>, <code>jwt</code>, <code>middleware</code>, <code>permission</code>, <code>rbac</code>, <code>secret</code>, <code>token</code>. Excludes false friends <code>/^author(?!i[zs])/</code>, <code>/^tokeni[zs]/</code>, and <code>/^secretar/</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>BACKEND</code></td>
+                  <td><code>7</code></td>
+                  <td>Yes</td>
+                  <td><code>.ts</code>, <code>.js</code>, <code>.mjs</code>, <code>.cjs</code>, <code>.py</code>, <code>.go</code>, <code>.rs</code>, <code>.java</code>, <code>.kt</code>, <code>.rb</code>, <code>.php</code>, <code>.cs</code>, <code>.cpp</code>, <code>.c</code>, <code>.h</code>, <code>.hpp</code>, <code>.scala</code>, <code>.ex</code>, <code>.exs</code>, <code>.sql</code>, <code>.sh</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>FRONTEND</code></td>
+                  <td><code>6</code></td>
+                  <td>Yes</td>
+                  <td><code>.tsx</code>, <code>.jsx</code>, <code>.vue</code>, <code>.svelte</code>, <code>.html</code>, <code>.css</code>, <code>.scss</code>, <code>.less</code>, and <code>.svg</code> (flagged for stored XSS and inline event handlers).</td>
+                </tr>
+                <tr>
+                  <td><code>CONFIG</code></td>
+                  <td><code>5</code></td>
+                  <td>Yes</td>
+                  <td><code>.json</code>, <code>.yaml</code>, <code>.yml</code>, <code>.toml</code>, <code>.ini</code>, <code>.env</code>, <code>Dockerfile</code>, <code>Makefile</code>, <code>.tf</code>, <code>.hcl</code>, <code>docs/package.json</code>, and <code>docs/tsconfig.json</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>TEST</code></td>
+                  <td><code>3</code></td>
+                  <td>Yes</td>
+                  <td><code>tests/</code>, <code>__tests__/</code>, <code>*.test.*</code>, <code>*.spec.*</code>, and <code>*_test.go</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>DOCUMENTATION</code></td>
+                  <td><code>1</code></td>
+                  <td>No</td>
+                  <td><code>.md</code>, <code>.mdx</code>, <code>.rst</code>, <code>.txt</code>, <code>.adoc</code>, and non-manifest files under <code>docs/</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>OTHER</code></td>
+                  <td><code>0</code></td>
+                  <td>No</td>
+                  <td>9 lockfiles, 23 binary/font/archive extensions, 11 build prefixes (<code>dist/</code>, <code>build/</code>, <code>node_modules/</code>, <code>vendor/</code>), <code>*.min.*</code>, and <code>*.bundle.js</code>.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div style="padding:16px 24px;background:var(--vbg-surface-1);">
+            <div class="vbg-meta-label">Context packager caps (<code>src/services/context-packager.ts</code>)</div>
+            <p style="margin:0;font-size:0.84rem;">Sorts reviewable files by descending risk weight. Caps each file at <code>30,000</code> characters and total prompt context at <code>120,000</code> characters, reserving up to <code>20%</code> of the budget for the ignored file summary list and wrapping diffs in <code>&lt;untrusted_diff&gt;</code> tags.</p>
+          </div>
+        </div>
+        <div class="vbg-col-6" style="padding:0;">
+          <div class="vbg-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Pattern class</th>
+                  <th>Scrubber behavior</th>
+                  <th>Example input and output</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>9 provider regex families</strong></td>
+                  <td>Redacts to <code>[REDACTED_SECRET]</code></td>
+                  <td>PEM private keys (<code>&lt;YOUR_PRIVATE_KEY_PEM&gt;</code>), AWS <code>AKIA/ASIA</code>, GitHub PATs (<code>ghp_</code>, <code>github_pat_</code>), Slack tokens, Google API keys, JWTs, Stripe keys, High-entropy hex/base64, and Basic auth URLs.</td>
+                </tr>
+                <tr>
+                  <td><strong>18 assignment keys</strong></td>
+                  <td>Redacts literals <code>&gt;= 8</code> chars (<code>secret_key</code> any length)</td>
+                  <td><code>password = "[REDACTED_SECRET]"</code>, <code>api_key</code>, <code>client_secret</code>, <code>private_key</code>, <code>access_token</code>, <code>webhook_secret</code>, <code>database_url</code>.</td>
+                </tr>
+                <tr>
+                  <td><strong>Safe env and config reads</strong></td>
+                  <td>Preserved when no literal fallback follows</td>
+                  <td>Preserves <code>process.env.API_KEY</code>, <code>Deno.env.get(...)</code>, <code>Bun.env.X</code>, <code>os.environ</code>, <code>config.*</code>, and <code>vault.*</code>.</td>
+                </tr>
+                <tr>
+                  <td><strong>Env read with literal fallback</strong></td>
+                  <td>Preserves env read, redacts literal fallback</td>
+                  <td><code>process.env.JWT_SECRET ?? "[REDACTED_SECRET]"</code></td>
+                </tr>
+                <tr>
+                  <td><strong>Summary path scrubbing</strong></td>
+                  <td>Scrubs <code>shortenSummaryPath</code> output</td>
+                  <td>Runs <code>scrubSecrets(rawSummary).scrubbedText</code> before posting GitHub Check Run summaries.</td>
+                </tr>
+                <tr>
+                  <td><strong>Remediation code fences</strong></td>
+                  <td>Maps 15 extensions via <code>FENCE_LANGUAGE_BY_EXT</code></td>
+                  <td>Maps <code>.ts -&gt; ts</code>, <code>.py -&gt; python</code>, <code>.go -&gt; go</code>, <code>.rs -&gt; rust</code>, <code>.sh -&gt; bash</code>, <code>.yml -&gt; yaml</code> for GitHub comment syntax highlighting.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section id="sandbox" class="vbg-section">
+      <div class="vbg-section-head">
+        <div class="vbg-meta-label">Section 4 · Empirical reproduction, network isolation, and post-0.1.11 hardening</div>
+        <h2>Tier 3 Antigravity sandbox verification and network guards</h2>
+        <p>When deep review sets <code>requiresSandboxVerification: true</code>, <code>hq-jr</code> keeps the GitHub Check Run <code>in_progress</code> (<code>conclusion: null</code>) while polling <code>antigravity-preview-05-2026</code> for up to <code>180,000 ms</code> with a <code>45,000 ms</code> SQLite WAL heartbeat lease. For same-repository pull requests, Tier 3 clones the PR branch inside an isolated container.</p>
+      </div>
+      <div class="vbg-col-12" style="border-bottom:1px solid var(--vbg-border-subtle);background:var(--vbg-surface-1);">
+        <figure class="vbg-chart" style="margin:0;">
+          <svg class="vbg-pipeline-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 150" width="100%" role="img" aria-label="hq-jr webhook to sandbox execution pipeline">
+            <rect x="4" y="18" width="210" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
+            <circle cx="20" cy="40" r="4" fill="#9ec5f4" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="30" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">1. Probot v13 Ingress</text>
+            <text x="18" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">HMAC-SHA256 webhook</text>
+            <text x="18" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">SQLite active_runs lock</text>
+            <text x="18" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">owner/repo#pullNumber</text>
+            <line x1="214" y1="75" x2="246" y2="75" stroke="#30363d" stroke-width="1"/>
+            <rect x="246" y="18" width="210" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
+            <circle cx="262" cy="40" r="4" fill="#6da7ec" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="272" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">2. Stage 0 Scrub &amp; Pack</text>
+            <text x="260" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">classifyFile + scrubSecrets</text>
+            <text x="260" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">30k/file · 120k total cap</text>
+            <text x="260" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">[REDACTED_SECRET]</text>
+            <line x1="456" y1="75" x2="488" y2="75" stroke="#30363d" stroke-width="1"/>
+            <rect x="488" y="18" width="210" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
+            <circle cx="504" cy="40" r="4" fill="#3987e5" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="514" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">3. Tier 1 &amp; 2 Flash</text>
+            <text x="502" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">gemini-3.8-flash</text>
+            <text x="502" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">ThinkingLevel.HIGH</text>
+            <text x="502" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">Early exit on LOW risk</text>
+            <line x1="698" y1="75" x2="730" y2="75" stroke="#30363d" stroke-width="1"/>
+            <rect x="730" y="18" width="200" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
+            <circle cx="746" cy="40" r="4" fill="#256abf" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="756" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">4. Tier 2b Argon Gate</text>
+            <text x="744" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">gemini-4-argon</text>
+            <text x="744" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">32,768 maxOutputTokens</text>
+            <text x="744" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">Retry fallback to Tier 2</text>
+            <line x1="930" y1="75" x2="960" y2="75" stroke="#30363d" stroke-width="1"/>
+            <rect x="960" y="18" width="196" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
+            <circle cx="976" cy="40" r="4" fill="#184f95" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="986" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">5. Tier 3 Sandbox</text>
+            <text x="974" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">antigravity-preview-05-2026</text>
+            <text x="974" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">150k cap · 45s lease</text>
+            <text x="974" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">Dual-commit red/green</text>
+          </svg>
+        </figure>
+      </div>
+      <div class="vbg-grid-12">
+        <div class="vbg-col-6" style="padding:0;">
+          <div class="vbg-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Sandbox probe / conclusion</th>
+                  <th>Identifier</th>
+                  <th>Runtime contract</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Probe archetypes (4)</strong></td>
+                  <td><code>UNIT_ASSERTION</code><br><code>PROPERTY_BASED</code><br><code>SUBPROCESS_PROBE</code><br><code>FAULT_INJECTION</code></td>
+                  <td>Auto-detects runner by manifest: <code>Cargo.toml -&gt; cargo test</code>, <code>go.mod -&gt; go test ./...</code>, <code>pyproject.toml / requirements.txt -&gt; pytest</code>, default <code>npm test</code>.</td>
+                </tr>
+                <tr>
+                  <td><strong>Failure kinds (5)</strong></td>
+                  <td><code>PANIC</code>, <code>EXCEPTION</code>, <code>RESOURCE_LEAK</code>, <code>WRONG_OUTPUT</code>, <code>CRASH</code></td>
+                  <td>Caps probe matrix at <code>MAX_MATRIX_PROBES = 50</code> and summary output at <code>MAX_SANDBOX_SUMMARY_CHARS = 60,000</code>.</td>
+                </tr>
+                <tr>
+                  <td><strong>Reproduced &amp; uncured</strong></td>
+                  <td><code>conclusion: "failure"</code></td>
+                  <td><code>reproduced === true &amp;&amp; !patchCured</code>. Exposes Check Run actions <code>Commit Repro Test</code> and <code>Re-run Sandbox</code>.</td>
+                </tr>
+                <tr>
+                  <td><strong>Cured or not reproduced</strong></td>
+                  <td><code>conclusion: "success"</code></td>
+                  <td><code>patchCured === true</code> or break did not reproduce on PR head.</td>
+                </tr>
+                <tr>
+                  <td><strong>Timeout or infra fault</strong></td>
+                  <td><code>conclusion: "neutral"</code></td>
+                  <td>Polling exceeds <code>180,000 ms</code> or upstream Vertex AI hits <code>HQ_JR_AI_TIMEOUT_MS</code> / 429 / 5xx (<code>isAiInfraError</code>).</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="vbg-col-6" style="padding:0;">
+          <div class="vbg-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Guard or allowlist</th>
+                  <th>Source module</th>
+                  <th>Enforcement detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong><code>SANDBOX_HOSTS</code> allowlist</strong></td>
+                  <td><code>src/services/sandbox-runner.ts</code></td>
+                  <td><code>github.com</code> plus <code>crates.io</code>, <code>static.rust-lang.org</code>, <code>index.crates.io</code> (Rust); <code>proxy.golang.org</code>, <code>sum.golang.org</code> (Go); <code>pypi.org</code>, <code>files.pythonhosted.org</code> (Python); <code>registry.npmjs.org</code>, <code>nodejs.org</code> (Node). Zero wildcards.</td>
+                </tr>
+                <tr>
+                  <td><strong><code>SYNTHESIZED_REPRO_MARKER</code></strong></td>
+                  <td><code>src/services/sandbox-runner.ts</code></td>
+                  <td>Requires <code>commit_repro_test</code> payloads to come from Check Runs authored by <code>hq-jr</code> containing the synthesized marker and validates paths via <code>isSafeReproTestPath</code> (under <code>tests/</code>, no <code>..</code>).</td>
+                </tr>
+                <tr>
+                  <td><strong><code>resolveVerdict</code> gate</strong></td>
+                  <td><code>src/services/ai.ts</code></td>
+                  <td>Any <code>CRITICAL</code> or <code>WARNING</code> inline finding deterministically forces <code>REQUEST_CHANGES</code> even if the model returned <code>APPROVE</code>.</td>
+                </tr>
+                <tr>
+                  <td><strong><code>verifyReviewActionRefs</code></strong></td>
+                  <td><code>src/services/action-ref-verifier.ts</code></td>
+                  <td>Queries GitHub REST (<code>git.getRef</code>, <code>repos.getCommit</code>) to verify <code>uses: owner/repo@ref</code> tags, branches, and 40-char SHAs before flagging workflows.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="comparison" class="vbg-section">
+      <div class="vbg-section-head">
+        <div class="vbg-meta-label">Section 5 · Architectural comparison, hybrid cross-push memory, and RBAC command matrix</div>
+        <h2>Generic AI review bots vs <code>hq-jr</code> and collaborator RBAC</h2>
+        <p><code>hq-jr</code> runs inside your own infrastructure, remembers resolved review threads across synchronize pushes via GitHub GraphQL and SQLite WAL, and gates every write command behind collaborator permission checks.</p>
+      </div>
+      <div class="vbg-table-wrap" style="border-bottom:1px solid var(--vbg-border-subtle);">
+        <table>
+          <thead>
+            <tr>
+              <th>Dimension</th>
+              <th>Generic SaaS AI review bots</th>
+              <th><code>hq-jr</code> (Headquarter Judge and Runner)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Verification</strong></td>
+              <td>Guesses from static diff text alone and posts unverified hypotheses.</td>
+              <td>Synthesizes adversarial probes and runs dual-commit red/green trials in an isolated container before claiming a break reproduces.</td>
+            </tr>
+            <tr>
+              <td><strong>Memory</strong></td>
+              <td>Re-comments on fixed issues on every push or loses state across restarts.</td>
+              <td>Queries unresolved GitHub GraphQL <code>reviewThreads</code> authored by <code>hq-jr</code> first, falling back to REST comments merged with local SQLite WAL (<code>review_findings</code>).</td>
+            </tr>
+            <tr>
+              <td><strong>Noise</strong></td>
+              <td>Spends tokens on lockfiles, minified bundles, and low-risk formatting diffs.</td>
+              <td>Drops 9 lockfiles, 23 binary extensions, and 11 build prefixes at 0 tokens, then exits early after Tier 1 Flash triage when no file needs deep review.</td>
+            </tr>
+            <tr>
+              <td><strong>Etiquette</strong></td>
+              <td>Hijacks human review threads and nags on every comment event.</td>
+              <td>Stays silent in human review threads unless <code>@hq-jr</code> is explicitly mentioned or <code>hq-jr</code> started the thread. Skips self-authored <code>hq-jr/fix-pr-&lt;id&gt;</code> pushes.</td>
+            </tr>
+            <tr>
+              <td><strong>Hosting</strong></td>
+              <td>Multi-tenant third-party SaaS holding long-lived repository tokens.</td>
+              <td>Self-hosted rootless Docker container authenticating via short-lived GitHub App installation tokens and Google Cloud ADC with zero static API keys.</td>
+            </tr>
+            <tr>
+              <td><strong>Secrets</strong></td>
+              <td>Forwards raw diff hunks containing credentials directly to model APIs.</td>
+              <td>Scrubs 9 credential regex families and 18 assignment keys into <code>[REDACTED_SECRET]</code> locally before prompt assembly; same-repo Tier 3 runs clone the PR branch inside the isolated sandbox.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="vbg-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Command or webhook surface</th>
+              <th>Required permission</th>
+              <th>Fork &amp; head-repo policy</th>
+              <th>Execution behavior in <code>src/index.ts</code> &amp; <code>src/services/remediation.ts</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>@hq-jr review | audit | scan | diff</code></td>
+              <td>Any PR commenter</td>
+              <td>Allowed (read-only diff review)</td>
+              <td>Triggers the 5-stage review pipeline under the per-PR SQLite <code>active_runs</code> lock.</td>
+            </tr>
+            <tr>
+              <td><code>@hq-jr fix | patch | remediate</code></td>
+              <td>Collaborator <code>admin</code> or <code>write</code></td>
+              <td>Refuses fork PRs and null <code>pr.head.repo</code> both before synthesis and before commit</td>
+              <td>Synthesizes fixes on <code>HQ_JR_MODEL_REMEDIATION</code> and commits to branch <code>hq-jr/fix-pr-&lt;number&gt;</code>. Supports <code>@hq-jr fix and merge</code>.</td>
+            </tr>
+            <tr>
+              <td><code>@hq-jr commit-repro</code> &amp; <code>[Commit Repro Test]</code></td>
+              <td>Collaborator <code>admin</code> or <code>write</code></td>
+              <td>Refuses fork PRs and paths outside <code>tests/</code> (<code>isSafeReproTestPath</code>)</td>
+              <td>Verifies <code>SYNTHESIZED_REPRO_MARKER</code> on the <code>hq-jr</code> Check Run and commits the reproduction test directly to the PR branch.</td>
+            </tr>
+            <tr>
+              <td><code>@hq-jr merge</code></td>
+              <td>Collaborator <code>admin</code> or <code>write</code></td>
+              <td>Same-repo mergeable PR required</td>
+              <td><code>MERGE_COMMAND_RE</code> blocks questions (<code>?</code>) and negations (<code>do not merge</code>, <code>don't merge</code>). Closes linked issues only after <code>pulls.merge</code> succeeds.</td>
+            </tr>
+            <tr>
+              <td><code>pull_request_review_comment.created</code></td>
+              <td>Thread participant</td>
+              <td>Read-only reply via <code>HQ_JR_MODEL_DISCUSSION</code></td>
+              <td>Replies only when <code>@hq-jr</code> is mentioned or <code>hq-jr</code> authored the thread root comment.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="ops" class="vbg-section">
+      <div class="vbg-section-head">
+        <div class="vbg-meta-label">Section 6 · Zero-checkout production operations, CLI commands, and 16-variable config reference</div>
+        <h2>Rootless deployment, auto-rollback timer, and environment reference</h2>
+        <p>Deploy from pre-built GHCR images without a source checkout on the host. Every environment variable is validated at startup by Zod in <code>src/config.ts</code>.</p>
+      </div>
+      <div class="vbg-grid-12" style="border-bottom:1px solid var(--vbg-border-subtle);">
+        <div class="vbg-col-4">
+          <div class="vbg-meta-label">Track 1 · Rootless container runtime</div>
+          <h3>Docker Compose + Vertex ADC</h3>
+          <p>Runs on <code>node:22-bookworm-slim</code> with <code>tini</code> as PID 1 and non-root user <code>hqjr</code> (<code>uid 1001</code>, <code>gid 1001</code>). Binds <code>127.0.0.1:3000:3000</code>, mounts <code>/opt/hq-jr/gcloud:/gcloud:ro</code> (<code>0400</code>), and persists SQLite WAL state in <code>/opt/hq-jr/data:/app/data</code>.</p>
+        </div>
+        <div class="vbg-col-4">
+          <div class="vbg-meta-label">Track 2 · Self-healing updates</div>
+          <h3>15-minute systemd timer &amp; rollback</h3>
+          <p><code>hq-jr-update.timer</code> triggers <code>deploy/update.sh</code> every 15 minutes with <code>flock</code> concurrency control. Polls <code>http://127.0.0.1:3000/livez</code> for up to <code>60s</code> after image swap and rolls back automatically while recording <code>.last-failed-image</code> on failure.</p>
+        </div>
+        <div class="vbg-col-4">
+          <div class="vbg-meta-label">Track 3 · Standalone CLI &amp; probes</div>
+          <h3>CLI &amp; readiness endpoints</h3>
+          <p><code>GET /livez</code> serves liveness; <code>GET /healthz</code> probes Vertex AI on <code>HQ_JR_MODEL_HEALTH</code> with a 60s cache TTL. CLI supports <code>hq-jr health</code>, <code>hq-jr review --diff &lt;path&gt;</code>, <code>hq-jr review --pr &lt;n&gt;</code>, and <code>hq-jr sandbox-test</code>.</p>
+        </div>
+      </div>
+      <div style="padding:16px 24px;background:var(--vbg-surface-1);border-bottom:1px solid var(--vbg-border-subtle);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="vbg-btn vbg-custom-stage-active" aria-pressed="true" data-env-filter="models">Model routing &amp; spend gates (8)</button>
+          <button type="button" class="vbg-btn" aria-pressed="false" data-env-filter="runtime">Runtime, auth &amp; storage (8)</button>
+          <button type="button" class="vbg-btn" aria-pressed="false" data-env-filter="all">Show all 16 variables</button>
+        </div>
+        <div id="env-filter-count" class="vbg-meta-label" style="margin:0;">Showing 8 of 16 variables (active filter: Model routing &amp; spend gates)</div>
+      </div>
+      <div class="vbg-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Variable (<code>src/config.ts</code>)</th>
+              <th>Default value</th>
+              <th>Group</th>
+              <th>Role and startup validation rule</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-env-group="models">
+              <td><code>HQ_JR_MODEL_TIER1</code></td>
+              <td><code>gemini-3.8-flash</code></td>
+              <td>Models &amp; spend</td>
+              <td>Stage 1 per-file risk triage model (non-empty string, <code>ThinkingLevel.HIGH</code>).</td>
+            </tr>
+            <tr data-env-group="models">
+              <td><code>HQ_JR_MODEL_TIER2</code></td>
+              <td><code>gemini-3.8-flash</code></td>
+              <td>Models &amp; spend</td>
+              <td>Stage 2 standard deep review model and fallback target when escalation fails (non-empty string).</td>
+            </tr>
+            <tr data-env-group="models">
+              <td><code>HQ_JR_MODEL_ESCALATION</code></td>
+              <td><code>gemini-4-argon</code></td>
+              <td>Models &amp; spend</td>
+              <td>Stage 2b high-risk escalated deep review model (non-empty string).</td>
+            </tr>
+            <tr data-env-group="models">
+              <td><code>HQ_JR_ESCALATION_MIN_RISK</code></td>
+              <td><code>HIGH</code></td>
+              <td>Models &amp; spend</td>
+              <td>Minimum triage <code>overallRisk</code> (<code>LOW</code>, <code>MEDIUM</code>, <code>HIGH</code>) required to escalate deep review to Argon.</td>
+            </tr>
+            <tr data-env-group="models">
+              <td><code>HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS</code></td>
+              <td><code>32768</code></td>
+              <td>Models &amp; spend</td>
+              <td>Positive integer <code>maxOutputTokens</code> cap applied only to <code>runEscalatedDeepReview</code> on Argon.</td>
+            </tr>
+            <tr data-env-group="models">
+              <td><code>HQ_JR_MODEL_DISCUSSION</code></td>
+              <td><code>gemini-3.8-flash</code></td>
+              <td>Models &amp; spend</td>
+              <td>Model for <code>@hq-jr</code> pull request review thread replies in <code>src/services/discussion.ts</code>.</td>
+            </tr>
+            <tr data-env-group="models">
+              <td><code>HQ_JR_MODEL_REMEDIATION</code></td>
+              <td><code>gemini-3.8-flash</code></td>
+              <td>Models &amp; spend</td>
+              <td>Model for <code>@hq-jr fix</code> full-file remediation patch synthesis in <code>src/services/remediation.ts</code>.</td>
+            </tr>
+            <tr data-env-group="models">
+              <td><code>HQ_JR_AGENT_TIER3</code></td>
+              <td><code>antigravity-preview-05-2026</code></td>
+              <td>Models &amp; spend</td>
+              <td>Stage 3 isolated Linux container agent for adversarial reproduction trials (<code>150,000</code> token cap).</td>
+            </tr>
+            <tr data-env-group="runtime">
+              <td><code>GOOGLE_CLOUD_PROJECT</code></td>
+              <td><code>test-gcp-project</code></td>
+              <td>Runtime &amp; auth</td>
+              <td>Google Cloud project ID billed for Vertex AI requests via Application Default Credentials.</td>
+            </tr>
+            <tr data-env-group="runtime">
+              <td><code>GOOGLE_CLOUD_LOCATION</code></td>
+              <td><code>global</code></td>
+              <td>Runtime &amp; auth</td>
+              <td>Vertex AI endpoint location passed to <code>@google/genai</code> SDK initialization.</td>
+            </tr>
+            <tr data-env-group="runtime">
+              <td><code>HQ_JR_MODEL_HEALTH</code></td>
+              <td><code>gemini-3.8-flash</code></td>
+              <td>Runtime &amp; auth</td>
+              <td>Model pinged by <code>GET /healthz</code> and <code>hq-jr health</code> readiness checks (cached for 60s).</td>
+            </tr>
+            <tr data-env-group="runtime">
+              <td><code>HQ_JR_AI_TIMEOUT_MS</code></td>
+              <td><code>900000</code></td>
+              <td>Runtime &amp; auth</td>
+              <td>Positive integer per-request abort timeout in milliseconds (15 minutes) enforced by <code>aiFetch</code>.</td>
+            </tr>
+            <tr data-env-group="runtime">
+              <td><code>HQ_JR_DB_PATH</code></td>
+              <td><code>./data/hq-jr.db</code></td>
+              <td>Runtime &amp; auth</td>
+              <td>SQLite WAL database path storing <code>review_findings</code>, <code>active_runs</code>, and <code>sandbox_jobs</code>.</td>
+            </tr>
+            <tr data-env-group="runtime">
+              <td><code>PORT</code></td>
+              <td><code>3000</code></td>
+              <td>Runtime &amp; auth</td>
+              <td>HTTP port bound by the Probot webhook and health server.</td>
+            </tr>
+            <tr data-env-group="runtime">
+              <td><code>NODE_ENV</code></td>
+              <td><code>development</code></td>
+              <td>Runtime &amp; auth</td>
+              <td>Runtime environment enum (<code>development</code>, <code>production</code>, <code>test</code>).</td>
+            </tr>
+            <tr data-env-group="runtime">
+              <td><code>LOG_LEVEL</code></td>
+              <td><code>info</code></td>
+              <td>Runtime &amp; auth</td>
+              <td>Structured Pino log level emitted by Probot and CLI services.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <footer class="vbg-footer">
+    <div>hq-jr · Headquarter Judge and Runner · v0.1.11 · Apache-2.0 License</div>
+    <div>Self-hosted on Google Cloud Vertex AI ADC · Zero static Gemini API keys · <a href="https://github.com/adi-IL/hq-jr">github.com/adi-IL/hq-jr</a></div>
+  </footer>
+</body>
+</html>
