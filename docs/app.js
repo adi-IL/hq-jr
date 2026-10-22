@@ -284,6 +284,8 @@
       sandboxPct: 8,
       minRisk: "HIGH"
     };
+    var vizReadoutMap = {};
+    var activeVizKey = "stage0";
 
     function parseBounded(input, min, max) {
       var raw = Number(input.value);
@@ -332,15 +334,14 @@
       var flashDeepPrs = Math.max(0, deepReviewPrs - argonPrs);
       var sandboxPrs = Math.round(deepReviewPrs * (sandboxPct / 100));
 
-      var hqJrMonthlyCost =
-        triagedPrs * STAGE_UNIT_COSTS.triageFlashUsd +
-        flashDeepPrs * STAGE_UNIT_COSTS.deepFlashUsd +
-        argonPrs * STAGE_UNIT_COSTS.deepArgonUsd +
-        sandboxPrs * STAGE_UNIT_COSTS.sandboxRunUsd;
+      var triageCost = triagedPrs * STAGE_UNIT_COSTS.triageFlashUsd;
+      var flashCost = flashDeepPrs * STAGE_UNIT_COSTS.deepFlashUsd;
+      var argonCost = argonPrs * STAGE_UNIT_COSTS.deepArgonUsd;
+      var sandboxCost = sandboxPrs * STAGE_UNIT_COSTS.sandboxRunUsd;
+      var hqJrMonthlyCost = triageCost + flashCost + argonCost + sandboxCost;
 
       var ungatedArgonCost =
-        totalPrs * STAGE_UNIT_COSTS.ungatedArgonBaselineUsd +
-        sandboxPrs * STAGE_UNIT_COSTS.sandboxRunUsd;
+        totalPrs * STAGE_UNIT_COSTS.ungatedArgonBaselineUsd + sandboxCost;
       var savingsDollars = Math.max(0, ungatedArgonCost - hqJrMonthlyCost);
       var savingsPct =
         ungatedArgonCost > 0 ? Math.round((savingsDollars / ungatedArgonCost) * 100) : 0;
@@ -348,7 +349,7 @@
       setText("res-monthly-cost", "$" + hqJrMonthlyCost.toFixed(2));
       setText(
         "res-monthly-detail",
-        "vs $" + ungatedArgonCost.toFixed(2) + " un-gated Argon (" + savingsPct + "% lower)"
+        savingsPct + "% lower vs $" + ungatedArgonCost.toFixed(2) + " un-gated Argon"
       );
       setText("res-argon-count", argonPrs.toLocaleString() + " PRs");
       setText(
@@ -363,11 +364,93 @@
       setText("res-sandbox-count", sandboxPrs.toLocaleString() + " PRs");
       setText("res-sandbox-detail", "Tier 3 Antigravity dual-commit runs");
 
-      updateBar("bar-stage0", "val-stage0", totalPrs, totalPrs, totalPrs + " PRs");
-      updateBar("bar-stage1", "val-stage1", triagedPrs, totalPrs, triagedPrs + " PRs");
-      updateBar("bar-stage2-flash", "val-stage2-flash", flashDeepPrs, totalPrs, flashDeepPrs + " PRs");
-      updateBar("bar-stage2-argon", "val-stage2-argon", argonPrs, totalPrs, argonPrs + " PRs");
-      updateBar("bar-stage3", "val-stage3", sandboxPrs, totalPrs, sandboxPrs + " PRs");
+      var pct0 = 100;
+      var pct1 = totalPrs > 0 ? Math.round((triagedPrs / totalPrs) * 100) : 0;
+      var pct2Flash = totalPrs > 0 ? Math.round((flashDeepPrs / totalPrs) * 100) : 0;
+      var pct2Argon = totalPrs > 0 ? Math.round((argonPrs / totalPrs) * 100) : 0;
+      var pct3 = totalPrs > 0 ? Math.round((sandboxPrs / totalPrs) * 100) : 0;
+
+      updateBar("bar-stage0", "val-stage0", totalPrs, totalPrs, totalPrs.toLocaleString() + " PRs");
+      updateBar("bar-stage1", "val-stage1", triagedPrs, totalPrs, triagedPrs.toLocaleString() + " PRs");
+      updateBar("bar-stage2-flash", "val-stage2-flash", flashDeepPrs, totalPrs, flashDeepPrs.toLocaleString() + " PRs");
+      updateBar("bar-stage2-argon", "val-stage2-argon", argonPrs, totalPrs, argonPrs.toLocaleString() + " PRs");
+      updateBar("bar-stage3", "val-stage3", sandboxPrs, totalPrs, sandboxPrs.toLocaleString() + " PRs");
+
+      updateSpendSegment("seg-spend-triage", triageCost, hqJrMonthlyCost);
+      updateSpendSegment("seg-spend-flash", flashCost, hqJrMonthlyCost);
+      updateSpendSegment("seg-spend-argon", argonCost, hqJrMonthlyCost);
+      updateSpendSegment("seg-spend-sandbox", sandboxCost, hqJrMonthlyCost);
+
+      setText("val-spend-total", "$" + hqJrMonthlyCost.toFixed(2) + " / mo");
+      setText("leg-spend-triage", "Tier 1 Triage ($" + triageCost.toFixed(2) + ")");
+      setText("leg-spend-flash", "Tier 2 Flash ($" + flashCost.toFixed(2) + ")");
+      setText("leg-spend-argon", "Tier 2b Argon ($" + argonCost.toFixed(2) + ")");
+      setText("leg-spend-sandbox", "Tier 3 Sandbox ($" + sandboxCost.toFixed(2) + ")");
+
+      setText("tbl-prs-0", totalPrs.toLocaleString() + " PRs");
+      setText("tbl-pct-0", pct0 + "%");
+      setText("tbl-cost-0", "$0.00");
+      setText("tbl-prs-1", triagedPrs.toLocaleString() + " PRs");
+      setText("tbl-pct-1", pct1 + "%");
+      setText("tbl-cost-1", "$" + triageCost.toFixed(2));
+      setText("tbl-prs-2", flashDeepPrs.toLocaleString() + " PRs");
+      setText("tbl-pct-2", pct2Flash + "%");
+      setText("tbl-cost-2", "$" + flashCost.toFixed(2));
+      setText("tbl-prs-2b", argonPrs.toLocaleString() + " PRs");
+      setText("tbl-pct-2b", pct2Argon + "%");
+      setText("tbl-cost-2b", "$" + argonCost.toFixed(2));
+      setText("tbl-prs-3", sandboxPrs.toLocaleString() + " PRs");
+      setText("tbl-pct-3", pct3 + "%");
+      setText("tbl-cost-3", "$" + sandboxCost.toFixed(2));
+
+      vizReadoutMap = {
+        stage0: {
+          color: "#9ec5f4",
+          value: totalPrs.toLocaleString() + " PRs · 100% of incoming ($0.00)",
+          label: "Stage 0: Incoming PRs (" + skippedStage0.toLocaleString() + " filtered locally)"
+        },
+        stage1: {
+          color: "#6da7ec",
+          value: triagedPrs.toLocaleString() + " PRs · " + pct1 + "% of incoming ($" + triageCost.toFixed(2) + ")",
+          label: "Stage 1: Tier 1 Flash Triage (gemini-3.8-flash)"
+        },
+        stage2Flash: {
+          color: "#3987e5",
+          value: flashDeepPrs.toLocaleString() + " PRs · " + pct2Flash + "% of incoming ($" + flashCost.toFixed(2) + ")",
+          label: "Stage 2: Tier 2 Flash Deep Review (gemini-3.8-flash)"
+        },
+        stage2Argon: {
+          color: "#256abf",
+          value: argonPrs.toLocaleString() + " PRs · " + pct2Argon + "% of incoming ($" + argonCost.toFixed(2) + ")",
+          label: "Stage 2b: Tier 2 Argon Escalation (gemini-4-argon)"
+        },
+        stage3: {
+          color: "#184f95",
+          value: sandboxPrs.toLocaleString() + " PRs · " + pct3 + "% of incoming ($" + sandboxCost.toFixed(2) + ")",
+          label: "Stage 3: Tier 3 Antigravity Sandbox (antigravity-preview-05-2026)"
+        },
+        spendTriage: {
+          color: "#3987e5",
+          value: "$" + triageCost.toFixed(2) + " · " + formatShare(triageCost, hqJrMonthlyCost) + "% of monthly spend",
+          label: "Series 1: Tier 1 Flash Triage (" + triagedPrs.toLocaleString() + " PRs)"
+        },
+        spendFlash: {
+          color: "#d95926",
+          value: "$" + flashCost.toFixed(2) + " · " + formatShare(flashCost, hqJrMonthlyCost) + "% of monthly spend",
+          label: "Series 2: Tier 2 Flash Deep (" + flashDeepPrs.toLocaleString() + " PRs)"
+        },
+        spendArgon: {
+          color: "#199e70",
+          value: "$" + argonCost.toFixed(2) + " · " + formatShare(argonCost, hqJrMonthlyCost) + "% of monthly spend",
+          label: "Series 3: Tier 2b Argon Escalation (" + argonPrs.toLocaleString() + " PRs)"
+        },
+        spendSandbox: {
+          color: "#c98500",
+          value: "$" + sandboxCost.toFixed(2) + " · " + formatShare(sandboxCost, hqJrMonthlyCost) + "% of monthly spend",
+          label: "Series 4: Tier 3 Antigravity Sandbox (" + sandboxPrs.toLocaleString() + " PRs)"
+        }
+      };
+      renderTooltip(activeVizKey);
 
       var envCodeEl = document.getElementById("calc-env-output");
       if (envCodeEl) {
@@ -407,6 +490,82 @@
       if (valEl) valEl.textContent = label;
     }
 
+    function updateSpendSegment(segId, cost, totalCost) {
+      var segEl = document.getElementById(segId);
+      var pct = totalCost > 0 ? Math.max(3, Math.round((cost / totalCost) * 100)) : 0;
+      if (cost <= 0) pct = 0;
+      if (segEl) {
+        segEl.style.width = pct + "%";
+        segEl.hidden = cost <= 0;
+      }
+    }
+
+    function formatShare(part, whole) {
+      if (!whole || whole <= 0) return 0;
+      return Math.round((part / whole) * 100);
+    }
+
+    function renderTooltip(key) {
+      var item = vizReadoutMap[key] || vizReadoutMap.stage0;
+      if (!item) return;
+      var keyEl = document.getElementById("viz-tooltip-key");
+      var valEl = document.getElementById("viz-tooltip-val");
+      var labelEl = document.getElementById("viz-tooltip-label");
+      if (keyEl) keyEl.style.background = item.color;
+      if (valEl) valEl.textContent = item.value;
+      if (labelEl) labelEl.textContent = item.label;
+    }
+
+    var vizItems = document.querySelectorAll("[data-viz-stage]");
+    for (var k = 0; k < vizItems.length; k++) {
+      (function (el) {
+        var stageKey = el.getAttribute("data-viz-stage");
+        function activate() {
+          activeVizKey = stageKey;
+          renderTooltip(stageKey);
+        }
+        el.addEventListener("pointerenter", activate);
+        el.addEventListener("pointermove", activate);
+        el.addEventListener("focus", activate);
+      })(vizItems[k]);
+    }
+
+    var viewButtons = document.querySelectorAll("[data-chart-view]");
+    var chartPanel = document.getElementById("viz-chart-panel");
+    var tablePanel = document.getElementById("viz-table-panel");
+    for (var v = 0; v < viewButtons.length; v++) {
+      viewButtons[v].addEventListener("click", function () {
+        var mode = this.getAttribute("data-chart-view");
+        var isTable = mode === "table";
+        if (chartPanel) chartPanel.hidden = isTable;
+        if (tablePanel) tablePanel.hidden = !isTable;
+        for (var m = 0; m < viewButtons.length; m++) {
+          var active = viewButtons[m].getAttribute("data-chart-view") === mode;
+          viewButtons[m].setAttribute("aria-pressed", active ? "true" : "false");
+          if (active) {
+            viewButtons[m].classList.add("vbg-custom-stage-active");
+          } else {
+            viewButtons[m].classList.remove("vbg-custom-stage-active");
+          }
+        }
+      });
+    }
+
+    var textureBtn = document.querySelector("[data-viz-texture-toggle]");
+    if (textureBtn) {
+      textureBtn.addEventListener("click", function () {
+        var current = document.body.getAttribute("data-viz-texture") === "on";
+        var next = !current;
+        document.body.setAttribute("data-viz-texture", next ? "on" : "off");
+        textureBtn.setAttribute("aria-pressed", next ? "true" : "false");
+        if (next) {
+          textureBtn.classList.add("vbg-custom-stage-active");
+        } else {
+          textureBtn.classList.remove("vbg-custom-stage-active");
+        }
+      });
+    }
+
     var inputs = [prInput, noiseInput, highRiskInput, sandboxInput, minRiskSelect];
     for (var i = 0; i < inputs.length; i++) {
       inputs[i].addEventListener("input", updateCalculator);
@@ -419,6 +578,13 @@
         var presetKey = this.getAttribute("data-calc-preset");
         var preset = WORKLOAD_PRESETS[presetKey];
         if (!preset) return;
+        for (var p = 0; p < presetButtons.length; p++) {
+          if (presetButtons[p].getAttribute("data-calc-preset") === presetKey) {
+            presetButtons[p].classList.add("vbg-custom-stage-active");
+          } else {
+            presetButtons[p].classList.remove("vbg-custom-stage-active");
+          }
+        }
         prInput.value = preset.prs;
         noiseInput.value = preset.noise;
         highRiskInput.value = preset.highRisk;

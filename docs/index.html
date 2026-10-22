@@ -48,20 +48,24 @@
           </div>
           <div class="vbg-stat-strip">
             <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Stage 0 noise filter cost</div>
               <div class="vbg-stat-val">0 tokens</div>
-              <div class="vbg-stat-desc">Spent on 9 lockfiles, 23 binary extensions, and 11 build directory prefixes in Stage 0.</div>
+              <div class="vbg-stat-desc">Drops 9 lockfiles, 23 binary extensions, and 11 build directory prefixes locally.</div>
             </div>
             <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Credential scrubber rules</div>
               <div class="vbg-stat-val">9 + 18</div>
-              <div class="vbg-stat-desc">Credential regex families and generic assignment keys scrubbed into <code>[REDACTED_SECRET]</code>.</div>
+              <div class="vbg-stat-desc">Regex families and generic assignment keys scrubbed into <code>[REDACTED_SECRET]</code>.</div>
             </div>
             <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Argon output cap</div>
               <div class="vbg-stat-val">32,768</div>
               <div class="vbg-stat-desc">Max output token cap (<code>maxOutputTokens</code>) on <code>gemini-4-argon</code> escalation.</div>
             </div>
             <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Sandbox heartbeat lease</div>
               <div class="vbg-stat-val">45s lease</div>
-              <div class="vbg-stat-desc">SQLite WAL <code>sandbox_jobs</code> heartbeat lease across 180s max sandbox polling.</div>
+              <div class="vbg-stat-desc">SQLite WAL <code>sandbox_jobs</code> lease across 180s max sandbox polling.</div>
             </div>
           </div>
         </div>
@@ -208,44 +212,131 @@ diff --git a/src/auth/token-session.ts b/src/auth/token-session.ts
         <div class="vbg-col-7">
           <div class="vbg-stat-strip">
             <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Estimated monthly spend</div>
               <div id="res-monthly-cost" class="vbg-stat-val">$39.05</div>
-              <div id="res-monthly-detail" class="vbg-stat-desc">vs $144.31 un-gated Argon (73% lower)</div>
+              <div class="vbg-stat-delta"><span class="vbg-status-dot" aria-hidden="true"></span><span id="res-monthly-detail">73% lower vs $144.31 un-gated Argon</span></div>
             </div>
             <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Argon escalated reviews</div>
               <div id="res-argon-count" class="vbg-stat-val">54 PRs</div>
               <div id="res-argon-detail" class="vbg-stat-desc">15% of 360 deep reviews (HIGH gate)</div>
             </div>
             <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Early-exit pull requests</div>
               <div id="res-zero-token" class="vbg-stat-val">240 PRs</div>
               <div id="res-zero-detail" class="vbg-stat-desc">150 Stage 0 filter + 90 Tier 1 low-risk exit</div>
             </div>
             <div class="vbg-stat-cell">
+              <div class="vbg-stat-label">Sandbox reproduction trials</div>
               <div id="res-sandbox-count" class="vbg-stat-val">29 PRs</div>
               <div id="res-sandbox-detail" class="vbg-stat-desc">Tier 3 Antigravity dual-commit runs</div>
             </div>
           </div>
           <figure class="vbg-chart" style="margin:14px 0 0;">
-            <div class="vbg-bar-list">
-              <div class="vbg-bar-row">
-                <div class="vbg-bar-head"><span>Stage 0: Incoming PRs</span><span id="val-stage0">600 PRs</span></div>
-                <div class="vbg-bar-track"><div id="bar-stage0" class="vbg-bar-fill" style="width:100%"></div></div>
+            <div class="vbg-viz-toolbar">
+              <figcaption class="vbg-meta-label" style="margin:0;">Ordinal PR volume funnel (5 stages) &amp; monthly spend composition (4 series)</figcaption>
+              <div class="vbg-viz-controls">
+                <button type="button" class="vbg-btn vbg-custom-stage-active" aria-pressed="true" data-chart-view="chart">Chart view</button>
+                <button type="button" class="vbg-btn" aria-pressed="false" data-chart-view="table">Table view</button>
+                <button type="button" class="vbg-btn" aria-pressed="false" data-viz-texture-toggle="true">45°/135° Texture</button>
               </div>
-              <div class="vbg-bar-row">
-                <div class="vbg-bar-head"><span>Stage 1: Tier 1 Flash Triage</span><span id="val-stage1">450 PRs</span></div>
-                <div class="vbg-bar-track"><div id="bar-stage1" class="vbg-bar-fill" style="width:75%"></div></div>
+            </div>
+            <div id="viz-tooltip" class="vbg-viz-tooltip" role="status" aria-live="polite">
+              <span id="viz-tooltip-key" class="vbg-tooltip-key" aria-hidden="true"></span>
+              <span id="viz-tooltip-val" class="vbg-tooltip-val">600 PRs · 100% of incoming ($0.00)</span>
+              <span id="viz-tooltip-label" class="vbg-tooltip-label">Stage 0: Incoming PRs (hover or focus any bar)</span>
+            </div>
+            <div id="viz-chart-panel">
+              <div class="vbg-bar-list" role="list" aria-label="Five-stage pull request volume funnel">
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage0">
+                  <div class="vbg-bar-head"><span>Stage 0: Incoming PRs</span><span id="val-stage0">600 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage0" class="vbg-bar-fill vbg-bar-fill-ord-1" style="width:100%"></div></div>
+                </div>
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage1">
+                  <div class="vbg-bar-head"><span>Stage 1: Tier 1 Flash Triage</span><span id="val-stage1">450 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage1" class="vbg-bar-fill vbg-bar-fill-ord-2" style="width:75%"></div></div>
+                </div>
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage2Flash">
+                  <div class="vbg-bar-head"><span>Stage 2: Tier 2 Flash Deep Review</span><span id="val-stage2-flash">306 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage2-flash" class="vbg-bar-fill vbg-bar-fill-ord-3" style="width:51%"></div></div>
+                </div>
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage2Argon">
+                  <div class="vbg-bar-head"><span>Stage 2b: Tier 2 Argon Escalation</span><span id="val-stage2-argon">54 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage2-argon" class="vbg-bar-fill vbg-bar-fill-ord-4" style="width:9%"></div></div>
+                </div>
+                <div class="vbg-bar-row" role="listitem" tabindex="0" data-viz-stage="stage3">
+                  <div class="vbg-bar-head"><span>Stage 3: Tier 3 Antigravity Sandbox</span><span id="val-stage3">29 PRs</span></div>
+                  <div class="vbg-bar-track"><div id="bar-stage3" class="vbg-bar-fill vbg-bar-fill-ord-5" style="width:5%"></div></div>
+                </div>
               </div>
-              <div class="vbg-bar-row">
-                <div class="vbg-bar-head"><span>Stage 2: Tier 2 Flash Deep Review</span><span id="val-stage2-flash">306 PRs</span></div>
-                <div class="vbg-bar-track"><div id="bar-stage2-flash" class="vbg-bar-fill vbg-bar-fill-green" style="width:51%"></div></div>
+              <div class="vbg-stack-block">
+                <div class="vbg-bar-head">
+                  <span>Monthly spend share by model tier (2px surface gap)</span>
+                  <span id="val-spend-total">$39.05 / mo</span>
+                </div>
+                <div class="vbg-stack-track" role="list" aria-label="Monthly spend breakdown by tier">
+                  <div id="seg-spend-triage" class="vbg-stack-seg vbg-stack-seg-1" role="listitem" tabindex="0" data-viz-stage="spendTriage" style="width:17%" aria-label="Tier 1 Flash Triage spend"></div>
+                  <div id="seg-spend-flash" class="vbg-stack-seg vbg-stack-seg-2" role="listitem" tabindex="0" data-viz-stage="spendFlash" style="width:44%" aria-label="Tier 2 Flash Deep spend"></div>
+                  <div id="seg-spend-argon" class="vbg-stack-seg vbg-stack-seg-3" role="listitem" tabindex="0" data-viz-stage="spendArgon" style="width:29%" aria-label="Tier 2b Argon Escalation spend"></div>
+                  <div id="seg-spend-sandbox" class="vbg-stack-seg vbg-stack-seg-4" role="listitem" tabindex="0" data-viz-stage="spendSandbox" style="width:10%" aria-label="Tier 3 Antigravity Sandbox spend"></div>
+                </div>
+                <div class="vbg-viz-legend" aria-label="Spend series legend">
+                  <span class="vbg-legend-item"><span class="vbg-legend-swatch" style="background:var(--series-1)"></span><span id="leg-spend-triage">Tier 1 Triage ($6.58)</span></span>
+                  <span class="vbg-legend-item"><span class="vbg-legend-swatch" style="background:var(--series-2)"></span><span id="leg-spend-flash">Tier 2 Flash ($17.21)</span></span>
+                  <span class="vbg-legend-item"><span class="vbg-legend-swatch" style="background:var(--series-3)"></span><span id="leg-spend-argon">Tier 2b Argon ($11.34)</span></span>
+                  <span class="vbg-legend-item"><span class="vbg-legend-swatch" style="background:var(--series-4)"></span><span id="leg-spend-sandbox">Tier 3 Sandbox ($3.92)</span></span>
+                </div>
               </div>
-              <div class="vbg-bar-row">
-                <div class="vbg-bar-head"><span>Stage 2b: Tier 2 Argon Escalation</span><span id="val-stage2-argon">54 PRs</span></div>
-                <div class="vbg-bar-track"><div id="bar-stage2-argon" class="vbg-bar-fill vbg-bar-fill-red" style="width:9%"></div></div>
-              </div>
-              <div class="vbg-bar-row">
-                <div class="vbg-bar-head"><span>Stage 3: Tier 3 Antigravity Sandbox</span><span id="val-stage3">29 PRs</span></div>
-                <div class="vbg-bar-track"><div id="bar-stage3" class="vbg-bar-fill vbg-bar-fill-amber" style="width:5%"></div></div>
-              </div>
+            </div>
+            <div id="viz-table-panel" class="vbg-table-wrap" style="margin-bottom:12px;" hidden>
+              <table aria-label="Funnel and monthly spend data table">
+                <thead>
+                  <tr>
+                    <th>Funnel stage</th>
+                    <th>Model or runtime</th>
+                    <th>PR volume</th>
+                    <th>Share of incoming</th>
+                    <th>Monthly spend</th>
+                  </tr>
+                </thead>
+                <tbody id="viz-table-body">
+                  <tr>
+                    <td>Stage 0: Incoming PRs</td>
+                    <td><code>Local CPU</code></td>
+                    <td id="tbl-prs-0">600 PRs</td>
+                    <td id="tbl-pct-0">100%</td>
+                    <td id="tbl-cost-0">$0.00</td>
+                  </tr>
+                  <tr>
+                    <td>Stage 1: Tier 1 Flash Triage</td>
+                    <td><code>gemini-3.8-flash</code></td>
+                    <td id="tbl-prs-1">450 PRs</td>
+                    <td id="tbl-pct-1">75%</td>
+                    <td id="tbl-cost-1">$6.58</td>
+                  </tr>
+                  <tr>
+                    <td>Stage 2: Tier 2 Flash Deep Review</td>
+                    <td><code>gemini-3.8-flash</code></td>
+                    <td id="tbl-prs-2">306 PRs</td>
+                    <td id="tbl-pct-2">51%</td>
+                    <td id="tbl-cost-2">$17.21</td>
+                  </tr>
+                  <tr>
+                    <td>Stage 2b: Tier 2 Argon Escalation</td>
+                    <td><code>gemini-4-argon</code></td>
+                    <td id="tbl-prs-2b">54 PRs</td>
+                    <td id="tbl-pct-2b">9%</td>
+                    <td id="tbl-cost-2b">$11.34</td>
+                  </tr>
+                  <tr>
+                    <td>Stage 3: Tier 3 Antigravity Sandbox</td>
+                    <td><code>antigravity-preview-05-2026</code></td>
+                    <td id="tbl-prs-3">29 PRs</td>
+                    <td id="tbl-pct-3">5%</td>
+                    <td id="tbl-cost-3">$3.92</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </figure>
           <div class="vbg-code-box">
@@ -392,31 +483,36 @@ HQ_JR_AGENT_TIER3=antigravity-preview-05-2026</code></pre>
         <figure class="vbg-chart" style="margin:0;">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 150" width="100%" height="auto" role="img" aria-label="hq-jr webhook to sandbox execution pipeline">
             <rect x="4" y="18" width="210" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
-            <text x="18" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#58a6ff">1. Probot v13 Ingress</text>
+            <circle cx="20" cy="40" r="4" fill="#9ec5f4" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="30" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">1. Probot v13 Ingress</text>
             <text x="18" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">HMAC-SHA256 webhook</text>
             <text x="18" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">SQLite active_runs lock</text>
             <text x="18" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">owner/repo#pullNumber</text>
-            <line x1="214" y1="75" x2="246" y2="75" stroke="#30363d" stroke-width="1.5"/>
+            <line x1="214" y1="75" x2="246" y2="75" stroke="#30363d" stroke-width="1"/>
             <rect x="246" y="18" width="210" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
-            <text x="260" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#d29922">2. Stage 0 Scrub &amp; Pack</text>
+            <circle cx="262" cy="40" r="4" fill="#6da7ec" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="272" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">2. Stage 0 Scrub &amp; Pack</text>
             <text x="260" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">classifyFile + scrubSecrets</text>
             <text x="260" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">30k/file · 120k total cap</text>
             <text x="260" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">[REDACTED_SECRET]</text>
-            <line x1="456" y1="75" x2="488" y2="75" stroke="#30363d" stroke-width="1.5"/>
+            <line x1="456" y1="75" x2="488" y2="75" stroke="#30363d" stroke-width="1"/>
             <rect x="488" y="18" width="210" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
-            <text x="502" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#58a6ff">3. Tier 1 &amp; 2 Flash</text>
+            <circle cx="504" cy="40" r="4" fill="#3987e5" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="514" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">3. Tier 1 &amp; 2 Flash</text>
             <text x="502" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">gemini-3.8-flash</text>
             <text x="502" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">ThinkingLevel.HIGH</text>
             <text x="502" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">Early exit on LOW risk</text>
-            <line x1="698" y1="75" x2="730" y2="75" stroke="#30363d" stroke-width="1.5"/>
-            <rect x="730" y="18" width="200" height="114" rx="2" fill="#0a0a0a" stroke="#f85149" stroke-width="1"/>
-            <text x="744" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#f85149">4. Tier 2b Argon Gate</text>
+            <line x1="698" y1="75" x2="730" y2="75" stroke="#30363d" stroke-width="1"/>
+            <rect x="730" y="18" width="200" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
+            <circle cx="746" cy="40" r="4" fill="#256abf" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="756" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">4. Tier 2b Argon Gate</text>
             <text x="744" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">gemini-4-argon</text>
             <text x="744" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">32,768 maxOutputTokens</text>
             <text x="744" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">Retry fallback to Tier 2</text>
-            <line x1="930" y1="75" x2="960" y2="75" stroke="#30363d" stroke-width="1.5"/>
-            <rect x="960" y="18" width="196" height="114" rx="2" fill="#0a0a0a" stroke="#3fb950" stroke-width="1"/>
-            <text x="974" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#3fb950">5. Tier 3 Sandbox</text>
+            <line x1="930" y1="75" x2="960" y2="75" stroke="#30363d" stroke-width="1"/>
+            <rect x="960" y="18" width="196" height="114" rx="2" fill="#0a0a0a" stroke="#30363d" stroke-width="1"/>
+            <circle cx="976" cy="40" r="4" fill="#184f95" stroke="#0a0a0a" stroke-width="2"/>
+            <text x="986" y="44" font-family="ui-monospace, monospace" font-size="11" font-weight="700" fill="#ffffff">5. Tier 3 Sandbox</text>
             <text x="974" y="66" font-family="ui-monospace, monospace" font-size="10.5" fill="#ededed">antigravity-preview-05-2026</text>
             <text x="974" y="86" font-family="ui-monospace, monospace" font-size="10" fill="#a1a1a1">150k cap · 45s lease</text>
             <text x="974" y="106" font-family="ui-monospace, monospace" font-size="10" fill="#888888">Dual-commit red/green</text>
