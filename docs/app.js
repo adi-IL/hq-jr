@@ -536,21 +536,30 @@
     var viewButtons = document.querySelectorAll("[data-chart-view]");
     var chartPanel = document.getElementById("viz-chart-panel");
     var tablePanel = document.getElementById("viz-table-panel");
+
+    function setChartView(mode) {
+      var isTable = mode === "table";
+      if (chartPanel) chartPanel.hidden = isTable;
+      if (tablePanel) tablePanel.hidden = !isTable;
+      for (var m = 0; m < viewButtons.length; m++) {
+        var active = viewButtons[m].getAttribute("data-chart-view") === mode;
+        viewButtons[m].setAttribute("aria-pressed", active ? "true" : "false");
+        if (active) {
+          viewButtons[m].classList.add("vbg-custom-stage-active");
+        } else {
+          viewButtons[m].classList.remove("vbg-custom-stage-active");
+        }
+      }
+    }
+
+    function isChartView() {
+      var chartBtn = document.querySelector('[data-chart-view="chart"]');
+      return chartBtn ? chartBtn.getAttribute("aria-pressed") === "true" : true;
+    }
+
     for (var v = 0; v < viewButtons.length; v++) {
       viewButtons[v].addEventListener("click", function () {
-        var mode = this.getAttribute("data-chart-view");
-        var isTable = mode === "table";
-        if (chartPanel) chartPanel.hidden = isTable;
-        if (tablePanel) tablePanel.hidden = !isTable;
-        for (var m = 0; m < viewButtons.length; m++) {
-          var active = viewButtons[m].getAttribute("data-chart-view") === mode;
-          viewButtons[m].setAttribute("aria-pressed", active ? "true" : "false");
-          if (active) {
-            viewButtons[m].classList.add("vbg-custom-stage-active");
-          } else {
-            viewButtons[m].classList.remove("vbg-custom-stage-active");
-          }
-        }
+        setChartView(this.getAttribute("data-chart-view"));
       });
     }
 
@@ -559,6 +568,9 @@
       textureBtn.addEventListener("click", function () {
         var current = document.body.getAttribute("data-viz-texture") === "on";
         var next = !current;
+        if (next && !isChartView()) {
+          setChartView("chart");
+        }
         document.body.setAttribute("data-viz-texture", next ? "on" : "off");
         textureBtn.setAttribute("aria-pressed", next ? "true" : "false");
         if (next) {
