@@ -354,6 +354,13 @@ p {
   color: var(--vbg-text-heading);
 }
 
+[data-viz-texture="on"] .vbg-btn[data-viz-texture-toggle] {
+  border-color: var(--vbg-accent-blue);
+  background: var(--vbg-accent-blue);
+  color: #000000;
+  font-weight: 700;
+}
+
 .vbg-stat-strip {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
