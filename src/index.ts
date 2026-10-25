@@ -139,8 +139,9 @@ async function upsertSkipComment(octokit: any, owner: string, repo: string, issu
     issue_number: issueNumber,
     per_page: 100,
   });
-  const existing = (comments as Array<{ id: number; body?: string; user?: { type?: string } | null }>).find(
-    (comment) => comment.user?.type === "Bot" && comment.body?.includes(SKIP_COMMENT_MARKER)
+  const existing = (comments as Array<{ id: number; body?: string; user?: { type?: string; login?: string } | null }>).find(
+    (comment) =>
+      comment.user?.type === "Bot" && isHqJrLogin(comment.user?.login) && comment.body?.includes(SKIP_COMMENT_MARKER)
   );
   if (existing) {
     await octokit.issues.updateComment({ owner, repo, comment_id: existing.id, body });

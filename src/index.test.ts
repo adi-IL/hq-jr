@@ -799,7 +799,8 @@ rename to src/new/auth.ts
   it("updates the existing skip comment instead of posting another on a later push", async () => {
     octokitMock.issues.listComments.mockResolvedValueOnce({
       data: [
-        { id: 55, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot" } },
+        { id: 54, body: `${SKIP_COMMENT_MARKER}\nquoted`, user: { type: "Bot", login: "other-bot[bot]" } },
+        { id: 55, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } },
       ],
     });
     octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(1, () => "docs/08-automatic-429-recovery.md") });
