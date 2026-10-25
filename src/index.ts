@@ -565,6 +565,8 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
       merged?: boolean | null;
       merged_at?: string | null;
     };
+    /** Set by an explicit review command: review files the noise filter would drop. */
+    force?: boolean;
   }) {
     const { octokit, owner, repoName, pullNumber, pr, installationId } = params;
 
@@ -649,16 +651,27 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         return;
       }
 
-      const contextPackage = packageReviewContext(parsedDiff);
+      const contextPackage = packageReviewContext(parsedDiff, { ignoreNoiseFilter: params.force === true });
       if (contextPackage.itemsToReview.length === 0) {
         app.log.info({ pullNumber }, "All modified files excluded by noise filters. Bypassing review.");
+        // Say so on the pull request, so a skipped review is never silent.
+        try {
+          await octokit.issues.createComment({
+            owner,
+            repo: repoName,
+            issue_number: pullNumber,
+            body: `🤖 **hq-jr** skipped the code review: no reviewable files.\n\n${buildExcludedFilesSummary(contextPackage.ignoredItems)}${params.force ? "" : "\n\nComment `@hq-jr review` to review these files anyway."}`,
+          });
+        } catch (commentErr) {
+          app.log.warn({ commentErr }, "Failed to post excluded files comment");
+        }
         if (checkRun?.data?.id) {
           await octokit.checks.update({
             owner,
             repo: repoName,
             check_run_id: checkRun.data.id,
             status: "completed",
-            conclusion: "success",
+            conclusion: "neutral",
             output: {
               title: "Triage Passed: Excluded Files Only",
               summary: buildExcludedFilesSummary(contextPackage.ignoredItems),
@@ -1313,6 +1326,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           pullNumber,
           installationId: context.payload.installation?.id,
           pr: prResponse.data,
+          force: true,
         });
         return;
       }

@@ -767,6 +767,56 @@ rename to src/new/auth.ts
     expect(summary).toContain("Excluded files (showing first 50 of 2000):");
   });
 
+  it("posts the excluded files and ends neutral when an automatic review filters every file", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(1, () => "docs/08-automatic-429-recovery.md") });
+    const triageSpy = vi.spyOn(aiModule, "runTriage");
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 29, state: "open", title: "Docs", head: { sha: "sha-29", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(triageSpy).not.toHaveBeenCalled();
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    const comment = octokitMock.issues.createComment.mock.calls.at(-1)?.[0];
+    expect(comment.issue_number).toBe(29);
+    expect(comment.body).toContain("docs/08-automatic-429-recovery.md");
+    expect(comment.body).toContain("@hq-jr review");
+  });
+
+  it("reviews noise filtered files when a maintainer comments @hq-jr review", async () => {
+    octokitMock.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({ data: { permission: "admin" } });
+    octokitMock.pulls.get
+      .mockResolvedValueOnce({ data: { number: 30, state: "open", title: "Docs", head: { sha: "sha-30", ref: "docs" } } })
+      .mockResolvedValueOnce({ data: ignoredFileDiff(1, () => "docs/08-automatic-429-recovery.md") });
+    const triageSpy = vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Docs only",
+      overallRisk: "LOW",
+      files: [{ path: "docs/08-automatic-429-recovery.md", risk: "LOW", reason: "Docs", shouldReview: false }],
+    });
+
+    await handlers.get("issue_comment.created")!({
+      octokit: octokitMock,
+      payload: {
+        action: "created",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        issue: { number: 30, pull_request: {} },
+        comment: { id: 7, body: "@hq-jr review", user: { login: "test-maintainer", type: "User" } },
+      },
+    });
+
+    expect(triageSpy).toHaveBeenCalledTimes(1);
+    expect(triageSpy.mock.calls[0][0]).toContain("docs/08-automatic-429-recovery.md");
+    const titles = octokitMock.checks.update.mock.calls.map((call: any[]) => call[0].output?.title);
+    expect(titles).not.toContain("Triage Passed: Excluded Files Only");
+  });
+
   it("keeps the excluded files only summary under the check character limit with long paths", async () => {
     const longPath = (index: number) => `docs/${"d".repeat(3000)}/page${index}.md`;
     octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(200, longPath) });

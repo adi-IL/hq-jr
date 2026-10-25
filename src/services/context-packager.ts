@@ -20,6 +20,8 @@ export interface ReviewContextPackage {
 export interface PackagerOptions {
   maxTotalChars?: number;
   maxPerFileChars?: number;
+  /** Review files the noise filter would drop, for an explicit review request. */
+  ignoreNoiseFilter?: boolean;
 }
 
 const DEFAULT_MAX_TOTAL_CHARS = 120000;
@@ -82,7 +84,7 @@ export function packageReviewContext(
     const targetPath = file.newPath || file.oldPath;
     const filter = evaluateFile(targetPath);
 
-    if (filter.shouldIgnore) {
+    if (filter.shouldIgnore && !options.ignoreNoiseFilter) {
       filteredItems.push({
         path: targetPath,
         reason: filter.reason || "Ignored by rule",
