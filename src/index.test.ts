@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fileURLToPath } from "node:url";
-import appFn, { buildDeepReviewBody, buildExcludedFilesSummary } from "./index.js";
+import appFn, { buildDeepReviewBody, buildExcludedFilesSummary, buildSkipCommentBody, SKIP_COMMENT_MARKER } from "./index.js";
 import { addRemediationCommit, acquireRunLock, releaseRunLock } from "./services/db.js";
 import { BUDGET_DROP_REASON } from "./services/context-packager.js";
 import * as aiModule from "./services/ai.js";
@@ -50,7 +50,10 @@ describe("hq-jr Event Handlers & Security Guards", () => {
       repos: {
         getCollaboratorPermissionLevel: vi.fn(),
       },
+      paginate: vi.fn(async (method: Function, params: unknown) => (await method(params)).data),
       issues: {
+        listComments: vi.fn().mockResolvedValue({ data: [] }),
+        updateComment: vi.fn().mockResolvedValue({ data: { id: 402 } }),
         createComment: vi.fn().mockResolvedValue({ data: { id: 401 } }),
         update: vi.fn().mockResolvedValue({}),
       },
@@ -760,7 +763,7 @@ rename to src/new/auth.ts
     });
 
     const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
-    expect(finalUpdate.output.title).toBe("Triage Passed: Excluded Files Only");
+    expect(finalUpdate.output.title).toBe("Review Skipped: Excluded Files Only");
     const summary = finalUpdate.output.summary as string;
     expect(summary.length).toBeLessThan(65535);
     expect(summary).toContain("Modified files were excluded from review");
@@ -786,8 +789,41 @@ rename to src/new/auth.ts
     expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
     const comment = octokitMock.issues.createComment.mock.calls.at(-1)?.[0];
     expect(comment.issue_number).toBe(29);
+    expect(comment.body).toContain(SKIP_COMMENT_MARKER);
     expect(comment.body).toContain("docs/08-automatic-429-recovery.md");
+    expect(comment.body).toContain("Documentation / markdown content");
     expect(comment.body).toContain("@hq-jr review");
+    expect(octokitMock.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it("updates the existing skip comment instead of posting another on a later push", async () => {
+    octokitMock.issues.listComments.mockResolvedValueOnce({
+      data: [
+        { id: 55, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot" } },
+      ],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(1, () => "docs/08-automatic-429-recovery.md") });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: octokitMock,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 29, state: "open", title: "Docs", head: { sha: "sha-29b", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(octokitMock.issues.createComment).not.toHaveBeenCalled();
+    expect(octokitMock.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 55, body: expect.stringContaining("Documentation / markdown content") })
+    );
+  });
+
+  it("offers the @hq-jr review hint only when the noise filter dropped files", () => {
+    const items = [{ path: "src/huge.ts", reason: BUDGET_DROP_REASON }];
+    expect(buildSkipCommentBody(items, false)).not.toContain("@hq-jr review");
+    expect(buildSkipCommentBody(items, true)).toContain("@hq-jr review");
   });
 
   it("reviews noise filtered files when a maintainer comments @hq-jr review", async () => {
@@ -814,7 +850,7 @@ rename to src/new/auth.ts
     expect(triageSpy).toHaveBeenCalledTimes(1);
     expect(triageSpy.mock.calls[0][0]).toContain("docs/08-automatic-429-recovery.md");
     const titles = octokitMock.checks.update.mock.calls.map((call: any[]) => call[0].output?.title);
-    expect(titles).not.toContain("Triage Passed: Excluded Files Only");
+    expect(titles).not.toContain("Review Skipped: Excluded Files Only");
   });
 
   it("keeps the excluded files only summary under the check character limit with long paths", async () => {
