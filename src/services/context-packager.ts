@@ -12,7 +12,7 @@ export interface ContextPackageItem {
 export interface ReviewContextPackage {
   itemsToReview: ContextPackageItem[];
   ignoredItems: { path: string; reason: string }[];
-  /** How many ignored files the noise filter dropped, which a forced review would include. */
+  /** How many files the noise filter dropped. A forced review skips the filter but still skips unreviewable files. */
   noiseFilteredCount: number;
   totalReviewableAdditions: number;
   totalReviewableDeletions: number;
