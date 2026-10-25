@@ -12,6 +12,8 @@ export interface ContextPackageItem {
 export interface ReviewContextPackage {
   itemsToReview: ContextPackageItem[];
   ignoredItems: { path: string; reason: string }[];
+  /** How many ignored files the noise filter dropped, which a forced review would include. */
+  noiseFilteredCount: number;
   totalReviewableAdditions: number;
   totalReviewableDeletions: number;
   promptPayload: string;
@@ -79,12 +81,14 @@ export function packageReviewContext(
 
   const candidateItems: { file: DiffFile; filter: FilterResult }[] = [];
   const filteredItems: { path: string; reason: string }[] = [];
+  let noiseFilteredCount = 0;
 
   for (const file of parsedDiff.files) {
     const targetPath = file.newPath || file.oldPath;
     const filter = evaluateFile(targetPath);
 
     if (filter.shouldIgnore && !options.ignoreNoiseFilter) {
+      noiseFilteredCount++;
       filteredItems.push({
         path: targetPath,
         reason: filter.reason || "Ignored by rule",
@@ -197,6 +201,7 @@ export function packageReviewContext(
   return {
     itemsToReview,
     ignoredItems,
+    noiseFilteredCount,
     totalReviewableAdditions: itemsToReview.reduce((sum, item) => sum + item.file.addedLinesCount, 0),
     totalReviewableDeletions: itemsToReview.reduce((sum, item) => sum + item.file.deletedLinesCount, 0),
     promptPayload: payload,
