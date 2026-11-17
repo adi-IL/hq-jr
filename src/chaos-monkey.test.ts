@@ -190,7 +190,13 @@ password="superSecretPassword123"
         pulls: {
           // Re-fetch returns a new head pushed by author during AI synthesis
           get: vi.fn().mockResolvedValue({
-            data: { head: { sha: "new-commit-pushed-in-flight", ref: "feature" } },
+            data: {
+              head: {
+                sha: "new-commit-pushed-in-flight",
+                ref: "feature",
+                repo: { full_name: "owner/repo" },
+              },
+            },
           }),
         },
         git: {
@@ -206,7 +212,7 @@ password="superSecretPassword123"
         owner: "owner",
         repo: "repo",
         pullNumber: 1,
-        pr: { head: { sha: "initial-stale-sha", ref: "feature" } },
+        pr: { head: { sha: "initial-stale-sha", ref: "feature", repo: { full_name: "owner/repo" } } },
         issues: [{ id: 1, path: "src/a.ts", side: "RIGHT", title: "Bug", body: "Fix bug" }],
       });
 

@@ -18,8 +18,10 @@ import {
   pruneResolvedFindings,
   claimStaleSandboxJobs,
   touchSandboxJob,
+  closeDatabase,
 } from "./db.js";
 import type Database from "better-sqlite3";
+import { existsSync } from "node:fs";
 
 describe("Persistent SQLite Store (db.ts)", () => {
   let db: Database.Database;
@@ -30,6 +32,25 @@ describe("Persistent SQLite Store (db.ts)", () => {
 
   afterEach(() => {
     db.close();
+  });
+
+  it("uses an in-memory database by default under Vitest and does not create ./data/hq-jr.db", () => {
+    closeDatabase();
+    const existedBefore = existsSync("./data/hq-jr.db");
+    const prevEnv = process.env.HQ_JR_DB_PATH;
+    process.env.HQ_JR_DB_PATH = "./data/hq-jr.db";
+    const defaultDb = getDatabase();
+    try {
+      expect(defaultDb.name).toBe(":memory:");
+      expect(existsSync("./data/hq-jr.db")).toBe(existedBefore);
+    } finally {
+      if (prevEnv === undefined) {
+        delete process.env.HQ_JR_DB_PATH;
+      } else {
+        process.env.HQ_JR_DB_PATH = prevEnv;
+      }
+      closeDatabase();
+    }
   });
 
   describe("Remediation Commits", () => {

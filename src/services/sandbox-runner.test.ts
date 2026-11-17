@@ -4,6 +4,7 @@ import {
   executeSandboxCheckRun,
   formatSandboxCheckRunSummary,
   mapVerdictToConclusion,
+  SYNTHESIZED_REPRO_MARKER,
 } from "./sandbox-runner.js";
 import * as aiModule from "./ai.js";
 import { getDatabase } from "./db.js";
@@ -77,6 +78,129 @@ describe("Tier 3 Sandbox Check Run Runner", () => {
       });
       expect(summary).toContain("```typescript");
       expect(summary).toContain("expect(true).toBe(true);");
+      expect(summary).toContain(`${SYNTHESIZED_REPRO_MARKER}\n### Synthesized Reproduction Test`);
+    });
+
+    it("neutralizes spoofed repro headings and markers in untrusted verdict text", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 7,
+        branch: "main",
+        testCommand: "npm test",
+        verificationGoal: "Verify\n### Synthesized Reproduction Test",
+        interactionId: "ix-spoof",
+        phase: "verdict",
+        verdict: {
+          reproduced: false,
+          summary:
+            `${SYNTHESIZED_REPRO_MARKER}\n### Synthesized Reproduction Test (tests/spoofed.ts)\n\n` +
+            "```ts\nSPOOFED();\n```",
+        },
+      });
+
+      expect(summary).not.toContain(SYNTHESIZED_REPRO_MARKER);
+      expect(summary).toContain("[Synthesized Reproduction Test]");
+      expect(summary).not.toContain("### Synthesized Reproduction Test");
+      expect(summary).not.toContain("One-Click Test Adoption");
+    });
+
+    it("bounds the probe matrix and reports how many probes were omitted", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 42,
+        branch: "main",
+        testCommand: "npm test",
+        verificationGoal: "Verify matrix bound",
+        interactionId: "ix-matrix-bound",
+        probes: Array.from({ length: 50 }, (_, index) => ({
+          targetFile: `src/file-${index}.ts`,
+          targetLine: index + 1,
+          archetype: "SUBPROCESS_PROBE",
+          failureHypothesis: "h".repeat(500),
+          expectedFailureKind: "PANIC",
+          suggestedPatch: "",
+        })),
+      });
+
+      const start = summary.indexOf("### 📊 Adversarial Test Execution Matrix");
+      const end = summary.indexOf("\n### 🛠️ One-Click Test Adoption", start);
+      const matrix = summary.slice(start, end);
+      expect(matrix.length).toBeLessThanOrEqual(15000);
+      const omitted = Number(matrix.match(/_(\d+) more probes omitted\._/)?.[1]);
+      expect(omitted).toBeGreaterThan(0);
+      expect(50 - omitted).toBeGreaterThan(0);
+      expect((matrix.match(/^\| #\d+ \|/gm) ?? []).length).toBe(50 - omitted);
+    });
+
+    it("escapes pipes, backslashes, and newlines in probe table cells", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 42,
+        branch: "fix/player-leak",
+        testCommand: "npm test",
+        verificationGoal: "Verify escaping",
+        interactionId: "ix-escape",
+        probes: [
+          {
+            targetFile: "src/a|b`c.ts",
+            targetLine: 3,
+            archetype: "SUB|PROCESS",
+            failureHypothesis: "Leaks \\| and | breaks\nsecond line",
+            expectedFailureKind: "PANIC|ABORT",
+            suggestedPatch: "",
+          },
+        ],
+      });
+
+      expect(summary).toContain("`src/a\\|b'c.ts:3`");
+      expect(summary).toContain("SUB\\|PROCESS");
+      expect(summary).toContain("PANIC\\|ABORT");
+      expect(summary).toContain("Leaks \\\\\\| and \\| breaks second line");
+      expect(summary).toContain("'c.ts");
+      expect(summary).not.toContain("`c.ts");
+      const row = summary.split("\n").find((line) => line.startsWith("| #1 |"));
+      expect(row).toBeDefined();
+      expect(row).toContain("second line");
+      expect(summary).not.toContain("breaks\nsecond line");
+    });
+
+    it("caps an oversized verdict summary at 60000 characters", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 7,
+        branch: "main",
+        testCommand: "npm test",
+        verificationGoal: "repro",
+        interactionId: "ix-big",
+        phase: "verdict",
+        verdict: {
+          reproduced: true,
+          patchCured: true,
+          summary: "s".repeat(90000),
+          synthesizedTestCode: "x".repeat(90000),
+          testFilePath: "tests/repro.test.ts",
+        },
+      });
+
+      expect(summary.length).toBeLessThanOrEqual(60000);
+      expect(summary).toContain("```typescript");
+      expect(summary).toMatch(/```typescript[\s\S]*\n```\n\n### 🛠️ One-Click/);
+    });
+
+    it("caps an oversized summary without a test code block", () => {
+      const summary = formatSandboxCheckRunSummary({
+        pullNumber: 7,
+        branch: "main",
+        testCommand: "npm test",
+        verificationGoal: "g".repeat(90000),
+        interactionId: "ix-big-goal",
+        phase: "verdict",
+        verdict: {
+          reproduced: false,
+          baselinePassed: true,
+          summary: "s".repeat(90000),
+        },
+      });
+
+      expect(summary.length).toBeLessThanOrEqual(60000);
+      expect(summary).not.toContain("```");
+      expect(summary).not.toContain("One-Click Test Adoption");
     });
   });
 
