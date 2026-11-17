@@ -3,24 +3,60 @@ import { z } from "zod";
 
 dotenv.config();
 
-const envSchema = z.object({
-  GOOGLE_CLOUD_PROJECT: z.string().default("test-gcp-project"),
-  GOOGLE_CLOUD_LOCATION: z.string().default("global"),
-  HQ_JR_MODEL_TIER1: z.string().trim().min(1, "HQ_JR_MODEL_TIER1 must not be empty").default("gemini-3.8-flash"),
-  HQ_JR_MODEL_TIER2: z.string().trim().min(1, "HQ_JR_MODEL_TIER2 must not be empty").default("gemini-3.8-flash"),
-  HQ_JR_MODEL_ESCALATION: z.string().trim().min(1, "HQ_JR_MODEL_ESCALATION must not be empty").default("gemini-4-argon"),
-  HQ_JR_ESCALATION_MIN_RISK: z.enum(["LOW", "MEDIUM", "HIGH"]).default("HIGH"),
-  HQ_JR_MODEL_DISCUSSION: z.string().trim().min(1, "HQ_JR_MODEL_DISCUSSION must not be empty").default("gemini-3.8-flash"),
-  HQ_JR_MODEL_REMEDIATION: z.string().trim().min(1, "HQ_JR_MODEL_REMEDIATION must not be empty").default("gemini-3.8-flash"),
-  HQ_JR_MODEL_HEALTH: z.string().trim().min(1, "HQ_JR_MODEL_HEALTH must not be empty").default("gemini-3.8-flash"),
-  HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(32768),
-  HQ_JR_AGENT_TIER3: z.string().default("antigravity-preview-05-2026"),
-  HQ_JR_AI_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
-  HQ_JR_DB_PATH: z.string().default("./data/hq-jr.db"),
-  PORT: z.coerce.number().default(3000),
-  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  LOG_LEVEL: z.string().default("info"),
-});
+export const THINKING_LEVELS = ["LOW", "MEDIUM", "HIGH", "XHIGH"] as const;
+export type ThinkingLevelSetting = (typeof THINKING_LEVELS)[number];
+
+const MODEL_THINKING_PAIRS = [
+  ["HQ_JR_MODEL_TIER1", "HQ_JR_THINKING_TIER1"],
+  ["HQ_JR_MODEL_TIER2", "HQ_JR_THINKING_TIER2"],
+  ["HQ_JR_MODEL_ESCALATION", "HQ_JR_THINKING_ESCALATION"],
+  ["HQ_JR_MODEL_DISCUSSION", "HQ_JR_THINKING_DISCUSSION"],
+  ["HQ_JR_MODEL_REMEDIATION", "HQ_JR_THINKING_REMEDIATION"],
+  ["HQ_JR_MODEL_HEALTH", "HQ_JR_THINKING_HEALTH"],
+] as const;
+
+export function isGemini4Argon(modelName: string): boolean {
+  return modelName === "gemini-4-argon" || modelName.endsWith("/gemini-4-argon");
+}
+
+const envSchema = z
+  .object({
+    GOOGLE_CLOUD_PROJECT: z.string().default("test-gcp-project"),
+    GOOGLE_CLOUD_LOCATION: z.literal("global", {
+      error: 'GOOGLE_CLOUD_LOCATION must be "global" for Gemini 4 models.',
+    }).default("global"),
+    HQ_JR_MODEL_TIER1: z.string().trim().min(1, "HQ_JR_MODEL_TIER1 must not be empty").default("gemini-4-hydrogen"),
+    HQ_JR_MODEL_TIER2: z.string().trim().min(1, "HQ_JR_MODEL_TIER2 must not be empty").default("gemini-4-hydrogen"),
+    HQ_JR_MODEL_ESCALATION: z.string().trim().min(1, "HQ_JR_MODEL_ESCALATION must not be empty").default("gemini-4-argon"),
+    HQ_JR_ESCALATION_MIN_RISK: z.enum(["LOW", "MEDIUM", "HIGH"]).default("HIGH"),
+    HQ_JR_MODEL_DISCUSSION: z.string().trim().min(1, "HQ_JR_MODEL_DISCUSSION must not be empty").default("gemini-4-hydrogen"),
+    HQ_JR_MODEL_REMEDIATION: z.string().trim().min(1, "HQ_JR_MODEL_REMEDIATION must not be empty").default("gemini-4-hydrogen"),
+    HQ_JR_MODEL_HEALTH: z.string().trim().min(1, "HQ_JR_MODEL_HEALTH must not be empty").default("gemini-4-hydrogen"),
+    HQ_JR_THINKING_TIER1: z.enum(THINKING_LEVELS).default("HIGH"),
+    HQ_JR_THINKING_TIER2: z.enum(THINKING_LEVELS).default("HIGH"),
+    HQ_JR_THINKING_ESCALATION: z.enum(THINKING_LEVELS).default("HIGH"),
+    HQ_JR_THINKING_DISCUSSION: z.enum(THINKING_LEVELS).default("HIGH"),
+    HQ_JR_THINKING_REMEDIATION: z.enum(THINKING_LEVELS).default("HIGH"),
+    HQ_JR_THINKING_HEALTH: z.enum(THINKING_LEVELS).default("LOW"),
+    HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(32768),
+    HQ_JR_AGENT_TIER3: z.string().default("antigravity-preview-05-2026"),
+    HQ_JR_AI_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
+    HQ_JR_DB_PATH: z.string().default("./data/hq-jr.db"),
+    PORT: z.coerce.number().default(3000),
+    NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+    LOG_LEVEL: z.string().default("info"),
+  })
+  .superRefine((data, ctx) => {
+    for (const [modelField, thinkingField] of MODEL_THINKING_PAIRS) {
+      if (isGemini4Argon(data[modelField]) && data[thinkingField] === "XHIGH") {
+        ctx.addIssue({
+          code: "custom",
+          path: [thinkingField],
+          message: `${thinkingField} cannot be "XHIGH" when ${modelField} uses ${data[modelField]} (supported levels: LOW, MEDIUM, HIGH).`,
+        });
+      }
+    }
+  });
 
 export type Env = z.infer<typeof envSchema>;
 

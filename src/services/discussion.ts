@@ -1,6 +1,5 @@
-import { ThinkingLevel } from "@google/genai";
 import { config } from "../config.js";
-import { ai, withRetry, escapeUntrustedTags, UNTRUSTED_TAGS } from "./ai.js";
+import { ai, withRetry, escapeUntrustedTags, toSdkThinkingLevel, UNTRUSTED_TAGS } from "./ai.js";
 import { scrubSecrets } from "./scrubber.js";
 export interface ThreadTurn {
   id: number;
@@ -75,7 +74,7 @@ ${truncatedOriginal}
 `;
   }
 
-  const systemInstruction = `You are hq-jr, an expert automated code reviewer powered by Gemini with High Thinking.
+  const systemInstruction = `You are hq-jr, an expert automated code reviewer powered by Gemini (thinking level: ${config.HQ_JR_THINKING_DISCUSSION}).
 A developer is responding to a review comment or asking for clarification.
 Provide a clear, technically accurate, and concise response.
 Ground your answer in the conversation history. If the developer addressed a prior concern or asked if a fix is sufficient, evaluate it specifically.
@@ -112,7 +111,7 @@ ${escapeField(cleanUserQuery)}
       config: {
         systemInstruction,
         thinkingConfig: {
-          thinkingLevel: ThinkingLevel.HIGH,
+          thinkingLevel: toSdkThinkingLevel(config.HQ_JR_THINKING_DISCUSSION),
         },
       },
     })

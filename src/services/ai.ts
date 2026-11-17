@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type, ThinkingLevel, Schema, type Interactions } from "@google/genai";
-import { config, riskAtLeast, RiskLevel } from "../config.js";
+import { config, riskAtLeast, RiskLevel, type ThinkingLevelSetting } from "../config.js";
 import {
   TriageResult,
   TriageResultSchema,
@@ -108,6 +108,15 @@ export async function withRetry<T>(
   }
 }
 
+const SDK_THINKING_LEVEL: Record<ThinkingLevelSetting, ThinkingLevel> = {
+  LOW: ThinkingLevel.LOW, MEDIUM: ThinkingLevel.MEDIUM, HIGH: ThinkingLevel.HIGH, XHIGH: ThinkingLevel.XHIGH,
+};
+
+/** Maps a validated thinking setting to the @google/genai ThinkingLevel enum. */
+export function toSdkThinkingLevel(level: ThinkingLevelSetting): ThinkingLevel {
+  return SDK_THINKING_LEVEL[level];
+}
+
 let lastHealthCheck: { status: "ok" | "error"; message?: string; latencyMs: number; timestamp: number } | null = null;
 const HEALTH_CACHE_TTL_MS = 60000;
 
@@ -119,37 +128,37 @@ export function resetAiHealthCache(): void {
 /**
  * Health check verifying Vertex AI connectivity with Application Default Credentials (cached for 60s).
  */
-export async function checkAiHealth(): Promise<{ status: "ok" | "error"; message?: string; latencyMs: number }> {
+export async function checkAiHealth(options?: {
+  model?: string;
+  thinkingLevel?: ThinkingLevelSetting;
+}): Promise<{ status: "ok" | "error"; message?: string; latencyMs: number }> {
+  const hasOverride = options?.model !== undefined || options?.thinkingLevel !== undefined;
   const now = Date.now();
-  if (lastHealthCheck && now - lastHealthCheck.timestamp < HEALTH_CACHE_TTL_MS) {
-    return {
-      status: lastHealthCheck.status,
-      message: lastHealthCheck.message,
-      latencyMs: lastHealthCheck.latencyMs,
-    };
+  if (!hasOverride && lastHealthCheck && now - lastHealthCheck.timestamp < HEALTH_CACHE_TTL_MS) {
+    return { status: lastHealthCheck.status, message: lastHealthCheck.message, latencyMs: lastHealthCheck.latencyMs };
   }
 
+  const model = options?.model ?? config.HQ_JR_MODEL_HEALTH;
+  const thinkingLevel = options?.thinkingLevel ?? config.HQ_JR_THINKING_HEALTH;
   const start = Date.now();
+  let outcome: { status: "ok" | "error"; message?: string; latencyMs: number };
   try {
     const res = await withRetry(() =>
       ai.models.generateContent({
-        model: config.HQ_JR_MODEL_HEALTH,
+        model,
         contents: "ping",
+        config: { thinkingConfig: { thinkingLevel: toSdkThinkingLevel(thinkingLevel) } },
       })
     );
     const latencyMs = Date.now() - start;
-    if (res.text) {
-      lastHealthCheck = { status: "ok", latencyMs, timestamp: now };
-      return { status: "ok", latencyMs };
-    }
-    lastHealthCheck = { status: "error", message: "Empty response from model", latencyMs, timestamp: now };
-    return { status: "error", message: "Empty response from model", latencyMs };
+    outcome = res.text ? { status: "ok", latencyMs } : { status: "error", message: "Empty response from model", latencyMs };
   } catch (err: unknown) {
-    const latencyMs = Date.now() - start;
-    const msg = err instanceof Error ? err.message : String(err);
-    lastHealthCheck = { status: "error", message: msg, latencyMs, timestamp: now };
-    return { status: "error", message: msg, latencyMs };
+    outcome = { status: "error", message: err instanceof Error ? err.message : String(err), latencyMs: Date.now() - start };
   }
+  if (!hasOverride) {
+    lastHealthCheck = { ...outcome, timestamp: now };
+  }
+  return outcome;
 }
 
 /** Wrapper tag names hq-jr puts around untrusted input. */
@@ -287,7 +296,7 @@ function assertCompleteResponse(res: unknown, label: string): void {
 }
 
 /**
- * Tier 1: Fast triage using Gemini 3.8 Flash
+ * Tier 1: Fast triage using Gemini 4 Hydrogen (configurable via HQ_JR_MODEL_TIER1)
  */
 export async function runTriage(diffText: string): Promise<TriageResult> {
   const systemInstruction = `You are an automated code review triage engine.
@@ -307,9 +316,7 @@ ${escapeUntrustedTags(diffText)}
       config: {
         systemInstruction,
         responseMimeType: "application/json",
-        thinkingConfig: {
-          thinkingLevel: ThinkingLevel.HIGH,
-        },
+        thinkingConfig: { thinkingLevel: toSdkThinkingLevel(config.HQ_JR_THINKING_TIER1) },
         responseSchema: TRIAGE_RESPONSE_SCHEMA,
       },
     })
@@ -340,6 +347,8 @@ export interface DeepReviewOptions {
   model?: string;
   /** Role of the call. Only the escalated call carries the output cap. */
   role?: DeepReviewRole;
+  /** Thinking level override. Defaults to the configured level for `role`. */
+  thinkingLevel?: ThinkingLevelSetting;
 }
 
 /**
@@ -372,27 +381,32 @@ export function resolveDeepReviewModel(
 
 export interface DeepReviewRouting {
   model: string;
+  role: DeepReviewRole;
   escalated: boolean;
+  thinkingLevel: ThinkingLevelSetting;
 }
 
 /**
- * Decides which model serves the deep review for a triage result.
+ * Decides which model, role, and thinking level serve the deep review for a triage result.
  */
 export function resolveDeepReviewRouting(
   overallRisk: RiskLevel,
   minRisk: RiskLevel = config.HQ_JR_ESCALATION_MIN_RISK
 ): DeepReviewRouting {
+  const escalated = shouldEscalate(overallRisk, minRisk);
   return {
-    model: resolveDeepReviewModel(overallRisk, minRisk),
-    escalated: shouldEscalate(overallRisk, minRisk),
+    model: escalated ? config.HQ_JR_MODEL_ESCALATION : config.HQ_JR_MODEL_TIER2,
+    role: escalated ? "escalation" : "tier2",
+    escalated,
+    thinkingLevel: escalated ? config.HQ_JR_THINKING_ESCALATION : config.HQ_JR_THINKING_TIER2,
   };
 }
 
 export interface EscalatedDeepReviewParams {
   /** Triage risk of the pull request. */
   overallRisk: RiskLevel;
-  /** Runs the deep review on the given model with the given role. */
-  run: (model: string, role: DeepReviewRole) => Promise<DeepReviewResult>;
+  /** Runs the deep review on the given model with the given role and thinking level. */
+  run: (model: string, role: DeepReviewRole, thinkingLevel: ThinkingLevelSetting) => Promise<DeepReviewResult>;
   minRisk?: RiskLevel;
   /** Receives the fallback notice when the escalation model fails. */
   log?: (payload: Record<string, unknown>, message: string) => void;
@@ -401,6 +415,8 @@ export interface EscalatedDeepReviewParams {
 export interface EscalatedDeepReviewOutcome {
   result: DeepReviewResult;
   model: string;
+  role: DeepReviewRole;
+  thinkingLevel: ThinkingLevelSetting;
   escalated: boolean;
   fellBack: boolean;
 }
@@ -416,32 +432,20 @@ export async function runEscalatedDeepReview(
   params: EscalatedDeepReviewParams
 ): Promise<EscalatedDeepReviewOutcome> {
   const routing = resolveDeepReviewRouting(params.overallRisk, params.minRisk);
-  const role: DeepReviewRole = routing.escalated ? "escalation" : "tier2";
   try {
-    const result = await params.run(routing.model, role);
-    return { result, model: routing.model, escalated: routing.escalated, fellBack: false };
+    const result = await params.run(routing.model, routing.role, routing.thinkingLevel);
+    return { result, model: routing.model, role: routing.role, thinkingLevel: routing.thinkingLevel, escalated: routing.escalated, fellBack: false };
   } catch (err: unknown) {
     if (!routing.escalated) throw err;
+    const fallbackModel = config.HQ_JR_MODEL_TIER2;
+    const fallbackThinkingLevel = config.HQ_JR_THINKING_TIER2;
     params.log?.(
-      {
-        err,
-        escalationModel: routing.model,
-        fallbackModel: config.HQ_JR_MODEL_TIER2,
-      },
+      { err, escalationModel: routing.model, escalationThinkingLevel: routing.thinkingLevel, fallbackModel, fallbackThinkingLevel },
       "Escalated deep review failed, retrying deep review on the Tier 2 model"
     );
-    // The fallback is the Tier 2 deep review, so it keeps the Tier 2 role and
-    // stays uncapped. The cap follows the role of the call, not the model id,
-    // so pointing both tiers at one model changes nothing about what is
-    // capped, and a truncated escalated answer can still be retried in full.
-    const fallbackRole: DeepReviewRole = "tier2";
-    const result = await params.run(config.HQ_JR_MODEL_TIER2, fallbackRole);
-    return {
-      result,
-      model: config.HQ_JR_MODEL_TIER2,
-      escalated: true,
-      fellBack: true,
-    };
+    // Fallback stays uncapped via role "tier2" even when both tiers share one model id.
+    const result = await params.run(fallbackModel, "tier2", fallbackThinkingLevel);
+    return { result, model: fallbackModel, role: "tier2", thinkingLevel: fallbackThinkingLevel, escalated: true, fellBack: true };
   }
 }
 
@@ -479,19 +483,17 @@ export function resolveVerdict(
 }
 
 /**
- * Tier 2: Deep semantic review using Gemini 3.8 Flash with High Thinking
+ * Tier 2: Deep semantic review using Gemini 4 Hydrogen (or Escalation Argon) with configured thinking
  */
 export async function runDeepReview(
   contextPrompt: string,
   options?: DeepReviewOptions
 ): Promise<DeepReviewResult> {
   const model = options?.model || config.HQ_JR_MODEL_TIER2;
-  // Only the escalated call is capped. The cap follows the role of the call,
-  // not the model id, so sharing one model id across tiers changes nothing.
-  const outputCap =
-    options?.role === "escalation"
-      ? { maxOutputTokens: config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS }
-      : {};
+  const thinkingLevel =
+    options?.thinkingLevel ?? (options?.role === "escalation" ? config.HQ_JR_THINKING_ESCALATION : config.HQ_JR_THINKING_TIER2);
+  // Only the escalated call is capped; the cap follows role, not model id.
+  const outputCap = options?.role === "escalation" ? { maxOutputTokens: config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS } : {};
   let previousAuditSection: { preamble: string; priorReviewText: string } | null = null;
   if (options?.previousReview) {
     const pr = options.previousReview;
@@ -560,9 +562,7 @@ ${untrustedBody}
         systemInstruction,
         responseMimeType: "application/json",
         ...outputCap,
-        thinkingConfig: {
-          thinkingLevel: ThinkingLevel.HIGH,
-        },
+        thinkingConfig: { thinkingLevel: toSdkThinkingLevel(thinkingLevel) },
         responseSchema: DEEP_REVIEW_RESPONSE_SCHEMA,
       },
     })
@@ -609,44 +609,10 @@ export type SandboxLanguage = "rust" | "go" | "python" | "node";
  * exfiltration path. A new host goes in by naming what needs it.
  */
 const SANDBOX_HOSTS: Record<SandboxLanguage, readonly string[]> = {
-  rust: [
-    // crates.io: the crate registry the agent resolves dependencies against.
-    "crates.io",
-    // index.crates.io: the sparse registry index cargo reads to pick versions.
-    "index.crates.io",
-    // static.crates.io: where cargo downloads the crate archives.
-    "static.crates.io",
-    // sh.rustup.rs: the rustup installer the agent runs when cargo is missing.
-    "sh.rustup.rs",
-    // static.rust-lang.org: where rustup downloads the Rust toolchain.
-    "static.rust-lang.org",
-  ],
-  go: [
-    // proxy.golang.org: the module proxy that serves the module metadata, the
-    // module zips, and the toolchain modules Go 1.21 and later download.
-    "proxy.golang.org",
-    // sum.golang.org: the checksum database the go command verifies modules against.
-    "sum.golang.org",
-    // storage.googleapis.com: where the module proxy redirects the zips.
-    "storage.googleapis.com",
-    // go.dev: the Go toolchain download page.
-    "go.dev",
-    // dl.google.com: where go.dev serves the toolchain archives.
-    "dl.google.com",
-  ],
-  python: [
-    // pypi.org: the package index pip resolves dependencies against.
-    "pypi.org",
-    // files.pythonhosted.org: where pip downloads the wheels and the sdists.
-    "files.pythonhosted.org",
-  ],
-  node: [
-    // registry.npmjs.org: the npm registry that serves the package metadata
-    // and the tarballs.
-    "registry.npmjs.org",
-    // nodejs.org: the Node toolchain download, for an image without node.
-    "nodejs.org",
-  ],
+  rust: ["crates.io", "index.crates.io", "static.crates.io", "sh.rustup.rs", "static.rust-lang.org"],
+  go: ["proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "go.dev", "dl.google.com"],
+  python: ["pypi.org", "files.pythonhosted.org"],
+  node: ["registry.npmjs.org", "nodejs.org"],
 };
 
 /**

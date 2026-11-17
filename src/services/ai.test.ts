@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { readFile } from "node:fs/promises";
 import { Request as UndiciRequest } from "undici";
 import { z } from "zod";
-import { Type } from "@google/genai";
+import { Type, ThinkingLevel } from "@google/genai";
 import {
   TriageResultSchema,
   DeepReviewResultSchema,
@@ -28,7 +28,14 @@ import {
   shouldEscalate,
   resolveVerdict,
 } from "./ai.js";
-import { config, parseEnv, riskRank, riskAtLeast, type RiskLevel } from "../config.js";
+import {
+  config,
+  parseEnv,
+  riskRank,
+  riskAtLeast,
+  THINKING_LEVELS,
+  type RiskLevel,
+} from "../config.js";
 import { detectTestCommand } from "./sandbox-runner.js";
 import { runCliDeepReview } from "../cli.js";
 
@@ -92,7 +99,7 @@ describe.runIf(process.env.RUN_LIVE_TESTS === "true")("Vertex AI Live Health Che
     expect(health.latencyMs).toBeGreaterThan(0);
   }, 60000);
 
-  it("executes live Tier 1 triage with Gemini 3.8 Flash structured output", async () => {
+  it("executes live Tier 1 triage with Gemini 4 Hydrogen structured output", async () => {
     // Small cooldown between API calls to prevent quota burst
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const diff = `
@@ -514,7 +521,16 @@ function assertSchemaParity(jsonSchema: JsonSchema, zodSchema: z.ZodObject<any>,
 }
 
 describe("model configuration defaults", () => {
-  it("ships the documented model defaults", () => {
+  it("ships the documented model and thinking defaults", () => {
+    if (!process.env.GOOGLE_CLOUD_LOCATION) {
+      expect(config.GOOGLE_CLOUD_LOCATION).toBe("global");
+    }
+    if (!process.env.HQ_JR_MODEL_TIER1) {
+      expect(config.HQ_JR_MODEL_TIER1).toBe("gemini-4-hydrogen");
+    }
+    if (!process.env.HQ_JR_MODEL_TIER2) {
+      expect(config.HQ_JR_MODEL_TIER2).toBe("gemini-4-hydrogen");
+    }
     if (!process.env.HQ_JR_MODEL_ESCALATION) {
       expect(config.HQ_JR_MODEL_ESCALATION).toBe("gemini-4-argon");
     }
@@ -522,13 +538,31 @@ describe("model configuration defaults", () => {
       expect(config.HQ_JR_ESCALATION_MIN_RISK).toBe("HIGH");
     }
     if (!process.env.HQ_JR_MODEL_DISCUSSION) {
-      expect(config.HQ_JR_MODEL_DISCUSSION).toBe("gemini-3.8-flash");
+      expect(config.HQ_JR_MODEL_DISCUSSION).toBe("gemini-4-hydrogen");
     }
     if (!process.env.HQ_JR_MODEL_REMEDIATION) {
-      expect(config.HQ_JR_MODEL_REMEDIATION).toBe("gemini-3.8-flash");
+      expect(config.HQ_JR_MODEL_REMEDIATION).toBe("gemini-4-hydrogen");
     }
     if (!process.env.HQ_JR_MODEL_HEALTH) {
-      expect(config.HQ_JR_MODEL_HEALTH).toBe("gemini-3.8-flash");
+      expect(config.HQ_JR_MODEL_HEALTH).toBe("gemini-4-hydrogen");
+    }
+    if (!process.env.HQ_JR_THINKING_TIER1) {
+      expect(config.HQ_JR_THINKING_TIER1).toBe("HIGH");
+    }
+    if (!process.env.HQ_JR_THINKING_TIER2) {
+      expect(config.HQ_JR_THINKING_TIER2).toBe("HIGH");
+    }
+    if (!process.env.HQ_JR_THINKING_ESCALATION) {
+      expect(config.HQ_JR_THINKING_ESCALATION).toBe("HIGH");
+    }
+    if (!process.env.HQ_JR_THINKING_DISCUSSION) {
+      expect(config.HQ_JR_THINKING_DISCUSSION).toBe("HIGH");
+    }
+    if (!process.env.HQ_JR_THINKING_REMEDIATION) {
+      expect(config.HQ_JR_THINKING_REMEDIATION).toBe("HIGH");
+    }
+    if (!process.env.HQ_JR_THINKING_HEALTH) {
+      expect(config.HQ_JR_THINKING_HEALTH).toBe("LOW");
     }
     if (!process.env.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS) {
       expect(config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS).toBe(32768);
@@ -683,18 +717,97 @@ describe("model id validation", () => {
   it("keeps the documented defaults when no model variable is set", () => {
     const parsed = parseEnv({});
 
-    expect(parsed.HQ_JR_MODEL_TIER1).toBe("gemini-3.8-flash");
-    expect(parsed.HQ_JR_MODEL_TIER2).toBe("gemini-3.8-flash");
+    expect(parsed.GOOGLE_CLOUD_LOCATION).toBe("global");
+    expect(parsed.HQ_JR_MODEL_TIER1).toBe("gemini-4-hydrogen");
+    expect(parsed.HQ_JR_MODEL_TIER2).toBe("gemini-4-hydrogen");
     expect(parsed.HQ_JR_MODEL_ESCALATION).toBe("gemini-4-argon");
-    expect(parsed.HQ_JR_MODEL_DISCUSSION).toBe("gemini-3.8-flash");
-    expect(parsed.HQ_JR_MODEL_REMEDIATION).toBe("gemini-3.8-flash");
-    expect(parsed.HQ_JR_MODEL_HEALTH).toBe("gemini-3.8-flash");
+    expect(parsed.HQ_JR_MODEL_DISCUSSION).toBe("gemini-4-hydrogen");
+    expect(parsed.HQ_JR_MODEL_REMEDIATION).toBe("gemini-4-hydrogen");
+    expect(parsed.HQ_JR_MODEL_HEALTH).toBe("gemini-4-hydrogen");
+    expect(parsed.HQ_JR_THINKING_TIER1).toBe("HIGH");
+    expect(parsed.HQ_JR_THINKING_TIER2).toBe("HIGH");
+    expect(parsed.HQ_JR_THINKING_ESCALATION).toBe("HIGH");
+    expect(parsed.HQ_JR_THINKING_DISCUSSION).toBe("HIGH");
+    expect(parsed.HQ_JR_THINKING_REMEDIATION).toBe("HIGH");
+    expect(parsed.HQ_JR_THINKING_HEALTH).toBe("LOW");
   });
 
   it("trims a model id instead of routing to a padded name", () => {
     const parsed = parseEnv({ HQ_JR_MODEL_ESCALATION: "  gemini-4-argon  " });
 
     expect(parsed.HQ_JR_MODEL_ESCALATION).toBe("gemini-4-argon");
+  });
+});
+
+describe("vertex location and thinking level configuration", () => {
+  const stagePairs = [
+    ["HQ_JR_MODEL_TIER1", "HQ_JR_THINKING_TIER1"],
+    ["HQ_JR_MODEL_TIER2", "HQ_JR_THINKING_TIER2"],
+    ["HQ_JR_MODEL_ESCALATION", "HQ_JR_THINKING_ESCALATION"],
+    ["HQ_JR_MODEL_DISCUSSION", "HQ_JR_THINKING_DISCUSSION"],
+    ["HQ_JR_MODEL_REMEDIATION", "HQ_JR_THINKING_REMEDIATION"],
+    ["HQ_JR_MODEL_HEALTH", "HQ_JR_THINKING_HEALTH"],
+  ] as const;
+
+  it("enforces GOOGLE_CLOUD_LOCATION=global and rejects regional endpoints like us-central1", () => {
+    expect(parseEnv({}).GOOGLE_CLOUD_LOCATION).toBe("global");
+    expect(parseEnv({ GOOGLE_CLOUD_LOCATION: "global" }).GOOGLE_CLOUD_LOCATION).toBe("global");
+    expect(() => parseEnv({ GOOGLE_CLOUD_LOCATION: "us-central1" })).toThrow(
+      /GOOGLE_CLOUD_LOCATION/
+    );
+    expect(() => parseEnv({ GOOGLE_CLOUD_LOCATION: "europe-west4" })).toThrow(
+      /GOOGLE_CLOUD_LOCATION/
+    );
+  });
+
+  it("rejects MINIMAL thinking level at the config boundary for all stages", () => {
+    for (const [, thinkingVar] of stagePairs) {
+      expect(() => parseEnv({ [thinkingVar]: "MINIMAL" }), thinkingVar).toThrow(
+        new RegExp(thinkingVar)
+      );
+    }
+  });
+
+  it("allows LOW, MEDIUM, HIGH, and XHIGH on Gemini 4 Hydrogen", () => {
+    for (const level of THINKING_LEVELS) {
+      const parsed = parseEnv({
+        HQ_JR_MODEL_TIER1: "gemini-4-hydrogen",
+        HQ_JR_THINKING_TIER1: level,
+        HQ_JR_MODEL_TIER2: "gemini-4-hydrogen",
+        HQ_JR_THINKING_TIER2: level,
+      });
+      expect(parsed.HQ_JR_THINKING_TIER1).toBe(level);
+      expect(parsed.HQ_JR_THINKING_TIER2).toBe(level);
+    }
+  });
+
+  it("rejects XHIGH when paired with gemini-4-argon on any stage", () => {
+    for (const [modelVar, thinkingVar] of stagePairs) {
+      expect(
+        () => parseEnv({ [modelVar]: "gemini-4-argon", [thinkingVar]: "XHIGH" }),
+        `${modelVar}/${thinkingVar}`
+      ).toThrow(new RegExp(`${thinkingVar}.*XHIGH`));
+
+      expect(
+        () =>
+          parseEnv({
+            [modelVar]: "publishers/google/models/gemini-4-argon",
+            [thinkingVar]: "XHIGH",
+          }),
+        `${modelVar}/${thinkingVar} resource path`
+      ).toThrow(new RegExp(thinkingVar));
+    }
+  });
+
+  it("allows LOW, MEDIUM, and HIGH on gemini-4-argon and XHIGH on custom mock model ids", () => {
+    for (const level of ["LOW", "MEDIUM", "HIGH"] as const) {
+      expect(parseEnv({ HQ_JR_THINKING_ESCALATION: level }).HQ_JR_THINKING_ESCALATION).toBe(level);
+    }
+    const customParsed = parseEnv({
+      HQ_JR_MODEL_ESCALATION: "gemini-4-argon-shared",
+      HQ_JR_THINKING_ESCALATION: "XHIGH",
+    });
+    expect(customParsed.HQ_JR_THINKING_ESCALATION).toBe("XHIGH");
   });
 });
 
@@ -800,9 +913,14 @@ describe("escalated deep review policy", () => {
     const levels: RiskLevel[] = ["LOW", "MEDIUM", "HIGH"];
     for (const risk of levels) {
       for (const threshold of levels) {
+        const escalated = shouldEscalate(risk, threshold);
         expect(resolveDeepReviewRouting(risk, threshold)).toEqual({
           model: resolveDeepReviewModel(risk, threshold),
-          escalated: shouldEscalate(risk, threshold),
+          role: escalated ? "escalation" : "tier2",
+          escalated,
+          thinkingLevel: escalated
+            ? config.HQ_JR_THINKING_ESCALATION
+            : config.HQ_JR_THINKING_TIER2,
         });
       }
     }
@@ -1588,5 +1706,116 @@ describe("deep review verdict contract", () => {
     expect(resolveVerdict({ verdict: "APPROVE", comments: [finding("SUGGESTION")] })).toBe("APPROVE");
     expect(resolveVerdict({ verdict: "COMMENT", comments: [] })).toBe("COMMENT");
     expect(resolveVerdict({ verdict: "COMMENT", comments: [finding("SUGGESTION")] })).toBe("COMMENT");
+  });
+});
+
+describe("per-role thinking level wiring", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it("sends HQ_JR_THINKING_HEALTH (LOW by default) on checkAiHealth without maxOutputTokens", async () => {
+    vi.resetModules();
+    const fresh = await import("./ai.js");
+    fresh.resetAiHealthCache();
+    const spy = vi.spyOn(fresh.ai.models, "generateContent").mockResolvedValue({ text: "pong" } as never);
+
+    const health = await fresh.checkAiHealth();
+
+    expect(health.status).toBe("ok");
+    expect(spy.mock.calls[0][0].model).toBe("gemini-4-hydrogen");
+    expect(spy.mock.calls[0][0].config?.thinkingConfig).toEqual({ thinkingLevel: ThinkingLevel.LOW });
+    expect(spy.mock.calls[0][0].config?.maxOutputTokens).toBeUndefined();
+  });
+
+  it("sends configured thinking levels across triage, deep review, escalation fallback, discussion, and remediation", async () => {
+    vi.stubEnv("HQ_JR_THINKING_TIER1", "MEDIUM");
+    vi.stubEnv("HQ_JR_THINKING_TIER2", "XHIGH");
+    vi.stubEnv("HQ_JR_THINKING_ESCALATION", "LOW");
+    vi.stubEnv("HQ_JR_THINKING_DISCUSSION", "MEDIUM");
+    vi.stubEnv("HQ_JR_THINKING_REMEDIATION", "XHIGH");
+    vi.resetModules();
+
+    const fresh = await import("./ai.js");
+    const { replyToDiscussion } = await import("./discussion.js");
+    const { synthesizeFileFix } = await import("./remediation.js");
+
+    const spy = vi
+      .spyOn(fresh.ai.models, "generateContent")
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ summary: "s", overallRisk: "LOW", files: [] }),
+      } as never)
+      .mockRejectedValueOnce(new Error("argon quota exhausted"))
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+      } as never)
+      .mockResolvedValueOnce({ text: "disc reply" } as never)
+      .mockResolvedValueOnce({ text: "```ts\nconst fixed = 1;\n```" } as never);
+
+    await fresh.runTriage("diff text");
+    const outcome = await fresh.runEscalatedDeepReview({
+      overallRisk: "HIGH",
+      minRisk: "HIGH",
+      run: (model, role, thinkingLevel) =>
+        fresh.runDeepReview("context", { model, role, thinkingLevel }),
+    });
+    await replyToDiscussion({ filePath: "src/a.ts", userQuery: "why?", authorLogin: "dev" });
+    await synthesizeFileFix({
+      filePath: "src/a.ts",
+      originalContent: "const x = 0;",
+      issues: [{ body: "fix it" }],
+    });
+
+    expect(spy.mock.calls[0][0].config?.thinkingConfig).toEqual({
+      thinkingLevel: ThinkingLevel.MEDIUM,
+    });
+    expect(spy.mock.calls[1][0].model).toBe("gemini-4-argon");
+    expect(spy.mock.calls[1][0].config?.thinkingConfig).toEqual({
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+    expect(spy.mock.calls[2][0].model).toBe("gemini-4-hydrogen");
+    expect(spy.mock.calls[2][0].config?.thinkingConfig).toEqual({
+      thinkingLevel: ThinkingLevel.XHIGH,
+    });
+    expect(outcome.fellBack).toBe(true);
+    expect(outcome.thinkingLevel).toBe("XHIGH");
+
+    expect(spy.mock.calls[3][0].config?.thinkingConfig).toEqual({
+      thinkingLevel: ThinkingLevel.MEDIUM,
+    });
+    expect(String(spy.mock.calls[3][0].config?.systemInstruction)).toContain("MEDIUM");
+    expect(String(spy.mock.calls[3][0].config?.systemInstruction)).not.toContain("High Thinking");
+
+    expect(spy.mock.calls[4][0].config?.thinkingConfig).toEqual({
+      thinkingLevel: ThinkingLevel.XHIGH,
+    });
+  });
+
+  it("also switches thinkingLevel on fallback when a caller invokes runDeepReview with only { model, role }", async () => {
+    vi.stubEnv("HQ_JR_THINKING_TIER2", "XHIGH");
+    vi.stubEnv("HQ_JR_THINKING_ESCALATION", "LOW");
+    vi.resetModules();
+
+    const fresh = await import("./ai.js");
+    const spy = vi
+      .spyOn(fresh.ai.models, "generateContent")
+      .mockRejectedValueOnce(new Error("argon failed"))
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ summary: "s", verdict: "APPROVE", comments: [] }),
+      } as never);
+
+    await fresh.runEscalatedDeepReview({
+      overallRisk: "HIGH",
+      minRisk: "HIGH",
+      run: (model, role) => fresh.runDeepReview("context", { model, role }),
+    });
+
+    expect(spy.mock.calls[0][0].config?.thinkingConfig).toEqual({
+      thinkingLevel: ThinkingLevel.LOW,
+    });
+    expect(spy.mock.calls[1][0].config?.thinkingConfig).toEqual({
+      thinkingLevel: ThinkingLevel.XHIGH,
+    });
   });
 });

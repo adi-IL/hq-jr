@@ -120,7 +120,7 @@ Every release that changes a deploy file has to be copied over by hand in this m
 
 The container does not start until `/opt/hq-jr/.env` holds the GitHub App values and the Vertex AI project. The image does not include a `docs/` directory. Set the values in this section.
 
-`APP_ID`, `PRIVATE_KEY`, and `WEBHOOK_SECRET` come from the GitHub App. Keep `PRIVATE_KEY` on one line and write its newlines as `\n`. Do not put spaces around `=`. `GOOGLE_CLOUD_PROJECT` is the Vertex AI project. `GOOGLE_CLOUD_LOCATION` is `global` unless the project uses another region. `HQ_JR_DB_PATH` must be `/app/data/hq-jr.db` so the database stays on the data volume. The image sets that path. This line keeps a copied example from pointing the database somewhere else. Set `WEBHOOK_PROXY_URL` only when GitHub delivers webhooks through a Smee channel.
+`APP_ID`, `PRIVATE_KEY`, and `WEBHOOK_SECRET` come from the GitHub App. Keep `PRIVATE_KEY` on one line and write its newlines as `\n`. Do not put spaces around `=`. `GOOGLE_CLOUD_PROJECT` is the Vertex AI project. `GOOGLE_CLOUD_LOCATION` must be `global` (enforced at startup for Gemini 4 models). `HQ_JR_DB_PATH` must be `/app/data/hq-jr.db` so the database stays on the data volume. The image sets that path. This line keeps a copied example from pointing the database somewhere else. Set `WEBHOOK_PROXY_URL` only when GitHub delivers webhooks through a Smee channel.
 
 ```bash
 # 1. Create /opt/hq-jr/.env when it is missing or empty, then install the ADC file.

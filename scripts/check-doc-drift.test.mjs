@@ -21,7 +21,7 @@ describe("readConfigDefaults", () => {
     expect(defaults.get("PORT")).toBe("3000");
     expect(defaults.get("HQ_JR_AI_TIMEOUT_MS")).toBe("900000");
     expect(defaults.get("HQ_JR_ESCALATION_MIN_RISK")).toBe("HIGH");
-    expect(defaults.size).toBe(16);
+    expect(defaults.size).toBe(22);
   });
 
   it("reads a default that has a trailing comment", () => {
@@ -230,7 +230,7 @@ describe("the drift check on a copy of the tree", () => {
     const { output, code } = runCheck((root) => {
       const file = join(root, "README.md");
       const source = readFileSync(file, "utf8");
-      const anchor = "HQ_JR_MODEL_TIER1=gemini-3.8-flash";
+      const anchor = "HQ_JR_MODEL_TIER1=gemini-4-hydrogen";
       expect(source).toContain(anchor);
       writeFileSync(file, source.replace(anchor, `${anchor}\nHQ_JR_NOT_A_REAL_VAR=1`));
     });

@@ -1,6 +1,5 @@
-import { ai, withRetry } from "./ai.js";
+import { ai, withRetry, toSdkThinkingLevel } from "./ai.js";
 import { config } from "../config.js";
-import { ThinkingLevel } from "@google/genai";
 import { PriorReviewIssue } from "./review-memory.js";
 import { scrubSecrets } from "./scrubber.js";
 export interface RemediationResult {
@@ -37,6 +36,9 @@ function fenceLanguageForPath(filePath: string): string {
   return FENCE_LANGUAGE_BY_EXT[filePath.slice(dot).toLowerCase()] ?? "";
 }
 
+/**
+ * Synthesizes a bug-fixed version of a file by applying review findings using the configured remediation model and thinking level.
+ */
 export async function synthesizeFileFix(params: {
   filePath: string;
   originalContent: string;
@@ -74,7 +76,7 @@ ${scrubbedContent}
       config: {
         systemInstruction,
         thinkingConfig: {
-          thinkingLevel: ThinkingLevel.HIGH,
+          thinkingLevel: toSdkThinkingLevel(config.HQ_JR_THINKING_REMEDIATION),
         },
       },
     })
@@ -93,7 +95,7 @@ ${scrubbedContent}
  * Executes autonomous remediation on a Pull Request:
  * 1. Groups review findings by file.
  * 2. Fetches current file contents from GitHub.
- * 3. Synthesizes corrected code via the configured remediation model (High Thinking).
+ * 3. Synthesizes corrected code via the configured remediation model and thinking level.
  * 4. Creates a Git tree and commit via Git Data API.
  * 5. Pushes to a nested branch (hq-jr/fix-pr-<num>) and/or PR branch.
  * 6. Creates a sub-PR or auto-merges if requested.

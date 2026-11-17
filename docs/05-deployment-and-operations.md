@@ -336,6 +336,8 @@ gcloud run deploy hq-jr \
   --set-secrets "APP_ID=HQ_JR_APP_ID:latest,PRIVATE_KEY=HQ_JR_PRIVATE_KEY:latest,WEBHOOK_SECRET=HQ_JR_WEBHOOK_SECRET:latest"
 ```
 
+`--region us-central1` selects the Cloud Run compute region. Keep `GOOGLE_CLOUD_LOCATION=global` for Vertex AI, which `hq-jr` requires at startup for Gemini 4 models.
+
 Cloud Run caveats:
 
 - The container filesystem is ephemeral. Mount a persistent volume or accept per-instance state. Review findings, active run locks, remediation markers, and Tier 3 poll recovery need durable storage.
@@ -389,15 +391,21 @@ Defaults come from `src/config.ts`. The Docker image also sets `NODE_ENV=product
 | `WEBHOOK_SECRET` | Yes | none | HMAC secret for webhook verification. |
 | `WEBHOOK_PROXY_URL` | Optional | none | Smee channel used by Probot to receive webhooks without public ingress. |
 | `GOOGLE_CLOUD_PROJECT` | Yes in practice | `test-gcp-project` | Vertex AI project. The default is a placeholder, not a working project. |
-| `GOOGLE_CLOUD_LOCATION` | Optional | `global` | Vertex AI location. |
+| `GOOGLE_CLOUD_LOCATION` | Optional | `global` | Vertex AI endpoint location. Must be `global` for Gemini 4 models. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional | none | Path to an ADC JSON file. Not needed on GCE with a scoped service account. |
-| `HQ_JR_MODEL_TIER1` | Optional | `gemini-3.8-flash` | Triage model. |
-| `HQ_JR_MODEL_TIER2` | Optional | `gemini-3.8-flash` | Deep review model. |
+| `HQ_JR_MODEL_TIER1` | Optional | `gemini-4-hydrogen` | Triage model. |
+| `HQ_JR_THINKING_TIER1` | Optional | `HIGH` | Thinking level for Tier 1 triage (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
+| `HQ_JR_MODEL_TIER2` | Optional | `gemini-4-hydrogen` | Deep review model. |
+| `HQ_JR_THINKING_TIER2` | Optional | `HIGH` | Thinking level for Tier 2 deep review (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
 | `HQ_JR_MODEL_ESCALATION` | Optional | `gemini-4-argon` | Deep review model used when the triage risk reaches the escalation threshold. |
+| `HQ_JR_THINKING_ESCALATION` | Optional | `HIGH` | Thinking level for the escalation tier (`LOW`, `MEDIUM`, `HIGH`; `XHIGH` rejected for Argon). |
 | `HQ_JR_ESCALATION_MIN_RISK` | Optional | `HIGH` | Triage overall risk at or above this level escalates the deep review. One of `LOW`, `MEDIUM`, `HIGH`. |
-| `HQ_JR_MODEL_DISCUSSION` | Optional | `gemini-3.8-flash` | Model for replies in PR discussion threads. |
-| `HQ_JR_MODEL_REMEDIATION` | Optional | `gemini-3.8-flash` | Model for remediation synthesis. |
-| `HQ_JR_MODEL_HEALTH` | Optional | `gemini-3.8-flash` | Model for the Vertex AI connectivity probe. |
+| `HQ_JR_MODEL_DISCUSSION` | Optional | `gemini-4-hydrogen` | Model for replies in PR discussion threads. |
+| `HQ_JR_THINKING_DISCUSSION` | Optional | `HIGH` | Thinking level for PR discussion replies (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
+| `HQ_JR_MODEL_REMEDIATION` | Optional | `gemini-4-hydrogen` | Model for remediation synthesis. |
+| `HQ_JR_THINKING_REMEDIATION` | Optional | `HIGH` | Thinking level for remediation synthesis (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
+| `HQ_JR_MODEL_HEALTH` | Optional | `gemini-4-hydrogen` | Model for the Vertex AI connectivity probe. |
+| `HQ_JR_THINKING_HEALTH` | Optional | `LOW` | Thinking level for the Vertex AI connectivity probe (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
 | `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | Optional | `32768` | Output token cap for a call that runs on `HQ_JR_MODEL_ESCALATION`. Triage, discussion, remediation and health calls are never capped. |
 | `HQ_JR_AGENT_TIER3` | Optional | `antigravity-preview-05-2026` | Tier 3 sandbox agent. |
 | `PORT` | Optional | `3000` | HTTP listen port. |
