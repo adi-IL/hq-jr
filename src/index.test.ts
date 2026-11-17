@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fileURLToPath } from "node:url";
-import appFn, { buildDeepReviewBody, buildExcludedFilesSummary, buildNoCodeChangesSummary } from "./index.js";
+import appFn, {
+  buildDeepReviewBody,
+  buildExcludedFilesSummary,
+  buildNoCodeChangesSummary,
+  buildSkipCommentBody,
+  SKIP_COMMENT_MARKER,
+} from "./index.js";
 import { addRemediationCommit, acquireRunLock, releaseRunLock } from "./services/db.js";
 import { BUDGET_DROP_REASON } from "./services/context-packager.js";
 import * as aiModule from "./services/ai.js";
@@ -50,8 +56,12 @@ describe("hq-jr Event Handlers & Security Guards", () => {
       repos: {
         getCollaboratorPermissionLevel: vi.fn(),
       },
+      paginate: vi.fn(async (method: Function, params: unknown) => (await method(params)).data),
       issues: {
+        listComments: vi.fn().mockResolvedValue({ data: [] }),
+        updateComment: vi.fn().mockResolvedValue({ data: { id: 402 } }),
         createComment: vi.fn().mockResolvedValue({ data: { id: 401 } }),
+        deleteComment: vi.fn().mockResolvedValue({}),
         update: vi.fn().mockResolvedValue({}),
       },
       git: {
@@ -760,11 +770,204 @@ rename to src/new/auth.ts
     });
 
     const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
-    expect(finalUpdate.output.title).toBe("Triage Passed: Excluded Files Only");
+    expect(finalUpdate.output.title).toBe("Review Skipped: Excluded Files Only");
     const summary = finalUpdate.output.summary as string;
     expect(summary.length).toBeLessThan(65535);
     expect(summary).toContain("Modified files were excluded from review");
     expect(summary).toContain("Excluded files (showing first 50 of 2000):");
+  });
+
+  it("posts the excluded files and ends neutral when an automatic review filters every file", async () => {
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(1, () => "docs/08-automatic-429-recovery.md") });
+    const triageSpy = vi.spyOn(aiModule, "runTriage");
+
+    await handlers.get("pull_request.opened")!({
+      octokit: octokitMock,
+      payload: {
+        action: "opened",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 29, state: "open", title: "Docs", head: { sha: "sha-29", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(triageSpy).not.toHaveBeenCalled();
+    const finalUpdate = octokitMock.checks.update.mock.calls.at(-1)?.[0];
+    expect(finalUpdate).toMatchObject({ status: "completed", conclusion: "neutral" });
+    const comment = octokitMock.issues.createComment.mock.calls.at(-1)?.[0];
+    expect(comment.issue_number).toBe(29);
+    expect(comment.body).toContain(SKIP_COMMENT_MARKER);
+    expect(comment.body).toContain("docs/08-automatic-429-recovery.md");
+    expect(comment.body).toContain("Documentation / markdown content");
+    expect(comment.body).toContain("@hq-jr review");
+    expect(octokitMock.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it("updates the existing skip comment instead of posting another on a later push", async () => {
+    octokitMock.issues.listComments.mockResolvedValueOnce({
+      data: [
+        { id: 54, body: `${SKIP_COMMENT_MARKER}\nquoted`, user: { type: "Bot", login: "other-bot[bot]" } },
+        { id: 55, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } },
+      ],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(1, () => "docs/08-automatic-429-recovery.md") });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: octokitMock,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 29, state: "open", title: "Docs", head: { sha: "sha-29b", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(octokitMock.issues.createComment).not.toHaveBeenCalled();
+    expect(octokitMock.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 55, body: expect.stringContaining("Documentation / markdown content") })
+    );
+  });
+
+  it("updates the existing skip comment even when octokit lacks paginate", async () => {
+    const { paginate: _paginate, ...noPaginateOctokit } = octokitMock;
+    noPaginateOctokit.issues.listComments.mockResolvedValueOnce({
+      data: [{ id: 56, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } }],
+    });
+    noPaginateOctokit.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(1, () => "docs/08-automatic-429-recovery.md") });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: noPaginateOctokit,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 29, state: "open", title: "Docs", head: { sha: "sha-29c", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(noPaginateOctokit.issues.listComments).toHaveBeenCalledTimes(1);
+    expect(noPaginateOctokit.issues.createComment).not.toHaveBeenCalled();
+    expect(noPaginateOctokit.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 56, body: expect.stringContaining("Documentation / markdown content") })
+    );
+  });
+
+  it("offers the @hq-jr review hint only when the noise filter dropped files", () => {
+    const items = [{ path: "src/huge.ts", reason: BUDGET_DROP_REASON }];
+    expect(buildSkipCommentBody(items, false)).not.toContain("@hq-jr review");
+    expect(buildSkipCommentBody(items, true)).toContain("@hq-jr review");
+  });
+
+  it("reviews noise filtered files when a maintainer comments @hq-jr review", async () => {
+    octokitMock.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({ data: { permission: "admin" } });
+    octokitMock.pulls.get
+      .mockResolvedValueOnce({ data: { number: 30, state: "open", title: "Docs", head: { sha: "sha-30", ref: "docs" } } })
+      .mockResolvedValueOnce({ data: ignoredFileDiff(1, () => "docs/08-automatic-429-recovery.md") });
+    const triageSpy = vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Docs only",
+      overallRisk: "LOW",
+      files: [{ path: "docs/08-automatic-429-recovery.md", risk: "LOW", reason: "Docs", shouldReview: false }],
+    });
+
+    await handlers.get("issue_comment.created")!({
+      octokit: octokitMock,
+      payload: {
+        action: "created",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        issue: { number: 30, pull_request: {} },
+        comment: { id: 7, body: "@hq-jr review", user: { login: "test-maintainer", type: "User" } },
+      },
+    });
+
+    expect(triageSpy).toHaveBeenCalledTimes(1);
+    expect(triageSpy.mock.calls[0][0]).toContain("docs/08-automatic-429-recovery.md");
+    const titles = octokitMock.checks.update.mock.calls.map((call: any[]) => call[0].output?.title);
+    expect(titles).not.toContain("Review Skipped: Excluded Files Only");
+  });
+
+  it("clears prior hq-jr skip comments when a later push is reviewed", async () => {
+    octokitMock.issues.listComments.mockResolvedValueOnce({
+      data: [
+        { id: 54, body: `${SKIP_COMMENT_MARKER}\nquoted`, user: { type: "Bot", login: "other-bot[bot]" } },
+        { id: 55, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } },
+      ],
+    });
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Low-risk tweak",
+      overallRisk: "LOW",
+      files: [{ path: "src/config.ts", risk: "LOW", reason: "Safe", shouldReview: false }],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: octokitMock,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 291, state: "open", title: "Now has code", head: { sha: "sha-291", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(octokitMock.issues.deleteComment).toHaveBeenCalledTimes(1);
+    expect(octokitMock.issues.deleteComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 55 })
+    );
+    expect(octokitMock.issues.deleteComment).not.toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 54 })
+    );
+  });
+
+  it("keeps prior skip comments untouched if triage fails before review proceeds", async () => {
+    octokitMock.issues.listComments.mockResolvedValueOnce({
+      data: [{ id: 56, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } }],
+    });
+    vi.spyOn(aiModule, "runTriage").mockRejectedValueOnce(new Error("transient AI error"));
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: octokitMock,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 292, state: "open", title: "Broken triage", head: { sha: "sha-292", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(octokitMock.issues.deleteComment).not.toHaveBeenCalled();
+    expect(octokitMock.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it("supersedes skip comments when deleteComment is unavailable", async () => {
+    const { deleteComment: _del, ...issuesWithoutDelete } = octokitMock.issues;
+    const noDeleteOctokit = { ...octokitMock, issues: issuesWithoutDelete };
+    noDeleteOctokit.issues.listComments.mockResolvedValueOnce({
+      data: [{ id: 57, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } }],
+    });
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Low-risk tweak",
+      overallRisk: "LOW",
+      files: [{ path: "src/config.ts", risk: "LOW", reason: "Safe", shouldReview: false }],
+    });
+    noDeleteOctokit.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: noDeleteOctokit,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 293, state: "open", title: "Supersede skip", head: { sha: "sha-293", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(noDeleteOctokit.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        comment_id: 57,
+        body: expect.not.stringContaining(SKIP_COMMENT_MARKER),
+      })
+    );
   });
 
   it("keeps the excluded files only summary under the check character limit with long paths", async () => {

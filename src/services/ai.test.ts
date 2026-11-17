@@ -396,42 +396,44 @@ type JsonSchema = {
   required?: string[];
 };
 
+/** Zod 4 definition of a schema. */
+function zodDef(schema: unknown): any {
+  return (schema as any)?._zod?.def;
+}
+
 function zodEnumValues(schema: z.ZodTypeAny): string[] | null {
-  const def = (unwrapZod(schema) as any)._def;
-  if (def?.typeName === "ZodEnum") return [...(def.values as string[])];
+  const def = zodDef(unwrapZod(schema));
+  if (def?.type === "enum") return Object.values(def.entries as Record<string, string>);
   return null;
 }
 
-const ZOD_WRAPPER_TYPES = new Set([
-  "ZodOptional",
-  "ZodNullable",
-  "ZodDefault",
-  "ZodEffects",
-  "ZodCoerce",
-  "ZodCatch",
-  "ZodReadonly",
-]);
+const ZOD_WRAPPER_TYPES = new Set(["optional", "nullable", "default", "prefault", "catch", "readonly", "pipe"]);
 
-/** Unwraps optional, nullable, default, coerce and effect wrappers to the inner schema. */
+function innerOf(def: any): unknown {
+  return def.type === "pipe" ? def.in : def.innerType;
+}
+
+/** Unwraps optional, nullable, default, catch and pipe wrappers to the inner schema. */
 function unwrapZod(schema: z.ZodTypeAny): z.ZodTypeAny {
   let current: any = schema;
   for (let depth = 0; depth < 10; depth++) {
-    const def = current?._def;
-    if (!def || !ZOD_WRAPPER_TYPES.has(def.typeName)) return current;
-    const inner = def.innerType ?? (def.typeName === "ZodEffects" ? def.schema : undefined);
+    const def = zodDef(current);
+    if (!def || !ZOD_WRAPPER_TYPES.has(def.type)) return current;
+    const inner = innerOf(def);
     if (!inner) return current;
     current = inner;
   }
   return current;
 }
 
-/** True only for ZodOptional fields. A field with a default is still present in the output. */
+/** True only for optional fields. A field with a default is still present in the output. */
 function isZodOptional(schema: z.ZodTypeAny): boolean {
   let current: any = schema;
   for (let depth = 0; depth < 10; depth++) {
-    const def = current?._def;
-    if (def?.typeName === "ZodOptional") return true;
-    const inner = def?.innerType ?? (def?.typeName === "ZodEffects" ? def.schema : undefined);
+    const def = zodDef(current);
+    if (def?.type === "optional") return true;
+    if (!def || def.type === "default" || def.type === "prefault" || !ZOD_WRAPPER_TYPES.has(def.type)) return false;
+    const inner = innerOf(def);
     if (!inner) return false;
     current = inner;
   }
@@ -440,29 +442,30 @@ function isZodOptional(schema: z.ZodTypeAny): boolean {
 
 /** Maps a Zod schema to the JSON schema type the model contract has to declare. */
 function zodTypeName(schema: z.ZodTypeAny): string | null {
-  const def = (unwrapZod(schema) as any)._def;
-  switch (def?.typeName) {
-    case "ZodString":
+  const inner: any = unwrapZod(schema);
+  const def = zodDef(inner);
+  switch (def?.type) {
+    case "string":
       return Type.STRING;
-    case "ZodNumber":
-      return Array.isArray(def.checks) && def.checks.some((c: any) => c.kind === "int")
-        ? Type.INTEGER
-        : Type.NUMBER;
-    case "ZodBoolean":
+    case "number":
+      return inner.isInt ? Type.INTEGER : Type.NUMBER;
+    case "boolean":
       return Type.BOOLEAN;
-    case "ZodArray":
+    case "array":
       return Type.ARRAY;
-    case "ZodObject":
+    case "object":
       return Type.OBJECT;
-    case "ZodEnum":
+    case "enum":
       return Type.STRING;
-    case "ZodLiteral":
-      if (typeof def.value === "string") return Type.STRING;
-      if (typeof def.value === "boolean") return Type.BOOLEAN;
-      if (typeof def.value === "number") {
-        return Number.isInteger(def.value) ? Type.INTEGER : Type.NUMBER;
+    case "literal": {
+      const value = def.values?.[0];
+      if (typeof value === "string") return Type.STRING;
+      if (typeof value === "boolean") return Type.BOOLEAN;
+      if (typeof value === "number") {
+        return Number.isInteger(value) ? Type.INTEGER : Type.NUMBER;
       }
       return null;
+    }
     default:
       return null;
   }
@@ -470,9 +473,9 @@ function zodTypeName(schema: z.ZodTypeAny): string | null {
 
 /** JSON type of the elements of a Zod array. */
 function zodItemTypeName(schema: z.ZodTypeAny): string | null {
-  const def = (unwrapZod(schema) as any)._def;
-  if (def?.typeName !== "ZodArray") return null;
-  return zodTypeName(def.type);
+  const def = zodDef(unwrapZod(schema));
+  if (def?.type !== "array") return null;
+  return zodTypeName(def.element);
 }
 
 /**
@@ -503,9 +506,9 @@ function assertSchemaParity(jsonSchema: JsonSchema, zodSchema: z.ZodObject<any>,
     const zodEnum = zodEnumValues(zodField);
     expect(jsonEnum, `${label}.${field}: enum members`).toEqual(zodEnum ? [...zodEnum].sort() : null);
 
-    const zodDef = (unwrapZod(zodField) as any)._def;
-    if (zodDef?.typeName === "ZodArray" && jsonField.items?.type === "OBJECT") {
-      assertSchemaParity(jsonField.items, zodDef.type, `${label}.${field}[]`);
+    const fieldDef = zodDef(unwrapZod(zodField));
+    if (fieldDef?.type === "array" && jsonField.items?.type === "OBJECT") {
+      assertSchemaParity(jsonField.items, fieldDef.element, `${label}.${field}[]`);
     }
   }
 }

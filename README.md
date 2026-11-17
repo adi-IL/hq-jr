@@ -60,7 +60,7 @@ flowchart TD
     
     Route -->|"PR Open, Sync, Reopen, @hq-jr review, or a Checks re-run"| Filter["Diff Parser & Heuristic Filter"]
     Filter -->|"Zero Reviewable Hunks"| FastPass["Complete Check Run: Neutral"]
-    Filter -->|"Every File Excluded by the Noise Filter"| ExcludedPass["Complete Check Run: Success"]
+    Filter -->|"Every File Excluded by the Noise Filter"| ExcludedPass["Complete Check Run: Neutral + PR Comment Listing Excluded Files"]
     Filter -->|"Reviewable Diffs"| Scrubber["Secret & Credential Scrubber"]
     Scrubber --> Tier1["Tier 1: Triage + High Thinking"]
     
