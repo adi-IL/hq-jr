@@ -33,7 +33,7 @@
 
 ---
 
-`hq-jr` filters generated noise, redacts credentials from diff text, and runs a two-step review pipeline. Tier 1 triage uses a narrow JSON schema to classify risk per file. Tier 2 runs a deep review on files that require it and escalates high-risk pull requests from `gemini-3.8-flash` to `gemini-4-argon`. Prior findings come from unresolved `hq-jr` review threads, with the latest `hq-jr` review and SQLite WAL as a fallback. When a finding requires runtime proof, Tier 3 dispatches an Antigravity container and polls for the verdict. Collaborators can comment `@hq-jr fix` to generate a remediation branch.
+`hq-jr` filters generated noise, redacts credentials from diff text, and runs a two-step review pipeline with configurable thinking effort (`HIGH` by default, tunable per stage). Tier 1 triage uses a narrow JSON schema to classify risk per file. Tier 2 runs a deep review on files that require it and escalates high-risk pull requests from `gemini-4-hydrogen` to `gemini-4-argon`. Prior findings come from unresolved `hq-jr` review threads, with the latest `hq-jr` review and SQLite WAL as a fallback. When a finding requires runtime proof, Tier 3 dispatches an Antigravity container and polls for the verdict. Collaborators can comment `@hq-jr fix` to generate a remediation branch.
 
 ### Generic AI review bots vs hq-jr
 
@@ -64,14 +64,14 @@ flowchart TD
     Filter -->|"Zero Reviewable Hunks"| FastPass["Complete Check Run: Neutral"]
     Filter -->|"Every File Excluded by the Noise Filter"| ExcludedPass["Complete Check Run: Neutral + PR Comment Listing Excluded Files"]
     Filter -->|"Reviewable Diffs"| Scrubber["Secret and Credential Scrubber"]
-    Scrubber --> Tier1["Tier 1: Triage"]
+    Scrubber --> Tier1["Tier 1: Hydrogen Triage"]
     
     Tier1 --> TriageDecision{"Any shouldReview files?"}
     TriageDecision -->|"No"| LowRiskExit["Complete Check Run: Success"]
     TriageDecision -->|"Yes"| Memory["Prior Review Memory: review-memory.ts"]
     Memory --> Gate{"Triage risk >= HQ_JR_ESCALATION_MIN_RISK?"}
     Gate -->|"Yes"| Argon["Tier 2 Escalation: Gemini 4 Argon"]
-    Gate -->|"No"| Tier2["Tier 2: Deep Review"]
+    Gate -->|"No"| Tier2["Tier 2: Hydrogen Deep Review"]
     
     Argon --> Output["Post Line Comments and Complete Check Run"]
     Tier2 --> Output
@@ -84,24 +84,24 @@ flowchart TD
 
 ### Review stages
 
-Defaults match [`src/config.ts`](src/config.ts). Tier 1 and Tier 2 default to `gemini-3.8-flash`. High-risk changes escalate Tier 2 to `gemini-4-argon`.
+Defaults match [`src/config.ts`](src/config.ts) with Vertex AI constrained to `GOOGLE_CLOUD_LOCATION=global`. Tier 1 and Tier 2 default to `gemini-4-hydrogen` (`HIGH` thinking by default; supports `LOW`, `MEDIUM`, `HIGH`, `XHIGH`). High-risk changes escalate Tier 2 to `gemini-4-argon` (`HIGH` thinking by default; supports `LOW`, `MEDIUM`, `HIGH` and rejects `XHIGH`).
 
 1. **Diff filter and parser.** [`src/services/file-filter.ts`](src/services/file-filter.ts) and [`src/services/diff-parser.ts`](src/services/diff-parser.ts) exclude lockfiles, build outputs (`dist/`, `build/`), vendor bundles, minified JavaScript, and binary assets. The parser handles quoted paths, Git submodules (`160000`), and mode changes, then passes diff text through [`src/services/scrubber.ts`](src/services/scrubber.ts).
-2. **Tier 1 triage.** [`src/services/ai.ts`](src/services/ai.ts) calls `HQ_JR_MODEL_TIER1` (`gemini-3.8-flash`) with a compact prompt and schema. It assigns each file a risk level (`LOW`, `MEDIUM`, or `HIGH`) and a `shouldReview` flag, and skips deep review when no file needs it.
-3. **Tier 2 deep review.** [`src/services/ai.ts`](src/services/ai.ts) calls `HQ_JR_MODEL_TIER2` (`gemini-3.8-flash`), loads prior findings from [`src/services/review-memory.ts`](src/services/review-memory.ts), and posts line-anchored comments with `CRITICAL`, `WARNING`, or `SUGGESTION` severity. If GitHub rejects a line anchor with HTTP 422, `hq-jr` appends the finding to the review summary.
-4. **Tier 2 escalation.** When the triage overall risk reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), [`src/services/ai.ts`](src/services/ai.ts) routes the deep review to `HQ_JR_MODEL_ESCALATION` (`gemini-4-argon`) with an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). If the escalation call fails, `hq-jr` logs the failure and retries once on `HQ_JR_MODEL_TIER2`.
+2. **Tier 1 triage.** [`src/services/ai.ts`](src/services/ai.ts) calls `HQ_JR_MODEL_TIER1` (`gemini-4-hydrogen`) with `HQ_JR_THINKING_TIER1` (`HIGH` by default), a compact prompt, and a narrow schema. It assigns each file a risk level (`LOW`, `MEDIUM`, or `HIGH`) and a `shouldReview` flag, and skips deep review when no file needs it.
+3. **Tier 2 deep review.** [`src/services/ai.ts`](src/services/ai.ts) calls `HQ_JR_MODEL_TIER2` (`gemini-4-hydrogen`) with `HQ_JR_THINKING_TIER2` (`HIGH` by default), loads prior findings from [`src/services/review-memory.ts`](src/services/review-memory.ts), and posts line-anchored comments with `CRITICAL`, `WARNING`, or `SUGGESTION` severity. If GitHub rejects a line anchor with HTTP 422, `hq-jr` appends the finding to the review summary.
+4. **Tier 2 escalation.** When the triage overall risk reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), [`src/services/ai.ts`](src/services/ai.ts) routes the deep review to `HQ_JR_MODEL_ESCALATION` (`gemini-4-argon`) with `HQ_JR_THINKING_ESCALATION` (`HIGH` by default; `XHIGH` rejected at startup for Argon) and an output token cap (`HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS`). Argon costs more per token than Hydrogen per [Vertex AI pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing). If the escalation call fails, `hq-jr` logs the failure and retries once on `HQ_JR_MODEL_TIER2` with `HQ_JR_THINKING_TIER2`.
 5. **Tier 3 sandbox check.** [`src/services/sandbox-runner.ts`](src/services/sandbox-runner.ts) and [`src/cli.ts`](src/cli.ts) dispatch `HQ_JR_AGENT_TIER3` (default `antigravity-preview-05-2026`) to reproduce the issue in an isolated container. The check run stays `in_progress` while `pollSandboxInteraction` waits for the verdict. Treat Tier 3 as experimental until you validate live Antigravity in your environment.
 
-Each workload reads its own model variable: triage (`HQ_JR_MODEL_TIER1`), deep review (`HQ_JR_MODEL_TIER2`), escalation (`HQ_JR_MODEL_ESCALATION`), discussion replies (`HQ_JR_MODEL_DISCUSSION`), remediation synthesis (`HQ_JR_MODEL_REMEDIATION`), and the health probe (`HQ_JR_MODEL_HEALTH`).
+Each workload reads its own model and thinking variable (`LOW`, `MEDIUM`, `HIGH`, or `XHIGH` on Hydrogen): triage (`HQ_JR_MODEL_TIER1` / `HQ_JR_THINKING_TIER1`), deep review (`HQ_JR_MODEL_TIER2` / `HQ_JR_THINKING_TIER2`), escalation (`HQ_JR_MODEL_ESCALATION` / `HQ_JR_THINKING_ESCALATION`), discussion replies (`HQ_JR_MODEL_DISCUSSION` / `HQ_JR_THINKING_DISCUSSION`), remediation synthesis (`HQ_JR_MODEL_REMEDIATION` / `HQ_JR_THINKING_REMEDIATION`), and the health probe (`HQ_JR_MODEL_HEALTH` / `HQ_JR_THINKING_HEALTH`, default `LOW`).
 
 #### Review stages and spend controls
 
 | Stage | Role | Default model or agent | When it runs | Spend control |
 | :--- | :--- | :--- | :--- | :--- |
 | **0. Filter and scrubber** | Drop generated files and redact secrets | Local CPU (`src/services/file-filter.ts`, `src/services/scrubber.ts`) | Pull request review runs (open, sync, reopen, `@hq-jr review`, or Checks re-run) | Spends zero tokens on ignored files and redacts secrets before any Vertex call. |
-| **1. Tier 1 triage** | Classify per-file risk (`LOW`, `MEDIUM`, or `HIGH`) and `shouldReview` | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER1`) | Pull requests with reviewable hunks | Uses a narrow JSON schema and exits early when no file requires deep review. |
-| **2. Tier 2 deep review** | Line-anchored semantic and security review | `gemini-3.8-flash` (`HQ_JR_MODEL_TIER2`) | Triage `overallRisk` below `HQ_JR_ESCALATION_MIN_RISK`, across all `shouldReview` files | Handles pull requests below the escalation threshold on Flash. |
-| **2b. Tier 2 escalation** | Escalated deep review | `gemini-4-argon` (`HQ_JR_MODEL_ESCALATION`) | Triage `overallRisk` at or above `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`) | Gated by `HQ_JR_ESCALATION_MIN_RISK` (`HIGH` by default) and capped at `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` (`32768`). |
+| **1. Tier 1 triage** | Classify per-file risk (`LOW`, `MEDIUM`, or `HIGH`) and `shouldReview` | `gemini-4-hydrogen` (`HQ_JR_MODEL_TIER1`, `HIGH` thinking) | Pull requests with reviewable hunks | Uses a narrow JSON schema and exits early when no file requires deep review. |
+| **2. Tier 2 deep review** | Line-anchored semantic and security review | `gemini-4-hydrogen` (`HQ_JR_MODEL_TIER2`, `HIGH` thinking) | Triage `overallRisk` below `HQ_JR_ESCALATION_MIN_RISK`, across all `shouldReview` files | Handles pull requests below the escalation threshold on Hydrogen. |
+| **2b. Tier 2 escalation** | Escalated deep review | `gemini-4-argon` (`HQ_JR_MODEL_ESCALATION`, `HIGH` thinking) | Triage `overallRisk` at or above `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`) | Gated by `HQ_JR_ESCALATION_MIN_RISK` (`HIGH` by default) and capped at `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` (`32768`). |
 | **3. Tier 3 sandbox** | Reproduction test in an isolated container | `antigravity-preview-05-2026` (`HQ_JR_AGENT_TIER3`) | `requiresSandboxVerification` or manual re-run | Runs only when a finding requires executable proof. |
 
 ---
@@ -157,20 +157,29 @@ Create `.env` from [`.env.example`](.env.example):
 APP_ID=123456
 PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
 WEBHOOK_SECRET=your_webhook_secret
+
+# Google Cloud Vertex AI (global location required)
 GOOGLE_CLOUD_PROJECT=your-gcp-project-id
 
 # Optional model and runtime defaults matching src/config.ts
 WEBHOOK_PROXY_URL=https://smee.io/your_smee_channel
 GOOGLE_CLOUD_LOCATION=global
 
-HQ_JR_MODEL_TIER1=gemini-3.8-flash
-HQ_JR_MODEL_TIER2=gemini-3.8-flash
+# Model & Thinking Configuration (defaults match src/config.ts)
+HQ_JR_MODEL_TIER1=gemini-4-hydrogen
+HQ_JR_THINKING_TIER1=HIGH
+HQ_JR_MODEL_TIER2=gemini-4-hydrogen
+HQ_JR_THINKING_TIER2=HIGH
 # Optional: HQ_JR_MODEL_TIER2=gemini-3.1-pro-preview
 HQ_JR_MODEL_ESCALATION=gemini-4-argon
+HQ_JR_THINKING_ESCALATION=HIGH
 HQ_JR_ESCALATION_MIN_RISK=HIGH
-HQ_JR_MODEL_DISCUSSION=gemini-3.8-flash
-HQ_JR_MODEL_REMEDIATION=gemini-3.8-flash
-HQ_JR_MODEL_HEALTH=gemini-3.8-flash
+HQ_JR_MODEL_DISCUSSION=gemini-4-hydrogen
+HQ_JR_THINKING_DISCUSSION=HIGH
+HQ_JR_MODEL_REMEDIATION=gemini-4-hydrogen
+HQ_JR_THINKING_REMEDIATION=HIGH
+HQ_JR_MODEL_HEALTH=gemini-4-hydrogen
+HQ_JR_THINKING_HEALTH=LOW
 HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS=32768
 HQ_JR_AGENT_TIER3=antigravity-preview-05-2026
 

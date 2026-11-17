@@ -7,7 +7,7 @@ import { checkAiHealth, runTriage, runDeepReview, dispatchSandboxVerification, r
 import type { DeepReviewResult } from "./schemas/review.js";
 import { parseUnifiedDiff, isLineInDiff } from "./services/diff-parser.js";
 import { packageReviewContext } from "./services/context-packager.js";
-import { config, type RiskLevel } from "./config.js";
+import { config, type RiskLevel, type ThinkingLevelSetting } from "./config.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -57,12 +57,13 @@ Usage:
 
 function printModelRouting() {
   console.log("Model routing:");
-  console.log(`  triage (Tier 1):      ${config.HQ_JR_MODEL_TIER1}`);
-  console.log(`  escalation:           ${config.HQ_JR_MODEL_ESCALATION}`);
-  console.log(`  deep review (Tier 2): ${config.HQ_JR_MODEL_TIER2}`);
-  console.log(`  discussion:           ${config.HQ_JR_MODEL_DISCUSSION}`);
-  console.log(`  remediation:          ${config.HQ_JR_MODEL_REMEDIATION}`);
-  console.log(`  health probe:         ${config.HQ_JR_MODEL_HEALTH}`);
+  console.log(`  location:             ${config.GOOGLE_CLOUD_LOCATION}`);
+  console.log(`  triage (Tier 1):      ${config.HQ_JR_MODEL_TIER1} (thinking: ${config.HQ_JR_THINKING_TIER1})`);
+  console.log(`  escalation:           ${config.HQ_JR_MODEL_ESCALATION} (thinking: ${config.HQ_JR_THINKING_ESCALATION})`);
+  console.log(`  deep review (Tier 2): ${config.HQ_JR_MODEL_TIER2} (thinking: ${config.HQ_JR_THINKING_TIER2})`);
+  console.log(`  discussion:           ${config.HQ_JR_MODEL_DISCUSSION} (thinking: ${config.HQ_JR_THINKING_DISCUSSION})`);
+  console.log(`  remediation:          ${config.HQ_JR_MODEL_REMEDIATION} (thinking: ${config.HQ_JR_THINKING_REMEDIATION})`);
+  console.log(`  health probe:         ${config.HQ_JR_MODEL_HEALTH} (thinking: ${config.HQ_JR_THINKING_HEALTH})`);
   console.log(`  escalation max output tokens: ${config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS}`);
   console.log(`  escalation threshold: ${config.HQ_JR_ESCALATION_MIN_RISK}`);
 }
@@ -71,9 +72,14 @@ function printModelRouting() {
  * Header for the deep review stage. It names the model that produced the
  * verdict, which is the Tier 2 model when the escalation model failed.
  */
-export function formatDeepReviewHeader(outcome: { model: string; fellBack: boolean }): string {
+export function formatDeepReviewHeader(outcome: {
+  model: string;
+  thinkingLevel?: ThinkingLevelSetting;
+  fellBack: boolean;
+}): string {
+  const thinking = outcome.thinkingLevel ? `, thinking: ${outcome.thinkingLevel}` : "";
   const suffix = outcome.fellBack ? " after the escalation fallback" : "";
-  return `\n--- Tier 2: Deep Semantic Review (${outcome.model}${suffix}) ---`;
+  return `\n--- Tier 2: Deep Semantic Review (${outcome.model}${thinking}${suffix}) ---`;
 }
 
 /**
@@ -82,8 +88,12 @@ export function formatDeepReviewHeader(outcome: { model: string; fellBack: boole
  * instead of an idle CLI. The routing is known before the call, so this line
  * is written as soon as the decision to escalate is known.
  */
-export function formatDeepReviewPendingLine(model: string): string {
-  return `Running deep review on ${model}...`;
+export function formatDeepReviewPendingLine(
+  model: string,
+  thinkingLevel?: ThinkingLevelSetting
+): string {
+  const thinking = thinkingLevel ? ` (thinking: ${thinkingLevel})` : "";
+  return `Running deep review on ${model}${thinking}...`;
 }
 
 /**
@@ -96,19 +106,18 @@ export async function runCliDeepReview(params: {
   overallRisk: RiskLevel;
   reviewPrompt: string;
   log?: (payload: Record<string, unknown>, message: string) => void;
-  /** Called with the model that is about to run, before the call starts. */
-  onStart?: (model: string) => void;
+  /** Called with the model and thinking level that is about to run, before the call starts. */
+  onStart?: (model: string, thinkingLevel: ThinkingLevelSetting) => void;
 }): Promise<{ header: string; result: DeepReviewResult }> {
   const minRisk = config.HQ_JR_ESCALATION_MIN_RISK;
-  // The routing is resolved with the same threshold the escalation helper uses,
-  // so the pending line names the model that is about to run.
   const routing = resolveDeepReviewRouting(params.overallRisk, minRisk);
-  params.onStart?.(routing.model);
+  params.onStart?.(routing.model, routing.thinkingLevel);
 
   const deepReview = await runEscalatedDeepReview({
     overallRisk: params.overallRisk,
     minRisk,
-    run: (model, role) => runDeepReview(params.reviewPrompt, { model, role }),
+    run: (model, role, thinkingLevel) =>
+      runDeepReview(params.reviewPrompt, { model, role, thinkingLevel }),
     log: params.log,
   });
 
@@ -125,7 +134,6 @@ export async function runCliDeepReview(params: {
 async function handleHealth() {
   console.log("Checking Google Cloud Vertex AI ADC connectivity...");
   console.log(`Project:  ${config.GOOGLE_CLOUD_PROJECT}`);
-  console.log(`Location: ${config.GOOGLE_CLOUD_LOCATION}`);
   printModelRouting();
 
   try {
@@ -207,7 +215,7 @@ async function handleReview(args: string[]) {
 
   // 3. Tier 1 Triage
   printModelRouting();
-  console.log(`\n--- Tier 1: Triage + High Thinking (${config.HQ_JR_MODEL_TIER1}) ---`);
+  console.log(`\n--- Tier 1: Triage (model: ${config.HQ_JR_MODEL_TIER1}, thinking: ${config.HQ_JR_THINKING_TIER1}) ---`);
   const triage = await runTriage(context.promptPayload);
   console.log(`Overall Risk: [${triage.overallRisk}]`);
   console.log(`Summary:      ${triage.summary}\n`);
@@ -242,7 +250,7 @@ ${escapeUntrustedTags(context.promptPayload)}
         `${message}: ${payload.err instanceof Error ? payload.err.message : String(payload.err)}`
       ),
     // Printed before the call, so a long escalated call does not look hung.
-    onStart: (model) => console.log(formatDeepReviewPendingLine(model)),
+    onStart: (model, thinkingLevel) => console.log(formatDeepReviewPendingLine(model, thinkingLevel)),
   });
   console.log(header);
   console.log(`\nVerdict: ${review.verdict}`);

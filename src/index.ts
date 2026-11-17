@@ -786,7 +786,6 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
         return;
       }
 
-      // 4. Tier 1: Triage with Gemini 3.8 Flash
       app.log.info({ pullNumber, filesCount: contextPackage.itemsToReview.length }, "Executing Tier 1 triage");
       const triage = await runTriage(contextPackage.promptPayload);
 
@@ -825,6 +824,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           escalationThreshold: config.HQ_JR_ESCALATION_MIN_RISK,
           escalated: routing.escalated,
           model: routing.model,
+          thinkingLevel: routing.thinkingLevel,
         },
         "Executing Tier 2 deep review"
       );
@@ -861,7 +861,8 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
 
       const deepReview = await runEscalatedDeepReview({
         overallRisk: triage.overallRisk,
-        run: (model, role) => runDeepReview(reviewPrompt, { previousReview, model, role }),
+        run: (model, role, thinkingLevel) =>
+          runDeepReview(reviewPrompt, { previousReview, model, role, thinkingLevel }),
         log: (payload, message) => app.log.warn({ ...payload, pullNumber }, message),
       });
       const review = await verifyReviewActionRefs(octokit, deepReview.result);
@@ -1282,7 +1283,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           owner,
           repo: repoName,
           issue_number: pullNumber,
-          body: `🛠️ **hq-jr** received remediation request from @${user.login}. Fetching prior audit findings, synthesizing code fixes, and generating remediation branch/commit...`,
+          body: `🛠️ **hq-jr** received remediation request from @${user.login}. Fetching prior audit findings, synthesizing code fixes (${config.HQ_JR_THINKING_REMEDIATION} thinking), and generating remediation branch/commit...`,
         });
 
         const prResponse = await context.octokit.pulls.get({
@@ -1421,7 +1422,7 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
           owner,
           repo: repoName,
           issue_number: pullNumber,
-          body: `🤖 **hq-jr** received review command from @${user.login}. Starting automated code review. Line-by-line diff comments will appear under **Files changed**.`,
+          body: `🤖 **hq-jr** received review command from @${user.login}. Starting automated code review (Tier 1 thinking: ${config.HQ_JR_THINKING_TIER1}). Line-by-line diff comments will appear under **Files changed**.`,
         });
 
         const prResponse = await context.octokit.pulls.get({

@@ -57,7 +57,7 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                |
                                v
 +-------------------------------------------------------------+
-| Tier 1: Flash + High Thinking (src/services/ai.ts)          |
+| Tier 1: Hydrogen + configured thinking (src/services/ai.ts) |
 | - Triage schema: overall risk and shouldReview per file     |
 +------------------------------+------------------------------+
                                |
@@ -71,8 +71,8 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                v
 +-------------------------------------------------------------+
 | Tier 2: Deep Review (src/services/ai.ts)                    |
-| - Flash + High Thinking, or Gemini 4 Argon at/above the     |
-|   risk threshold                                            |
+| - Hydrogen + configured thinking, or Gemini 4 Argon         |
+|   at/above the risk threshold                               |
 +-------------------------------------------------------------+
 ```
 

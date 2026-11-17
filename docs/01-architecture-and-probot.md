@@ -4,10 +4,10 @@
 
 `hq-jr` is an automated code review bot built as a GitHub App. It reviews pull request diffs for public and private repositories. Whole-codebase review is a roadmap item, not part of the current event pipeline (see [Codebase Ingestion](03-codebase-ingestion-and-context.md)). The bot uses the Probot framework on Node.js and TypeScript.
 
-The system uses Google Cloud Vertex AI via Application Default Credentials (ADC) for all model interactions. It distributes review tasks across three model tiers:
-- Gemini 3.8 Flash with High Thinking for triage (narrow schema: overall risk `LOW`/`MEDIUM`/`HIGH`, `shouldReview`).
-- Gemini 3.8 Flash with High Thinking for deep semantic review (finding severity `CRITICAL`/`WARNING`/`SUGGESTION`), memory-backed audits, and inline comments. When the triage overall risk reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), the same deep review runs on Gemini 4 Argon (`gemini-4-argon`) and falls back to the Tier 2 model if the escalated call fails.
-- antigravity-preview-05-2026 for asynchronous sandbox verification and test execution. Remediation synthesis is not Tier 3; it uses `HQ_JR_MODEL_REMEDIATION` through `synthesizeFileFix`.
+The system uses Google Cloud Vertex AI (global location) via Application Default Credentials (ADC) for all model interactions. It distributes review tasks across three model tiers:
+- Gemini 4 Hydrogen (`gemini-4-hydrogen`) with configurable thinking (`HQ_JR_THINKING_TIER1`, default `HIGH`) for triage (narrow schema: overall risk `LOW`/`MEDIUM`/`HIGH`, `shouldReview`).
+- Gemini 4 Hydrogen (`gemini-4-hydrogen`) with configurable thinking (`HQ_JR_THINKING_TIER2`, default `HIGH`) for deep semantic review (finding severity `CRITICAL`/`WARNING`/`SUGGESTION`), memory-backed audits, and inline comments. When the triage overall risk reaches `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`), the same deep review runs on Gemini 4 Argon (`gemini-4-argon`, `HQ_JR_THINKING_ESCALATION` default `HIGH`) and falls back to the Tier 2 model and thinking level if the escalated call fails.
+- antigravity-preview-05-2026 for asynchronous sandbox verification and test execution. Remediation synthesis is not Tier 3; it uses `HQ_JR_MODEL_REMEDIATION` and `HQ_JR_THINKING_REMEDIATION` through `synthesizeFileFix`.
 
 ## Probot Core Mechanics
 
@@ -49,8 +49,8 @@ Probot abstracts webhook verification, GitHub App authentication, and Octokit cl
 |                                    v                                   |
 |  +------------------------------------------------------------------+  |
 |  | AI Execution Engine (Vertex AI via ADC)                          |  |
-|  | - Tier 1: Flash + High Thinking (triage schema)                  |  |
-|  | - Tier 2: Flash + High Thinking (deep review schema)             |  |
+|  | - Tier 1: Gemini 4 Hydrogen + configurable thinking (triage)     |  |
+|  | - Tier 2: Gemini 4 Hydrogen + configurable thinking (deep)       |  |
 |  | - Tier 2 escalation: Gemini 4 Argon (risk-gated deep review)     |  |
 |  | - Tier 3: antigravity-preview-05-2026 (Sandbox Verification)     |  |
 |  +---------------------------------+--------------------------------+  |

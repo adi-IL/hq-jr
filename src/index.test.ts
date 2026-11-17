@@ -629,7 +629,9 @@ index 123..456 100644
     expect(deepSpy).toHaveBeenCalledTimes(2);
     expect(deepSpy.mock.calls[0][1]?.model).toBeTruthy();
     expect(deepSpy.mock.calls[0][1]?.model).toBe(config.HQ_JR_MODEL_ESCALATION);
+    expect(deepSpy.mock.calls[0][1]?.thinkingLevel).toBe(config.HQ_JR_THINKING_ESCALATION);
     expect(deepSpy.mock.calls[1][1]?.model).toBe(config.HQ_JR_MODEL_TIER2);
+    expect(deepSpy.mock.calls[1][1]?.thinkingLevel).toBe(config.HQ_JR_THINKING_TIER2);
     expect(mockApp.log.warn).toHaveBeenCalledWith(
       expect.objectContaining({
         escalationModel: config.HQ_JR_MODEL_ESCALATION,
@@ -2132,9 +2134,12 @@ describe("CLI deep review output", () => {
     expect(formatDeepReviewPendingLine(config.HQ_JR_MODEL_ESCALATION)).toContain(
       config.HQ_JR_MODEL_ESCALATION
     );
+    expect(
+      formatDeepReviewPendingLine(config.HQ_JR_MODEL_ESCALATION, config.HQ_JR_THINKING_ESCALATION)
+    ).toContain(config.HQ_JR_THINKING_ESCALATION);
   });
 
-  it("names the fallback model in the header after the escalation model fails", async () => {
+  it("names the fallback model and thinking level in the header after the escalation model fails", async () => {
     vi.spyOn(aiModule, "runDeepReview")
       .mockRejectedValueOnce(new Error("escalation model unavailable"))
       .mockResolvedValueOnce(deepReviewResult);
@@ -2148,6 +2153,7 @@ describe("CLI deep review output", () => {
 
     expect(started).toEqual([config.HQ_JR_MODEL_ESCALATION]);
     expect(header).toContain(config.HQ_JR_MODEL_TIER2);
+    expect(header).toContain(config.HQ_JR_THINKING_TIER2);
     expect(header).toContain("fallback");
   });
 

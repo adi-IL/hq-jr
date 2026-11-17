@@ -7,9 +7,9 @@
 The bot reads configuration from the host environment:
 - Project ID: `GOOGLE_CLOUD_PROJECT`. The schema default is the placeholder `test-gcp-project`; set a real project in production.
 - Credentials: ADC via `GOOGLE_APPLICATION_CREDENTIALS`, `~/.config/gcloud/application_default_credentials.json`, or the GCE metadata server when the attached service account has the Vertex AI scope.
-- Default location: `global`.
+- Default location: `global` (required at startup for Gemini 4 models; regional Vertex locations are rejected).
 
-Local development and production both use Application Default Credentials. This repository ships only the Node.js client (`@google/genai` >= 2.3.0). It does not include a Python client.
+Local development and production both use Application Default Credentials. This repository ships only the Node.js client (`@google/genai` >= 3.4.0). It does not include a Python client.
 
 ```
 +-------------------------------------------------------------------------+
@@ -31,16 +31,16 @@ Local development and production both use Application Default Credentials. This 
 |                        Google Cloud Vertex AI                           |
 |                                                                         |
 |  +------------------------+  +--------------------+  +---------------+  |
-|  | gemini-3.8-flash       |  | gemini-4-argon     |  | antigravity-  |  |
+|  | gemini-4-hydrogen      |  | gemini-4-argon     |  | antigravity-  |  |
 |  |                        |  | (escalation tier)  |  | preview-      |  |
 |  | - Fast file triage     |  | - High risk deep   |  | 05-2026       |  |
 |  | - Noise filtering      |  |   review           |  | - Sandbox VM  |  |
 |  | - Risk JSON schema     |  | - Gated on risk    |  | - Runs tests  |  |
-|  | - Discussion replies   |  | - ~2.7x cost/token |  | - Async       |  |
-|  | - Remediation synth    |  | - Fail soft to     |  |               |  |
-|  | - Health probe         |  |   Tier 2           |  +---------------+  |
-|  | - Synchronous          |  +--------------------+                     |
-|  +------------------------+                                            |
+|  | - Discussion replies   |  | - ~1.33x / ~2.67x  |  | - Async       |  |
+|  | - Remediation synth    |  |   from 2026-12-01  |  |               |  |
+|  | - Health probe         |  | - Fail soft to     |  +---------------+  |
+|  | - Synchronous          |  |   Tier 2           |                     |
+|  +------------------------+  +--------------------+                     |
 +-------------------------------------------------------------------------+
 ```
 
@@ -48,10 +48,10 @@ Local development and production both use Application Default Credentials. This 
 
 The system splits operational responsibilities according to capabilities: direct models handle synchronous line-by-line review comments with schema enforcement, while managed agents handle asynchronous test execution in sandboxed environments.
 
-### Tier 1: Gemini 3.8 Flash triage (`gemini-3.8-flash`)
+### Tier 1: Gemini 4 Hydrogen triage (`gemini-4-hydrogen`)
 
 - **Role.** Narrow triage: which files need deep review, and overall risk per file.
-- **Thinking.** Uses `thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }` like Tier 2. Cost and latency stay lower because the triage prompt and JSON schema are smaller.
+- **Thinking.** Configured via `HQ_JR_THINKING_TIER1` (default `HIGH`, mapped via `toSdkThinkingLevel` to `thinkingConfig: { thinkingLevel }`; supports `LOW`, `MEDIUM`, `HIGH`, `XHIGH` on Hydrogen). Cost and latency stay lower because the triage prompt and JSON schema are smaller.
 - **Execution Mode.** Synchronous direct model inference via Vertex / `@google/genai`.
 - **Output.** Structured JSON triage schema.
 - **Risk field.** Per-file and overall risk: `LOW` | `MEDIUM` | `HIGH` (not finding severity).
@@ -61,13 +61,13 @@ The system splits operational responsibilities according to capabilities: direct
   - Produce initial risk scores (`LOW`, `MEDIUM`, `HIGH`) for each file.
   - Terminate early with a passing Check Run if nothing needs deep review.
 
-### Tier 2: Gemini 3.8 Flash deep review (`gemini-3.8-flash`)
+### Tier 2: Gemini 4 Hydrogen deep review (`gemini-4-hydrogen`)
 
-- **Role.** Deep semantic review, security audit, prior-finding verification, and invariant analysis. Configurable to `gemini-3.1-pro-preview` via `HQ_JR_MODEL_TIER2`.
-- **Thinking.** Synchronous reasoning with `thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }`.
+- **Role.** Deep semantic review, security audit, prior-finding verification, and invariant analysis. Configurable to `gemini-3.1-pro-preview` or another Vertex model via `HQ_JR_MODEL_TIER2`.
+- **Thinking.** Synchronous reasoning configured via `HQ_JR_THINKING_TIER2` (default `HIGH`; supports `LOW`, `MEDIUM`, `HIGH`, `XHIGH` on Hydrogen).
 - **Finding severity.** Each finding uses `CRITICAL` | `WARNING` | `SUGGESTION`. Do not confuse this with Tier 1 overall risk.
 - **Effective verdict.** The published verdict is resolved from the final findings, not taken from the model. A finding blocks when its severity is not `SUGGESTION`, or when an unresolved prior issue remains, and a blocking finding always yields `REQUEST_CHANGES`. A `REQUEST_CHANGES` with nothing blocking is a contradiction and becomes `COMMENT`; `APPROVE` and `COMMENT` with only suggestions are kept. `resolveVerdict` in `src/services/ai.ts` applies this once, after the missing-action-ref findings have been dropped, and the CLI uses the same rule. A finding that claims a missing action ref is dropped when the ref exists upstream, or when the lookup cannot confirm that it is missing. Only the sentences that carry that claim are removed, so a finding that shares a comment with the false claim is kept. A ref that is confirmed missing backs a true claim, so that claim stays even when another claim in the same comment is false. When the title was the false claim and the body carries an independent finding, the body is kept under the replacement title "Finding (action ref claim removed)".
-- **Context Window.** Up to 1,000,000 tokens.
+- **Context Window.** Up to 1,048,576 tokens (65,536 max output tokens).
 - **Output.** Strict JSON Schema conforming to GitHub review comment specifications.
 - **Tasks:**
   - Ingest prior review context (`review-memory.ts`) to verify if new commits resolved past bugs.
@@ -81,10 +81,10 @@ The system splits operational responsibilities according to capabilities: direct
 
 - **Role.** Runs the Tier 2 deep review on pull requests whose triage risk reaches the escalation threshold. Same prompt and same response schema as Tier 2, stronger model.
 - **Gate.** `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`). The gate compares `triage.overallRisk` against the threshold with the `riskRank` total order (`LOW` < `MEDIUM` < `HIGH`), never a string comparison. Below the threshold the deep review stays on `HQ_JR_MODEL_TIER2`.
-- **Availability.** Model id `gemini-4-argon`, GA since 2026-10-13, served from the `global` location that is the default `GOOGLE_CLOUD_LOCATION`. Supports structured output (`responseMimeType` plus `responseSchema`), system instructions, and thinking levels `LOW`, `MEDIUM`, `HIGH`. It rejects `thinking_budget` and `thinking_level: MINIMAL` with HTTP 400, so hq-jr only ever sends `thinkingLevel: HIGH`.
+- **Availability & thinking.** Model id `gemini-4-argon`, GA since 2026-10-13, served from the `global` location required by `GOOGLE_CLOUD_LOCATION`. Supports structured output (`responseMimeType` plus `responseSchema`), system instructions, and thinking levels `LOW`, `MEDIUM`, and `HIGH` (via `HQ_JR_THINKING_ESCALATION`, default `HIGH`). It rejects `thinking_budget`, `MINIMAL`, and `XHIGH` with HTTP 400. Startup config parsing (`src/config.ts`) rejects `"MINIMAL"` everywhere and rejects `"XHIGH"` whenever paired with `gemini-4-argon`.
 - **Limits.** Unified context window of 1,048,576 tokens, maximum 65,536 output tokens for one synchronous request.
-- **Cost.** Global PayGo is 2 USD per 1M input tokens and 10 USD per 1M output tokens through 2026-11-30, then 4 in and 20 out from 2026-12-01. Gemini 3.8 Flash is 0.75 in and 3.75 out through 2026-12-31. Argon is therefore roughly **2.7x Flash per token**, which is why it is gated behind a risk threshold instead of being the default Tier 2.
-- **Fail soft.** If the escalated call throws (model not enabled for the project, quota exhausted, upstream error), hq-jr retries the deep review once on `HQ_JR_MODEL_TIER2` and logs a warning. A model access or quota failure on the escalation model does not fail the whole review on its own. If the Tier 2 retry also fails, the review fails, and that is reported rather than masked.
+- **Cost.** Per [Vertex AI pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing), Global PayGo for Argon is 2 USD per 1M input tokens and 10 USD per 1M output tokens through 2026-11-30, then 4 in and 20 out from 2026-12-01. Gemini 4 Hydrogen (`gemini-4-hydrogen`) is 1.50 in and 7.50 out. Argon is therefore roughly **1.33x Hydrogen per token** through 2026-11-30 and **2.67x Hydrogen** from 2026-12-01, which is why it is gated behind a risk threshold instead of being the default Tier 2.
+- **Fail soft.** If the escalated call throws (model not enabled for the project, quota exhausted, upstream error), hq-jr retries the deep review once on `HQ_JR_MODEL_TIER2` with `HQ_JR_THINKING_TIER2` and logs a warning. A model access or quota failure on the escalation model does not fail the whole review on its own. If the Tier 2 retry also fails, the review fails, and that is reported rather than masked.
 
 ### Tier 3: Antigravity Managed Agent (`antigravity-preview-05-2026`)
 
@@ -110,22 +110,29 @@ The system splits operational responsibilities according to capabilities: direct
 
 ### Model routing and configuration
 
-`HQ_JR_MODEL_TIER1` used to drive triage, discussion replies, remediation synthesis, and the health probe at once, so raising it for better triage silently raised remediation cost. Each caller now has its own variable.
+`HQ_JR_MODEL_TIER1` used to drive triage, discussion replies, remediation synthesis, and the health probe at once, so raising it for better triage silently raised remediation cost. Each caller now has its own model variable and thinking level variable.
 
 | Variable | Default | Used by |
 | --- | --- | --- |
-| `HQ_JR_MODEL_TIER1` | `gemini-3.8-flash` | Tier 1 triage only. |
-| `HQ_JR_MODEL_TIER2` | `gemini-3.8-flash` | Tier 2 deep review below the escalation threshold. |
+| `HQ_JR_MODEL_TIER1` | `gemini-4-hydrogen` | Tier 1 triage only. |
+| `HQ_JR_THINKING_TIER1` | `HIGH` | Thinking level for Tier 1 triage (`LOW` \| `MEDIUM` \| `HIGH` \| `XHIGH`). |
+| `HQ_JR_MODEL_TIER2` | `gemini-4-hydrogen` | Tier 2 deep review below the escalation threshold. |
+| `HQ_JR_THINKING_TIER2` | `HIGH` | Thinking level for Tier 2 deep review. |
 | `HQ_JR_MODEL_ESCALATION` | `gemini-4-argon` | Tier 2 deep review at or above `HQ_JR_ESCALATION_MIN_RISK`. |
+| `HQ_JR_THINKING_ESCALATION` | `HIGH` | Thinking level for the escalation tier (`LOW` \| `MEDIUM` \| `HIGH`). |
 | `HQ_JR_ESCALATION_MIN_RISK` | `HIGH` | Risk threshold that engages the escalation model (`LOW` \| `MEDIUM` \| `HIGH`). |
-| `HQ_JR_MODEL_DISCUSSION` | `gemini-3.8-flash` | Replies in review discussion threads. |
-| `HQ_JR_MODEL_REMEDIATION` | `gemini-3.8-flash` | Autonomous remediation synthesis. |
-| `HQ_JR_MODEL_HEALTH` | `gemini-3.8-flash` | Health probe (`/healthz`, `hq-jr health`). |
+| `HQ_JR_MODEL_DISCUSSION` | `gemini-4-hydrogen` | Replies in review discussion threads. |
+| `HQ_JR_THINKING_DISCUSSION` | `HIGH` | Thinking level for review discussion replies. |
+| `HQ_JR_MODEL_REMEDIATION` | `gemini-4-hydrogen` | Autonomous remediation synthesis. |
+| `HQ_JR_THINKING_REMEDIATION` | `HIGH` | Thinking level for remediation synthesis. |
+| `HQ_JR_MODEL_HEALTH` | `gemini-4-hydrogen` | Health probe (`/healthz`, `hq-jr health`). |
+| `HQ_JR_THINKING_HEALTH` | `LOW` | Thinking level for the health probe (explicit `LOW` avoids `gemini-4-hydrogen`'s `HIGH` omitted default). |
 | `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | `32768` | Output token cap sent on the escalated deep review call. |
 
-- **Output cap.** `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on the escalated deep review call only. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice. The cap is keyed on the role of the call, not on the model id, so pointing both tiers at the same model does not change what is capped. The fallback from an escalated review to the Tier 2 model is a Tier 2 review, so it is uncapped and a truncated escalated answer can be retried in full. Triage, the discussion replies, the remediation synthesis and the health probe never send a cap.
-- **Visibility.** `hq-jr health` and `hq-jr review` print the resolved model for every tier, so a local run shows which model actually served each stage. The app logs the resolved deep review model when a review starts.
-- **Compatibility.** `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` keep their names and defaults, but `HQ_JR_MODEL_TIER1` no longer drives the discussion, remediation and health calls. A deployment that set `HQ_JR_MODEL_TIER1` to anything other than `gemini-3.8-flash` sees those three call sites move to `gemini-3.8-flash` after this change. To keep the previous behavior, set `HQ_JR_MODEL_DISCUSSION`, `HQ_JR_MODEL_REMEDIATION` and `HQ_JR_MODEL_HEALTH` to the same value that `HQ_JR_MODEL_TIER1` used to hold. `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is new in this release and caps the escalation model only, so no existing call gains a cap.
+- **Thinking levels.** Supported values are `LOW`, `MEDIUM`, `HIGH`, and `XHIGH`, mapped via `toSdkThinkingLevel` in `src/services/ai.ts`. `MINIMAL` is omitted because both Gemini 4 Hydrogen and Gemini 4 Argon reject it with HTTP 400. `parseEnv` in `src/config.ts` rejects `XHIGH` whenever paired with `gemini-4-argon`. `HQ_JR_THINKING_HEALTH` defaults to `LOW` so health checks do not default to `HIGH` thinking on Hydrogen.
+- **Output cap.** `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` is sent as `maxOutputTokens` on the escalated deep review call only. Argon bills a completion once it crosses 32K output tokens, and a billed completion survives a later failure of the request, so the cap is what keeps a runaway deep review from being charged twice. The cap is keyed on the role of the call, not on the model id, so pointing both tiers at the same model does not change what is capped. The fallback from an escalated review to the Tier 2 model is a Tier 2 review using `HQ_JR_MODEL_TIER2` and `HQ_JR_THINKING_TIER2`, so it is uncapped and a truncated escalated answer can be retried in full. Triage, the discussion replies, the remediation synthesis and the health probe never send a cap.
+- **Visibility.** `hq-jr health` and `hq-jr review` print the Vertex AI location and the resolved model and thinking level for every stage, so a local run shows which configuration actually served each stage. The app logs the resolved deep review model and thinking level when a review starts.
+- **Compatibility.** `HQ_JR_MODEL_TIER1` and `HQ_JR_MODEL_TIER2` keep their names while defaults move from `gemini-3.8-flash` to `gemini-4-hydrogen`, `GOOGLE_CLOUD_LOCATION` must be `global`, and `HQ_JR_MODEL_TIER1` no longer drives the discussion, remediation and health calls. A deployment that set `HQ_JR_MODEL_TIER1` explicitly sees `HQ_JR_MODEL_DISCUSSION`, `HQ_JR_MODEL_REMEDIATION` and `HQ_JR_MODEL_HEALTH` default to `gemini-4-hydrogen` unless set individually. `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` caps the escalation model only, so no other call gains a cap.
 
 ## Pipeline Flow
 
@@ -136,7 +143,7 @@ GitHub Webhook Event (pull_request.opened / synchronize)
 [ Heuristic filter: drop generated files & lockfiles ]
        │
        ▼
-[ Tier 1: Flash + High Thinking (triage schema) ]
+[ Tier 1: Hydrogen + HQ_JR_THINKING_TIER1 (default HIGH, triage schema) ]
   ├─ Model-based risk classification (Low / Medium / High)
   └─ Output: Strict JSON triage report
        │
@@ -144,9 +151,9 @@ GitHub Webhook Event (pull_request.opened / synchronize)
         │
         ▼ High / Medium Risk Chunks
 [ Escalation gate: overallRisk >= HQ_JR_ESCALATION_MIN_RISK (default HIGH)? ]
-  ├─ Yes ──► [ Tier 2 on Argon (gemini-4-argon) ]
-  │             └─ on failure ──► retry once on Tier 2 (Flash) and log a warning
-  └─ No  ──► [ Tier 2: Flash + High Thinking (deep review schema) ]
+  ├─ Yes ──► [ Tier 2 on Argon (gemini-4-argon, HQ_JR_THINKING_ESCALATION) ]
+  │             └─ on failure ──► retry once on Tier 2 (Hydrogen, HQ_JR_THINKING_TIER2) and log a warning
+  └─ No  ──► [ Tier 2: Hydrogen + HQ_JR_THINKING_TIER2 (default HIGH, deep review schema) ]
   ├─ Deep semantic trace on modified call sites
   ├─ Audit verification against prior review memory
   ├─ Security vulnerability & concurrency audit
@@ -228,17 +235,21 @@ Untrusted input is wrapped in `<untrusted_diff>` for triage and in `<untrusted_c
 
 ## Implementation Snippets
 
-### Node.js / TypeScript (`@google/genai` >= 2.3.0)
+### Node.js / TypeScript (`@google/genai` >= 3.4.0)
 
 ```typescript
 import { GoogleGenAI } from "@google/genai";
-import { config } from "./config.js";
-import { resolveDeepReviewModel } from "./services/ai.js";
+import { config, type ThinkingLevelSetting } from "./config.js";
+import {
+  resolveDeepReviewModel,
+  resolveDeepReviewRouting,
+  toSdkThinkingLevel,
+} from "./services/ai.js";
 
 const ai = new GoogleGenAI({
   vertexai: true,
   project: config.GOOGLE_CLOUD_PROJECT,
-  location: config.GOOGLE_CLOUD_LOCATION,
+  location: config.GOOGLE_CLOUD_LOCATION, // validated "global"
 });
 
 export async function runTriage(diffText: string) {
@@ -247,6 +258,9 @@ export async function runTriage(diffText: string) {
     contents: diffText,
     config: {
       responseMimeType: "application/json",
+      thinkingConfig: {
+        thinkingLevel: toSdkThinkingLevel(config.HQ_JR_THINKING_TIER1),
+      },
       responseSchema: { /* triage schema */ },
     },
   });
@@ -255,8 +269,13 @@ export async function runTriage(diffText: string) {
 
 export async function runDeepReview(
   contextPrompt: string,
-  options?: { model?: string; role?: "tier2" | "escalation" }
+  options?: { model?: string; role?: "tier2" | "escalation"; thinkingLevel?: ThinkingLevelSetting }
 ) {
+  const thinkingLevel =
+    options?.thinkingLevel ??
+    (options?.role === "escalation"
+      ? config.HQ_JR_THINKING_ESCALATION
+      : config.HQ_JR_THINKING_TIER2);
   const res = await ai.models.generateContent({
     model: options?.model ?? config.HQ_JR_MODEL_TIER2,
     contents: contextPrompt,
@@ -267,6 +286,9 @@ export async function runDeepReview(
       ...(options?.role === "escalation"
         ? { maxOutputTokens: config.HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS }
         : {}),
+      thinkingConfig: {
+        thinkingLevel: toSdkThinkingLevel(thinkingLevel),
+      },
       responseSchema: { /* deep review schema */ },
     },
   });
@@ -275,6 +297,7 @@ export async function runDeepReview(
 
 // Escalation gate, applied before the deep review.
 const deepModel = resolveDeepReviewModel(triage.overallRisk);
+const routing = resolveDeepReviewRouting(triage.overallRisk);
 
 export async function dispatchSandboxVerification(params: {
   repoUrl: string;

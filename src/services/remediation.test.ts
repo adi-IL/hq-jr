@@ -11,6 +11,7 @@ vi.mock("./ai.js", () => ({
     },
   },
   withRetry: (fn: any) => fn(),
+  toSdkThinkingLevel: (level: string) => level,
 }));
 
 describe("remediation service", () => {
