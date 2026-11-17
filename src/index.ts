@@ -135,8 +135,29 @@ export function buildSkipCommentBody(
   return `${SKIP_COMMENT_MARKER}\n🤖 **hq-jr** skipped the code review: no reviewable files.\n\n${buildExcludedFilesSummary(ignoredItems)}${hint}`;
 }
 
-/** Updates hq-jr's existing skipped review comment, or posts one if none exists. */
-async function upsertSkipComment(octokit: any, owner: string, repo: string, issueNumber: number, body: string) {
+type IssueCommentSummary = {
+  id: number;
+  body?: string;
+  user?: { type?: string; login?: string } | null;
+};
+
+function isOwnSkipComment(comment: IssueCommentSummary): boolean {
+  return (
+    comment.user?.type === "Bot" &&
+    isHqJrLogin(comment.user?.login) &&
+    Boolean(comment.body?.includes(SKIP_COMMENT_MARKER))
+  );
+}
+
+async function listOwnSkipComments(
+  octokit: any,
+  owner: string,
+  repo: string,
+  issueNumber: number
+): Promise<IssueCommentSummary[]> {
+  if (typeof octokit.issues?.listComments !== "function") {
+    return [];
+  }
   const comments =
     typeof octokit.paginate === "function"
       ? await octokit.paginate(octokit.issues.listComments, {
@@ -153,16 +174,33 @@ async function upsertSkipComment(octokit: any, owner: string, repo: string, issu
             per_page: 100,
           })
         ).data;
-  const existing = (
-    (comments || []) as Array<{ id: number; body?: string; user?: { type?: string; login?: string } | null }>
-  ).find(
-    (comment) =>
-      comment.user?.type === "Bot" && isHqJrLogin(comment.user?.login) && comment.body?.includes(SKIP_COMMENT_MARKER)
-  );
+  return ((comments || []) as IssueCommentSummary[]).filter(isOwnSkipComment);
+}
+
+/** Updates hq-jr's existing skipped review comment, or posts one if none exists. */
+async function upsertSkipComment(octokit: any, owner: string, repo: string, issueNumber: number, body: string) {
+  const [existing] = await listOwnSkipComments(octokit, owner, repo, issueNumber);
   if (existing) {
     await octokit.issues.updateComment({ owner, repo, comment_id: existing.id, body });
   } else {
     await octokit.issues.createComment({ owner, repo, issue_number: issueNumber, body });
+  }
+}
+
+/** Removes prior skipped review notices once a review proceeds on the PR. */
+async function clearSkipComment(octokit: any, owner: string, repo: string, issueNumber: number) {
+  const existing = await listOwnSkipComments(octokit, owner, repo, issueNumber);
+  for (const comment of existing) {
+    if (typeof octokit.issues?.deleteComment === "function") {
+      await octokit.issues.deleteComment({ owner, repo, comment_id: comment.id });
+    } else if (typeof octokit.issues?.updateComment === "function") {
+      await octokit.issues.updateComment({
+        owner,
+        repo,
+        comment_id: comment.id,
+        body: "🤖 **hq-jr** superseded this skip notice: reviewable changes are now being analyzed.",
+      });
+    }
   }
 }
 
@@ -751,6 +789,12 @@ export default (app: Probot, { getRouter }: { getRouter?: (path?: string) => any
       // 4. Tier 1: Triage with Gemini 3.8 Flash
       app.log.info({ pullNumber, filesCount: contextPackage.itemsToReview.length }, "Executing Tier 1 triage");
       const triage = await runTriage(contextPackage.promptPayload);
+
+      try {
+        await clearSkipComment(octokit, owner, repoName, pullNumber);
+      } catch (commentErr) {
+        app.log.warn({ commentErr }, "Failed to clear prior skip comment");
+      }
 
       const filesToReview = triage.files.filter((f) => f.shouldReview);
       if (filesToReview.length === 0) {

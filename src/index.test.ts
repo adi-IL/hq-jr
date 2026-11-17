@@ -61,6 +61,7 @@ describe("hq-jr Event Handlers & Security Guards", () => {
         listComments: vi.fn().mockResolvedValue({ data: [] }),
         updateComment: vi.fn().mockResolvedValue({ data: { id: 402 } }),
         createComment: vi.fn().mockResolvedValue({ data: { id: 401 } }),
+        deleteComment: vi.fn().mockResolvedValue({}),
         update: vi.fn().mockResolvedValue({}),
       },
       git: {
@@ -882,6 +883,91 @@ rename to src/new/auth.ts
     expect(triageSpy.mock.calls[0][0]).toContain("docs/08-automatic-429-recovery.md");
     const titles = octokitMock.checks.update.mock.calls.map((call: any[]) => call[0].output?.title);
     expect(titles).not.toContain("Review Skipped: Excluded Files Only");
+  });
+
+  it("clears prior hq-jr skip comments when a later push is reviewed", async () => {
+    octokitMock.issues.listComments.mockResolvedValueOnce({
+      data: [
+        { id: 54, body: `${SKIP_COMMENT_MARKER}\nquoted`, user: { type: "Bot", login: "other-bot[bot]" } },
+        { id: 55, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } },
+      ],
+    });
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Low-risk tweak",
+      overallRisk: "LOW",
+      files: [{ path: "src/config.ts", risk: "LOW", reason: "Safe", shouldReview: false }],
+    });
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: octokitMock,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 291, state: "open", title: "Now has code", head: { sha: "sha-291", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(octokitMock.issues.deleteComment).toHaveBeenCalledTimes(1);
+    expect(octokitMock.issues.deleteComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 55 })
+    );
+    expect(octokitMock.issues.deleteComment).not.toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 54 })
+    );
+  });
+
+  it("keeps prior skip comments untouched if triage fails before review proceeds", async () => {
+    octokitMock.issues.listComments.mockResolvedValueOnce({
+      data: [{ id: 56, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } }],
+    });
+    vi.spyOn(aiModule, "runTriage").mockRejectedValueOnce(new Error("transient AI error"));
+    octokitMock.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: octokitMock,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 292, state: "open", title: "Broken triage", head: { sha: "sha-292", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(octokitMock.issues.deleteComment).not.toHaveBeenCalled();
+    expect(octokitMock.issues.updateComment).not.toHaveBeenCalled();
+  });
+
+  it("supersedes skip comments when deleteComment is unavailable", async () => {
+    const { deleteComment: _del, ...issuesWithoutDelete } = octokitMock.issues;
+    const noDeleteOctokit = { ...octokitMock, issues: issuesWithoutDelete };
+    noDeleteOctokit.issues.listComments.mockResolvedValueOnce({
+      data: [{ id: 57, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } }],
+    });
+    vi.spyOn(aiModule, "runTriage").mockResolvedValueOnce({
+      summary: "Low-risk tweak",
+      overallRisk: "LOW",
+      files: [{ path: "src/config.ts", risk: "LOW", reason: "Safe", shouldReview: false }],
+    });
+    noDeleteOctokit.pulls.get.mockResolvedValueOnce({ data: authDiff });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: noDeleteOctokit,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 293, state: "open", title: "Supersede skip", head: { sha: "sha-293", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(noDeleteOctokit.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        comment_id: 57,
+        body: expect.not.stringContaining(SKIP_COMMENT_MARKER),
+      })
+    );
   });
 
   it("keeps the excluded files only summary under the check character limit with long paths", async () => {
