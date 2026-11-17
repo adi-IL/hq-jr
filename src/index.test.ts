@@ -827,6 +827,30 @@ rename to src/new/auth.ts
     );
   });
 
+  it("updates the existing skip comment even when octokit lacks paginate", async () => {
+    const { paginate: _paginate, ...noPaginateOctokit } = octokitMock;
+    noPaginateOctokit.issues.listComments.mockResolvedValueOnce({
+      data: [{ id: 56, body: `${SKIP_COMMENT_MARKER}\nold`, user: { type: "Bot", login: "hq-jr[bot]" } }],
+    });
+    noPaginateOctokit.pulls.get.mockResolvedValueOnce({ data: ignoredFileDiff(1, () => "docs/08-automatic-429-recovery.md") });
+
+    await handlers.get("pull_request.synchronize")!({
+      octokit: noPaginateOctokit,
+      payload: {
+        action: "synchronize",
+        repository: { name: "test-repo", owner: { login: "test-owner" } },
+        pull_request: { number: 29, state: "open", title: "Docs", head: { sha: "sha-29c", ref: "docs" }, user: { login: "alice" } },
+        sender: { login: "alice", type: "User" },
+      },
+    });
+
+    expect(noPaginateOctokit.issues.listComments).toHaveBeenCalledTimes(1);
+    expect(noPaginateOctokit.issues.createComment).not.toHaveBeenCalled();
+    expect(noPaginateOctokit.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 56, body: expect.stringContaining("Documentation / markdown content") })
+    );
+  });
+
   it("offers the @hq-jr review hint only when the noise filter dropped files", () => {
     const items = [{ path: "src/huge.ts", reason: BUDGET_DROP_REASON }];
     expect(buildSkipCommentBody(items, false)).not.toContain("@hq-jr review");

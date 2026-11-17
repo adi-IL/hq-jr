@@ -137,13 +137,25 @@ export function buildSkipCommentBody(
 
 /** Updates hq-jr's existing skipped review comment, or posts one if none exists. */
 async function upsertSkipComment(octokit: any, owner: string, repo: string, issueNumber: number, body: string) {
-  const comments = await octokit.paginate(octokit.issues.listComments, {
-    owner,
-    repo,
-    issue_number: issueNumber,
-    per_page: 100,
-  });
-  const existing = (comments as Array<{ id: number; body?: string; user?: { type?: string; login?: string } | null }>).find(
+  const comments =
+    typeof octokit.paginate === "function"
+      ? await octokit.paginate(octokit.issues.listComments, {
+          owner,
+          repo,
+          issue_number: issueNumber,
+          per_page: 100,
+        })
+      : (
+          await octokit.issues.listComments({
+            owner,
+            repo,
+            issue_number: issueNumber,
+            per_page: 100,
+          })
+        ).data;
+  const existing = (
+    (comments || []) as Array<{ id: number; body?: string; user?: { type?: string; login?: string } | null }>
+  ).find(
     (comment) =>
       comment.user?.type === "Bot" && isHqJrLogin(comment.user?.login) && comment.body?.includes(SKIP_COMMENT_MARKER)
   );
