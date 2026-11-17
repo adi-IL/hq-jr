@@ -737,7 +737,7 @@ tbody tr:hover td {
   background-image: var(--tex-135-wide);
 }
 
-[data-viz-texture="on"] .vbg-tooltip-key[data-viz-key="stage2Flash"],
+[data-viz-texture="on"] .vbg-tooltip-key[data-viz-key="stage2Hydrogen"],
 [data-viz-texture="on"] .vbg-tooltip-key[data-viz-key="spendArgon"] {
   background-image: var(--tex-45-dense);
 }
