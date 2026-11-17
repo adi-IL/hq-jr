@@ -394,18 +394,18 @@ Defaults come from `src/config.ts`. The Docker image also sets `NODE_ENV=product
 | `GOOGLE_CLOUD_LOCATION` | Optional | `global` | Vertex AI endpoint location. Must be `global` for Gemini 4 models. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Optional | none | Path to an ADC JSON file. Not needed on GCE with a scoped service account. |
 | `HQ_JR_MODEL_TIER1` | Optional | `gemini-4-hydrogen` | Triage model. |
-| `HQ_JR_THINKING_TIER1` | Optional | `HIGH` | Thinking level for Tier 1 triage (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
+| `HQ_JR_THINKING_TIER1` | Optional | `HIGH` | Thinking level for Tier 1 triage (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`; `XHIGH` rejected when `HQ_JR_MODEL_TIER1` is `gemini-4-argon`). |
 | `HQ_JR_MODEL_TIER2` | Optional | `gemini-4-hydrogen` | Deep review model. |
-| `HQ_JR_THINKING_TIER2` | Optional | `HIGH` | Thinking level for Tier 2 deep review (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
+| `HQ_JR_THINKING_TIER2` | Optional | `HIGH` | Thinking level for Tier 2 deep review (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`; `XHIGH` rejected when `HQ_JR_MODEL_TIER2` is `gemini-4-argon`). |
 | `HQ_JR_MODEL_ESCALATION` | Optional | `gemini-4-argon` | Deep review model used when the triage risk reaches the escalation threshold. |
-| `HQ_JR_THINKING_ESCALATION` | Optional | `HIGH` | Thinking level for the escalation tier (`LOW`, `MEDIUM`, `HIGH`; `XHIGH` rejected for Argon). |
+| `HQ_JR_THINKING_ESCALATION` | Optional | `HIGH` | Thinking level for the escalation tier (`LOW`, `MEDIUM`, `HIGH`; `XHIGH` rejected when `HQ_JR_MODEL_ESCALATION` is `gemini-4-argon`). |
 | `HQ_JR_ESCALATION_MIN_RISK` | Optional | `HIGH` | Triage overall risk at or above this level escalates the deep review. One of `LOW`, `MEDIUM`, `HIGH`. |
 | `HQ_JR_MODEL_DISCUSSION` | Optional | `gemini-4-hydrogen` | Model for replies in PR discussion threads. |
-| `HQ_JR_THINKING_DISCUSSION` | Optional | `HIGH` | Thinking level for PR discussion replies (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
+| `HQ_JR_THINKING_DISCUSSION` | Optional | `HIGH` | Thinking level for PR discussion replies (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`; `XHIGH` rejected when `HQ_JR_MODEL_DISCUSSION` is `gemini-4-argon`). |
 | `HQ_JR_MODEL_REMEDIATION` | Optional | `gemini-4-hydrogen` | Model for remediation synthesis. |
-| `HQ_JR_THINKING_REMEDIATION` | Optional | `HIGH` | Thinking level for remediation synthesis (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
+| `HQ_JR_THINKING_REMEDIATION` | Optional | `HIGH` | Thinking level for remediation synthesis (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`; `XHIGH` rejected when `HQ_JR_MODEL_REMEDIATION` is `gemini-4-argon`). |
 | `HQ_JR_MODEL_HEALTH` | Optional | `gemini-4-hydrogen` | Model for the Vertex AI connectivity probe. |
-| `HQ_JR_THINKING_HEALTH` | Optional | `LOW` | Thinking level for the Vertex AI connectivity probe (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`). |
+| `HQ_JR_THINKING_HEALTH` | Optional | `LOW` | Thinking level for the Vertex AI connectivity probe (`LOW`, `MEDIUM`, `HIGH`, `XHIGH`; `XHIGH` rejected when `HQ_JR_MODEL_HEALTH` is `gemini-4-argon`). |
 | `HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS` | Optional | `32768` | Output token cap for a call that runs on `HQ_JR_MODEL_ESCALATION`. Triage, discussion, remediation and health calls are never capped. |
 | `HQ_JR_AGENT_TIER3` | Optional | `antigravity-preview-05-2026` | Tier 3 sandbox agent. |
 | `PORT` | Optional | `3000` | HTTP listen port. |

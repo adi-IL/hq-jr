@@ -609,10 +609,44 @@ export type SandboxLanguage = "rust" | "go" | "python" | "node";
  * exfiltration path. A new host goes in by naming what needs it.
  */
 const SANDBOX_HOSTS: Record<SandboxLanguage, readonly string[]> = {
-  rust: ["crates.io", "index.crates.io", "static.crates.io", "sh.rustup.rs", "static.rust-lang.org"],
-  go: ["proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "go.dev", "dl.google.com"],
-  python: ["pypi.org", "files.pythonhosted.org"],
-  node: ["registry.npmjs.org", "nodejs.org"],
+  rust: [
+    // crates.io: the crate registry the agent resolves dependencies against.
+    "crates.io",
+    // index.crates.io: the sparse registry index cargo reads to pick versions.
+    "index.crates.io",
+    // static.crates.io: where cargo downloads the crate archives.
+    "static.crates.io",
+    // sh.rustup.rs: the rustup installer the agent runs when cargo is missing.
+    "sh.rustup.rs",
+    // static.rust-lang.org: where rustup downloads the Rust toolchain.
+    "static.rust-lang.org",
+  ],
+  go: [
+    // proxy.golang.org: the module proxy that serves the module metadata, the
+    // module zips, and the toolchain modules Go 1.21 and later download.
+    "proxy.golang.org",
+    // sum.golang.org: the checksum database the go command verifies modules against.
+    "sum.golang.org",
+    // storage.googleapis.com: where the module proxy redirects the zips.
+    "storage.googleapis.com",
+    // go.dev: the Go toolchain download page.
+    "go.dev",
+    // dl.google.com: where go.dev serves the toolchain archives.
+    "dl.google.com",
+  ],
+  python: [
+    // pypi.org: the package index pip resolves dependencies against.
+    "pypi.org",
+    // files.pythonhosted.org: where pip downloads the wheels and the sdists.
+    "files.pythonhosted.org",
+  ],
+  node: [
+    // registry.npmjs.org: the npm registry that serves the package metadata
+    // and the tarballs.
+    "registry.npmjs.org",
+    // nodejs.org: the Node toolchain download, for an image without node.
+    "nodejs.org",
+  ],
 };
 
 /**

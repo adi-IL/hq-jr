@@ -57,7 +57,7 @@ For live GitHub PR reviews, `hq-jr` uses GitHub installation tokens for API acce
                                |
                                v
 +-------------------------------------------------------------+
-| Tier 1: Hydrogen + configured thinking (src/services/ai.ts)   |
+| Tier 1: Hydrogen + configured thinking (src/services/ai.ts) |
 | - Triage schema: overall risk and shouldReview per file     |
 +------------------------------+------------------------------+
                                |

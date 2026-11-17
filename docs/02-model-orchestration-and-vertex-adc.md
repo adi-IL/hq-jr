@@ -37,7 +37,7 @@ Local development and production both use Application Default Credentials. This 
 |  | - Noise filtering      |  |   review           |  | - Sandbox VM  |  |
 |  | - Risk JSON schema     |  | - Gated on risk    |  | - Runs tests  |  |
 |  | - Discussion replies   |  | - ~1.33x / ~2.67x  |  | - Async       |  |
-|  | - Remediation synth    |  |   cost from Dec 26 |  |               |  |
+|  | - Remediation synth    |  |   from 2026-12-01  |  |               |  |
 |  | - Health probe         |  | - Fail soft to     |  +---------------+  |
 |  | - Synchronous          |  |   Tier 2           |                     |
 |  +------------------------+  +--------------------+                     |
@@ -83,7 +83,7 @@ The system splits operational responsibilities according to capabilities: direct
 - **Gate.** `HQ_JR_ESCALATION_MIN_RISK` (default `HIGH`). The gate compares `triage.overallRisk` against the threshold with the `riskRank` total order (`LOW` < `MEDIUM` < `HIGH`), never a string comparison. Below the threshold the deep review stays on `HQ_JR_MODEL_TIER2`.
 - **Availability & thinking.** Model id `gemini-4-argon`, GA since 2026-10-13, served from the `global` location required by `GOOGLE_CLOUD_LOCATION`. Supports structured output (`responseMimeType` plus `responseSchema`), system instructions, and thinking levels `LOW`, `MEDIUM`, and `HIGH` (via `HQ_JR_THINKING_ESCALATION`, default `HIGH`). It rejects `thinking_budget`, `MINIMAL`, and `XHIGH` with HTTP 400. Startup config parsing (`src/config.ts`) rejects `"MINIMAL"` everywhere and rejects `"XHIGH"` whenever paired with `gemini-4-argon`.
 - **Limits.** Unified context window of 1,048,576 tokens, maximum 65,536 output tokens for one synchronous request.
-- **Cost.** Global PayGo is 2 USD per 1M input tokens and 10 USD per 1M output tokens through 2026-11-30, then 4 in and 20 out from 2026-12-01. Gemini 4 Hydrogen (`gemini-4-hydrogen`) is 1.50 in and 7.50 out. Argon is therefore roughly **1.33x Hydrogen per token** through 2026-11-30 and **2.67x Hydrogen** from 2026-12-01, which is why it is gated behind a risk threshold instead of being the default Tier 2.
+- **Cost.** Per [Vertex AI pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing), Global PayGo for Argon is 2 USD per 1M input tokens and 10 USD per 1M output tokens through 2026-11-30, then 4 in and 20 out from 2026-12-01. Gemini 4 Hydrogen (`gemini-4-hydrogen`) is 1.50 in and 7.50 out. Argon is therefore roughly **1.33x Hydrogen per token** through 2026-11-30 and **2.67x Hydrogen** from 2026-12-01, which is why it is gated behind a risk threshold instead of being the default Tier 2.
 - **Fail soft.** If the escalated call throws (model not enabled for the project, quota exhausted, upstream error), hq-jr retries the deep review once on `HQ_JR_MODEL_TIER2` with `HQ_JR_THINKING_TIER2` and logs a warning. A model access or quota failure on the escalation model does not fail the whole review on its own. If the Tier 2 retry also fails, the review fails, and that is reported rather than masked.
 
 ### Tier 3: Antigravity Managed Agent (`antigravity-preview-05-2026`)
