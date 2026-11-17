@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { executeRemediation } from "./remediation.js";
+import { ai } from "./ai.js";
 
 vi.mock("./ai.js", () => ({
   ai: {
@@ -233,8 +234,104 @@ describe("remediation service", () => {
     expect(result.success).toBe(false);
     expect(result.message).toContain("Permission Required to Commit");
     expect(result.message).toContain("Contents: Read and write");
+    expect(result.message).toContain("https://github.com/settings/apps");
+    expect(result.message).not.toContain("/settings/apps/hq-jr/permissions");
     expect(result.message).toContain("Synthesized Fixes (Ready to Apply)");
     expect(result.filesModified).toContain("src/broken.ts");
+  });
+
+  it("renders a python fallback fence for .py files on 403 permission denied", async () => {
+    const mockOctokit = {
+      repos: {
+        getContent: vi.fn().mockResolvedValue({
+          data: {
+            content: Buffer.from("def broken(): pass").toString("base64"),
+          },
+        }),
+      },
+      git: {
+        createBlob: vi.fn().mockRejectedValue({
+          status: 403,
+          message: "Resource not accessible by integration",
+        }),
+      },
+    };
+
+    const result = await executeRemediation({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      pr: { head: { ref: "feature", sha: "sha", repo: { full_name: "owner/repo" } } },
+      issues: [
+        {
+          id: 1,
+          path: "src/broken.py",
+          line: 1,
+          side: "RIGHT",
+          title: "Broken",
+          body: "Fix it",
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("```python\n");
+    expect(result.message).toContain("https://github.com/settings/apps");
+    expect(result.message).not.toContain("/settings/apps/hq-jr/permissions");
+    expect(result.filesModified).toContain("src/broken.py");
+  });
+
+  it("checks scrubbed length before emitting the 403 fallback truncation notice", async () => {
+    const shrunkSecret = `const password = "${"x".repeat(1510)}";`;
+    vi.mocked(ai.models.generateContent)
+      .mockResolvedValueOnce({
+        text: `\`\`\`ts\n${shrunkSecret}\n\`\`\``,
+      } as any)
+      .mockResolvedValueOnce({
+        text: `\`\`\`ts\nexport const long = "${"a".repeat(1520)}";\n\`\`\``,
+      } as any);
+
+    const mockOctokit = {
+      repos: {
+        getContent: vi.fn().mockResolvedValue({
+          data: {
+            content: Buffer.from("export function broken() {}").toString("base64"),
+          },
+        }),
+      },
+      git: {
+        createBlob: vi.fn().mockRejectedValue({
+          status: 403,
+          message: "Resource not accessible by integration",
+        }),
+      },
+    };
+
+    const shrunkResult = await executeRemediation({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      pr: { head: { ref: "feature", sha: "sha", repo: { full_name: "owner/repo" } } },
+      issues: [{ id: 1, path: "src/secret.ts", line: 1, side: "RIGHT", title: "Leak", body: "Fix" }],
+    });
+
+    expect(shrunkResult.success).toBe(false);
+    expect(shrunkResult.message).toContain("[REDACTED_SECRET]");
+    expect(shrunkResult.message).not.toContain("_[truncated for PR comment length]_");
+
+    const truncatedResult = await executeRemediation({
+      octokit: mockOctokit,
+      owner: "owner",
+      repo: "repo",
+      pullNumber: 9,
+      pr: { head: { ref: "feature", sha: "sha", repo: { full_name: "owner/repo" } } },
+      issues: [{ id: 2, path: "src/long.ts", line: 1, side: "RIGHT", title: "Long", body: "Fix" }],
+    });
+
+    expect(truncatedResult.success).toBe(false);
+    expect(truncatedResult.message).toContain("```\n_[truncated for PR comment length]_");
   });
 
   it("refuses remediation when the PR head repo is missing", async () => {
