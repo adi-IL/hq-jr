@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-17
+
+### Added
+
+- Gemini 4 Hydrogen (`gemini-4-hydrogen`) default across Tier 1 triage, Tier 2 deep review, discussion, remediation, and health checks, with Gemini 4 Argon (`gemini-4-argon`) for high-risk escalation and `@google/genai@^3.4.0`.
+- Per-stage thinking levels (`HQ_JR_THINKING_TIER1`, `HQ_JR_THINKING_TIER2`, `HQ_JR_THINKING_ESCALATION`, `HQ_JR_THINKING_DISCUSSION`, `HQ_JR_THINKING_REMEDIATION`, `HQ_JR_THINKING_HEALTH`), with startup rejection for `XHIGH` on `gemini-4-argon` and strict `GOOGLE_CLOUD_LOCATION=global` validation.
+- Pitch-black landing page, trace inspector, and Vertex AI spend calculator under `docs/` (`index.html`, `app.js`, `assets/`).
+- SVG logo and PR proof card assets (`assets/logo.svg`, `assets/pr-proof-preview.svg`) and unslopped documentation and runtime messages.
+
+### Fixed
+
+- `@hq-jr review` now bypasses heuristic noise filters via `ignoreNoiseFilter`, skipped reviews complete `neutral` with an upserted `SKIP_COMMENT_MARKER` comment, and `clearSkipComment` clears stale skip notices once a review proceeds.
+- Upgraded `zod` (`^4.6.7`), `body-parser` (`2.4.0`), and `qs` (`6.16.1`) to clear high-severity npm audit advisories.
+- Hardened summary path credential scrubbing and truncation bounds, test SQLite DB isolation, `SYNTHESIZED_REPRO_MARKER` matching in `commit-repro`, remediation fallback fence languages and missing-repo handling, merge-command parsing, and dynamic `HQ_JR_AGENT_TIER3` reporting in sandbox summaries.
+
 ## [0.1.11] - 2026-10-21
 
 ### Added
