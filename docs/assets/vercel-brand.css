@@ -638,7 +638,6 @@ tbody tr:hover td {
   border: 0;
   padding: 0;
   cursor: pointer;
-  outline: none;
   transition: width 120ms ease-out, filter 120ms ease-out;
 }
 
@@ -650,9 +649,14 @@ tbody tr:hover td {
   border-radius: 0 4px 4px 0;
 }
 
-.vbg-stack-seg:hover,
+.vbg-stack-seg:hover {
+  filter: brightness(1.16);
+}
+
 .vbg-stack-seg:focus-visible {
   filter: brightness(1.16);
+  outline: 2px solid var(--vbg-accent-blue);
+  outline-offset: 2px;
 }
 
 .vbg-stack-seg-1 {
@@ -729,7 +733,7 @@ tbody tr:hover td {
 }
 
 [data-viz-texture="on"] .vbg-tooltip-key[data-viz-key="stage1"],
-[data-viz-texture="on"] .vbg-tooltip-key[data-viz-key="spendFlash"] {
+[data-viz-texture="on"] .vbg-tooltip-key[data-viz-key="spendHydrogen"] {
   background-image: var(--tex-135-wide);
 }
 
@@ -744,6 +748,10 @@ tbody tr:hover td {
 
 [data-viz-texture="on"] .vbg-tooltip-key[data-viz-key="stage3"] {
   background-image: var(--tex-45-wide-light);
+}
+
+[data-viz-texture="on"] .vbg-tooltip-key[data-viz-key="spendSandbox"] {
+  background-image: var(--tex-135-dense);
 }
 
 .vbg-pipeline-svg {

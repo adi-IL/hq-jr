@@ -9,14 +9,14 @@
       badge: "0 tokens · Local CPU",
       module: "src/services/file-filter.ts · src/services/scrubber.ts",
       summary:
-        "Drops lockfiles, build artifacts, and binaries before any model call. Classifies remaining files by risk weight (SECURITY = 10 down to DOCUMENTATION = 1) and redacts credentials into [REDACTED_SECRET] while preserving env reads.",
+        "Drops lockfiles, build artifacts, and binaries before any model call. Ranks remaining files by risk weight (SECURITY = 10 down to DOCUMENTATION = 1) and redacts credentials into [REDACTED_SECRET] while preserving env reads.",
       inputLabel: "Raw unified diff hunk (src/auth/token-session.ts + package-lock.json)",
       inputCode: [
         "diff --git a/package-lock.json b/package-lock.json",
-        "  -> classifyFile: OTHER (weight 0, ignored: true, 0 tokens)",
+        "  -> evaluateFile: CONFIG (weight 0, ignored: true, 0 tokens)",
         "",
         "diff --git a/src/auth/token-session.ts b/src/auth/token-session.ts",
-        "  -> classifyFile: SECURITY (weight 10, matched root: 'auth', 'token')",
+        "  -> evaluateFile: SECURITY (weight 10, matched roots: 'auth', 'token')",
         '- const SECRET = "[REDACTED_SECRET]";',
         '+ const issuer = process.env.JWT_ISSUER || "[REDACTED_SECRET]";',
         "+ const claims = decodeJwt(header);",
@@ -41,14 +41,15 @@
       index: 1,
       id: "stage-1",
       title: "Stage 1: Tier 1 Triage",
-      badge: "gemini-3.8-flash · ThinkingLevel.HIGH",
-      module: "src/services/ai.ts (triageDiff)",
+      badge: "gemini-4-hydrogen · HIGH thinking",
+      module: "src/services/ai.ts (runTriage)",
       summary:
         "Evaluates the narrow TRIAGE_RESPONSE_SCHEMA across scrubbed files. If no file sets shouldReview: true, the GitHub Check Run completes immediately as success (Low Risk) without invoking deep review.",
       inputLabel: "Vertex AI Request Config (HQ_JR_MODEL_TIER1)",
       inputCode: [
-        'model: "gemini-3.8-flash"',
-        'thinkingConfig: { thinkingLevel: "HIGH" }',
+        'model: "gemini-4-hydrogen"',
+        'location: "global" (GOOGLE_CLOUD_LOCATION="global")',
+        'thinkingConfig: { thinkingLevel: "HIGH" } (HQ_JR_THINKING_TIER1)',
         'responseMimeType: "application/json"',
         "responseSchema: TRIAGE_RESPONSE_SCHEMA",
         "auth: Google Cloud ADC (zero API keys)"
@@ -78,35 +79,43 @@
       badge: "gemini-4-argon · cap 32,768 tokens",
       module: "src/services/ai.ts (runEscalatedDeepReview)",
       summary:
-        "Because overallRisk (HIGH) meets HQ_JR_ESCALATION_MIN_RISK (HIGH), deep review escalates from gemini-3.8-flash to gemini-4-argon with a 32,768 maxOutputTokens cap and single-retry fallback to Tier 2 Flash on quota or access errors.",
+        "Because overallRisk (HIGH) meets HQ_JR_ESCALATION_MIN_RISK (HIGH), deep review escalates from gemini-4-hydrogen to gemini-4-argon with a 32,768 maxOutputTokens cap and single-retry fallback to HQ_JR_MODEL_TIER2 on any escalation failure.",
       inputLabel: "Escalation Gate & Action Ref Verification",
       inputCode: [
         "riskRank(triage.overallRisk) >= riskRank(config.HQ_JR_ESCALATION_MIN_RISK)",
-        'model: "gemini-4-argon" (role: "escalation", maxOutputTokens: 32768)',
+        'model: "gemini-4-argon" (thinking: HQ_JR_THINKING_ESCALATION="HIGH", maxOutputTokens: 32768)',
         "postFilter: verifyReviewActionRefs() + resolveVerdict()",
         "verdictRule: Any CRITICAL or WARNING finding forces REQUEST_CHANGES"
       ].join("\n"),
       outputLabel: "Validated DeepReviewResultSchema Payload",
       outputCode: JSON.stringify(
         {
+          summary: "JWT claims are accessed without verifying that the decoded payload object is defined.",
           verdict: "REQUEST_CHANGES",
-          requiresSandboxVerification: true,
-          verificationGoal: "Prove expired JWT causes unhandled TypeError on claims.user.id",
+          resolvedPriorIssues: [],
+          unresolvedPriorIssues: [],
           comments: [
             {
               path: "src/auth/token-session.ts",
               line: 42,
+              side: "RIGHT",
               severity: "CRITICAL",
               category: "BUG",
               title: "Expired token leaves claims.user undefined",
+              body: "decodeJwt returns claims where claims.user is undefined on expired tokens, throwing a TypeError before the ACL check runs.",
               suggestedPatch: "if (!claims?.user?.id) return false;"
             }
           ],
+          requiresSandboxVerification: true,
+          verificationGoal: "Prove expired JWT causes unhandled TypeError on claims.user.id",
           sandboxProbes: [
             {
               targetFile: "src/auth/token-session.ts",
+              targetLine: 42,
               archetype: "UNIT_ASSERTION",
-              expectedFailureKind: "EXCEPTION"
+              failureHypothesis: "Passing an expired token causes claims.user to be undefined and throws TypeError.",
+              expectedFailureKind: "EXCEPTION",
+              suggestedPatch: "if (!claims?.user?.id) return false;"
             }
           ]
         },
@@ -119,16 +128,16 @@
       id: "stage-3",
       title: "Stage 3: Antigravity Sandbox Proof",
       badge: "antigravity-preview-05-2026 · 150k cap",
-      module: "src/services/sandbox-runner.ts (pollSandboxInteraction)",
+      module: "src/services/ai.ts · src/services/sandbox-runner.ts",
       summary:
         "Check Run 'hq-jr AI Sandbox Verification' stays in_progress (conclusion: null) while polling Antigravity (up to 180s, 45s SQLite heartbeat lease). Runs dual-commit red/green trials inside an isolated container with strict language host allowlists.",
-      inputLabel: "Sandbox Container & Network Policy (SANDBOX_HOSTS)",
+      inputLabel: "Sandbox Container & Network Policy (SANDBOX_HOSTS in src/services/ai.ts)",
       inputCode: [
         'agent: "antigravity-preview-05-2026"',
         'agent_config: { max_total_tokens: "150000" }',
         'allowedHosts: ["github.com", "registry.npmjs.org", "nodejs.org"]',
         'checkRunState: status="in_progress", conclusion=null (never success-on-dispatch)',
-        "marker: <" + "!-- hq-jr:synthesized-repro-test --" + ">"
+        "reproPathGuard: isSafeReproTestPath(path) under tests/"
       ].join("\n"),
       outputLabel: "Empirical Sandbox Verdict & Check Conclusion",
       outputCode: JSON.stringify(
@@ -185,7 +194,7 @@
         "permission: octokit.repos.getCollaboratorPermissionLevel -> 'admin' | 'write'",
         "sameRepoGuard: pr.head.repo && pr.head.repo.full_name === `${owner}/${repo}`",
         "reproPathGuard: isSafeReproTestPath(path) -> must reside under tests/ without '..'",
-        "mergeCommandRe: blocks '?' questions and 'do not merge' negations"
+        "mergeGuard: requires explicit merge verb and excludes negations like 'do not merge'"
       ].join("\n"),
       outputLabel: "Autonomous Remediation Result",
       outputCode: JSON.stringify(
@@ -202,12 +211,18 @@
     }
   ];
 
+  // Global Vertex PayGo rates:
+  //   gemini-4-hydrogen: $1.50 / 1M input tokens, $7.50 / 1M output tokens
+  //   gemini-4-argon:    $2.00 / 1M input tokens, $10.00 / 1M output tokens through 2026-11-30
+  //                      ($4.00 / 1M input, $20.00 / 1M output from 2026-12-01)
+  // Assumed typical PR sizes: 12k in / 400 out triage ($0.021), 30k in / 2.4k out Hydrogen deep ($0.063),
+  // 30k in / 4k out Argon deep ($0.100 through Nov 30), 35k in / 4k out un-gated Argon baseline ($0.110).
   var STAGE_UNIT_COSTS = {
-    triageFlashUsd: 0.014625,
-    deepFlashUsd: 0.05625,
-    deepArgonUsd: 0.21,
+    triageHydrogenUsd: 0.021,
+    deepHydrogenUsd: 0.063,
+    deepArgonUsd: 0.10,
     sandboxRunUsd: 0.135,
-    ungatedArgonBaselineUsd: 0.234,
+    ungatedArgonBaselineUsd: 0.11,
     tier1LowRiskExitShare: 0.2,
     mediumGateEscalationMultiplier: 1.8
   };
@@ -218,14 +233,9 @@
     strict: { prs: "1500", noise: "30", highRisk: "20", sandbox: "15", minRisk: "MEDIUM" }
   };
 
-  var ESCALATION_MULTIPLIER_BY_MIN_RISK = {
-    HIGH: 1,
-    MEDIUM: STAGE_UNIT_COSTS.mediumGateEscalationMultiplier,
-    LOW: Infinity
-  };
-
   function initTraceInspector() {
     var buttons = document.querySelectorAll("[data-trace-stage]");
+    var tabpanelEl = document.getElementById("trace-tabpanel");
     var titleEl = document.getElementById("trace-stage-title");
     var badgeEl = document.getElementById("trace-stage-badge");
     var moduleEl = document.getElementById("trace-stage-module");
@@ -237,16 +247,21 @@
 
     if (!buttons.length || !titleEl) return;
 
-    function selectStage(idx) {
+    function selectStage(idx, moveFocus) {
       var stage = TRACE_STAGES[idx] || TRACE_STAGES[0];
       for (var i = 0; i < buttons.length; i++) {
         var isSelected = i === idx;
         buttons[i].setAttribute("aria-selected", isSelected ? "true" : "false");
+        buttons[i].setAttribute("tabindex", isSelected ? "0" : "-1");
         if (isSelected) {
           buttons[i].classList.add("vbg-custom-stage-active");
+          if (moveFocus) buttons[i].focus();
         } else {
           buttons[i].classList.remove("vbg-custom-stage-active");
         }
+      }
+      if (tabpanelEl && buttons[idx] && buttons[idx].id) {
+        tabpanelEl.setAttribute("aria-labelledby", buttons[idx].id);
       }
       titleEl.textContent = stage.title;
       badgeEl.textContent = stage.badge;
@@ -261,7 +276,18 @@
     for (var i = 0; i < buttons.length; i++) {
       (function (index) {
         buttons[index].addEventListener("click", function () {
-          selectStage(index);
+          selectStage(index, false);
+        });
+        buttons[index].addEventListener("keydown", function (event) {
+          var nextIdx = null;
+          if (event.key === "ArrowRight") nextIdx = (index + 1) % buttons.length;
+          else if (event.key === "ArrowLeft") nextIdx = (index - 1 + buttons.length) % buttons.length;
+          else if (event.key === "Home") nextIdx = 0;
+          else if (event.key === "End") nextIdx = buttons.length - 1;
+          if (nextIdx !== null) {
+            event.preventDefault();
+            selectStage(nextIdx, true);
+          }
         });
       })(i);
     }
@@ -327,18 +353,22 @@
       var lowRiskExitPrs = Math.round(triagedPrs * STAGE_UNIT_COSTS.tier1LowRiskExitShare);
       var deepReviewPrs = Math.max(0, triagedPrs - lowRiskExitPrs);
 
-      var multiplier = ESCALATION_MULTIPLIER_BY_MIN_RISK[minRisk] || 1;
-      var effectiveEscPct = Math.min(100, Math.round(highRiskPct * multiplier));
+      var effectiveEscPct =
+        minRisk === "LOW"
+          ? 100
+          : minRisk === "MEDIUM"
+            ? Math.min(100, Math.round(highRiskPct * STAGE_UNIT_COSTS.mediumGateEscalationMultiplier))
+            : Math.min(100, Math.round(highRiskPct));
 
       var argonPrs = Math.round(deepReviewPrs * (effectiveEscPct / 100));
-      var flashDeepPrs = Math.max(0, deepReviewPrs - argonPrs);
+      var hydrogenDeepPrs = Math.max(0, deepReviewPrs - argonPrs);
       var sandboxPrs = Math.round(deepReviewPrs * (sandboxPct / 100));
 
-      var triageCost = triagedPrs * STAGE_UNIT_COSTS.triageFlashUsd;
-      var flashCost = flashDeepPrs * STAGE_UNIT_COSTS.deepFlashUsd;
+      var triageCost = triagedPrs * STAGE_UNIT_COSTS.triageHydrogenUsd;
+      var hydrogenCost = hydrogenDeepPrs * STAGE_UNIT_COSTS.deepHydrogenUsd;
       var argonCost = argonPrs * STAGE_UNIT_COSTS.deepArgonUsd;
       var sandboxCost = sandboxPrs * STAGE_UNIT_COSTS.sandboxRunUsd;
-      var hqJrMonthlyCost = triageCost + flashCost + argonCost + sandboxCost;
+      var hqJrMonthlyCost = triageCost + hydrogenCost + argonCost + sandboxCost;
 
       var ungatedArgonCost =
         totalPrs * STAGE_UNIT_COSTS.ungatedArgonBaselineUsd + sandboxCost;
@@ -356,34 +386,34 @@
         "res-argon-detail",
         effectiveEscPct + "% of " + deepReviewPrs.toLocaleString() + " deep reviews (" + minRisk + " gate)"
       );
-      setText("res-zero-token", (skippedStage0 + lowRiskExitPrs).toLocaleString() + " PRs");
+      setText("res-no-deep-review", (skippedStage0 + lowRiskExitPrs).toLocaleString() + " PRs");
       setText(
-        "res-zero-detail",
-        skippedStage0.toLocaleString() + " Stage 0 filter + " + lowRiskExitPrs.toLocaleString() + " Tier 1 low-risk exit"
+        "res-no-deep-detail",
+        skippedStage0.toLocaleString() + " Stage 0 (0 tokens) + " + lowRiskExitPrs.toLocaleString() + " Tier 1 triage exit"
       );
       setText("res-sandbox-count", sandboxPrs.toLocaleString() + " PRs");
       setText("res-sandbox-detail", "Tier 3 Antigravity dual-commit runs");
 
       var pct0 = 100;
       var pct1 = totalPrs > 0 ? Math.round((triagedPrs / totalPrs) * 100) : 0;
-      var pct2Flash = totalPrs > 0 ? Math.round((flashDeepPrs / totalPrs) * 100) : 0;
+      var pct2Hydrogen = totalPrs > 0 ? Math.round((hydrogenDeepPrs / totalPrs) * 100) : 0;
       var pct2Argon = totalPrs > 0 ? Math.round((argonPrs / totalPrs) * 100) : 0;
       var pct3 = totalPrs > 0 ? Math.round((sandboxPrs / totalPrs) * 100) : 0;
 
       updateBar("bar-stage0", "val-stage0", totalPrs, totalPrs, totalPrs.toLocaleString() + " PRs");
       updateBar("bar-stage1", "val-stage1", triagedPrs, totalPrs, triagedPrs.toLocaleString() + " PRs");
-      updateBar("bar-stage2-flash", "val-stage2-flash", flashDeepPrs, totalPrs, flashDeepPrs.toLocaleString() + " PRs");
+      updateBar("bar-stage2-hydrogen", "val-stage2-hydrogen", hydrogenDeepPrs, totalPrs, hydrogenDeepPrs.toLocaleString() + " PRs");
       updateBar("bar-stage2-argon", "val-stage2-argon", argonPrs, totalPrs, argonPrs.toLocaleString() + " PRs");
       updateBar("bar-stage3", "val-stage3", sandboxPrs, totalPrs, sandboxPrs.toLocaleString() + " PRs");
 
       updateSpendSegment("seg-spend-triage", triageCost, hqJrMonthlyCost);
-      updateSpendSegment("seg-spend-flash", flashCost, hqJrMonthlyCost);
+      updateSpendSegment("seg-spend-hydrogen", hydrogenCost, hqJrMonthlyCost);
       updateSpendSegment("seg-spend-argon", argonCost, hqJrMonthlyCost);
       updateSpendSegment("seg-spend-sandbox", sandboxCost, hqJrMonthlyCost);
 
       setText("val-spend-total", "$" + hqJrMonthlyCost.toFixed(2) + " / mo");
       setText("leg-spend-triage", "Tier 1 Triage ($" + triageCost.toFixed(2) + ")");
-      setText("leg-spend-flash", "Tier 2 Flash ($" + flashCost.toFixed(2) + ")");
+      setText("leg-spend-hydrogen", "Tier 2 Hydrogen ($" + hydrogenCost.toFixed(2) + ")");
       setText("leg-spend-argon", "Tier 2b Argon ($" + argonCost.toFixed(2) + ")");
       setText("leg-spend-sandbox", "Tier 3 Sandbox ($" + sandboxCost.toFixed(2) + ")");
 
@@ -393,9 +423,9 @@
       setText("tbl-prs-1", triagedPrs.toLocaleString() + " PRs");
       setText("tbl-pct-1", pct1 + "%");
       setText("tbl-cost-1", "$" + triageCost.toFixed(2));
-      setText("tbl-prs-2", flashDeepPrs.toLocaleString() + " PRs");
-      setText("tbl-pct-2", pct2Flash + "%");
-      setText("tbl-cost-2", "$" + flashCost.toFixed(2));
+      setText("tbl-prs-2", hydrogenDeepPrs.toLocaleString() + " PRs");
+      setText("tbl-pct-2", pct2Hydrogen + "%");
+      setText("tbl-cost-2", "$" + hydrogenCost.toFixed(2));
       setText("tbl-prs-2b", argonPrs.toLocaleString() + " PRs");
       setText("tbl-pct-2b", pct2Argon + "%");
       setText("tbl-cost-2b", "$" + argonCost.toFixed(2));
@@ -412,12 +442,12 @@
         stage1: {
           color: "#6da7ec",
           value: triagedPrs.toLocaleString() + " PRs · " + pct1 + "% of incoming ($" + triageCost.toFixed(2) + ")",
-          label: "Stage 1: Tier 1 Flash Triage (gemini-3.8-flash)"
+          label: "Stage 1: Tier 1 Hydrogen Triage (gemini-4-hydrogen)"
         },
-        stage2Flash: {
+        stage2Hydrogen: {
           color: "#3987e5",
-          value: flashDeepPrs.toLocaleString() + " PRs · " + pct2Flash + "% of incoming ($" + flashCost.toFixed(2) + ")",
-          label: "Stage 2: Tier 2 Flash Deep Review (gemini-3.8-flash)"
+          value: hydrogenDeepPrs.toLocaleString() + " PRs · " + pct2Hydrogen + "% of incoming ($" + hydrogenCost.toFixed(2) + ")",
+          label: "Stage 2: Tier 2 Hydrogen Deep Review (gemini-4-hydrogen)"
         },
         stage2Argon: {
           color: "#256abf",
@@ -432,12 +462,12 @@
         spendTriage: {
           color: "#3987e5",
           value: "$" + triageCost.toFixed(2) + " · " + formatShare(triageCost, hqJrMonthlyCost) + "% of monthly spend",
-          label: "Series 1: Tier 1 Flash Triage (" + triagedPrs.toLocaleString() + " PRs)"
+          label: "Series 1: Tier 1 Hydrogen Triage (" + triagedPrs.toLocaleString() + " PRs)"
         },
-        spendFlash: {
+        spendHydrogen: {
           color: "#d95926",
-          value: "$" + flashCost.toFixed(2) + " · " + formatShare(flashCost, hqJrMonthlyCost) + "% of monthly spend",
-          label: "Series 2: Tier 2 Flash Deep (" + flashDeepPrs.toLocaleString() + " PRs)"
+          value: "$" + hydrogenCost.toFixed(2) + " · " + formatShare(hydrogenCost, hqJrMonthlyCost) + "% of monthly spend",
+          label: "Series 2: Tier 2 Hydrogen Deep (" + hydrogenDeepPrs.toLocaleString() + " PRs)"
         },
         spendArgon: {
           color: "#199e70",
@@ -457,9 +487,12 @@
         envCodeEl.textContent = [
           "GOOGLE_CLOUD_PROJECT=your-gcp-project-id",
           "GOOGLE_CLOUD_LOCATION=global",
-          "HQ_JR_MODEL_TIER1=gemini-3.8-flash",
-          "HQ_JR_MODEL_TIER2=gemini-3.8-flash",
+          "HQ_JR_MODEL_TIER1=gemini-4-hydrogen",
+          "HQ_JR_THINKING_TIER1=HIGH",
+          "HQ_JR_MODEL_TIER2=gemini-4-hydrogen",
+          "HQ_JR_THINKING_TIER2=HIGH",
           "HQ_JR_MODEL_ESCALATION=gemini-4-argon",
+          "HQ_JR_THINKING_ESCALATION=HIGH",
           "HQ_JR_ESCALATION_MIN_RISK=" + minRisk,
           "HQ_JR_ESCALATION_MAX_OUTPUT_TOKENS=32768",
           "HQ_JR_AGENT_TIER3=antigravity-preview-05-2026"
@@ -492,8 +525,7 @@
 
     function updateSpendSegment(segId, cost, totalCost) {
       var segEl = document.getElementById(segId);
-      var pct = totalCost > 0 ? Math.max(3, Math.round((cost / totalCost) * 100)) : 0;
-      if (cost <= 0) pct = 0;
+      var pct = totalCost > 0 && cost > 0 ? Math.round((cost / totalCost) * 10000) / 100 : 0;
       if (segEl) {
         segEl.style.width = pct + "%";
         segEl.hidden = cost <= 0;
@@ -528,7 +560,6 @@
           renderTooltip(stageKey);
         }
         el.addEventListener("pointerenter", activate);
-        el.addEventListener("pointermove", activate);
         el.addEventListener("focus", activate);
       })(vizItems[k]);
     }
@@ -581,25 +612,55 @@
       });
     }
 
-    var inputs = [prInput, noiseInput, highRiskInput, sandboxInput, minRiskSelect];
-    for (var i = 0; i < inputs.length; i++) {
-      inputs[i].addEventListener("input", updateCalculator);
-      inputs[i].addEventListener("change", updateCalculator);
+    var presetButtons = document.querySelectorAll("[data-calc-preset]");
+
+    function syncPresetButtons(matchedKey) {
+      for (var p = 0; p < presetButtons.length; p++) {
+        var isMatch = presetButtons[p].getAttribute("data-calc-preset") === matchedKey;
+        presetButtons[p].setAttribute("aria-pressed", isMatch ? "true" : "false");
+        if (isMatch) {
+          presetButtons[p].classList.add("vbg-custom-stage-active");
+        } else {
+          presetButtons[p].classList.remove("vbg-custom-stage-active");
+        }
+      }
     }
 
-    var presetButtons = document.querySelectorAll("[data-calc-preset]");
+    function findMatchingPreset() {
+      for (var key in WORKLOAD_PRESETS) {
+        if (!Object.prototype.hasOwnProperty.call(WORKLOAD_PRESETS, key)) continue;
+        var preset = WORKLOAD_PRESETS[key];
+        if (
+          prInput.value === preset.prs &&
+          noiseInput.value === preset.noise &&
+          highRiskInput.value === preset.highRisk &&
+          sandboxInput.value === preset.sandbox &&
+          minRiskSelect.value === preset.minRisk
+        ) {
+          return key;
+        }
+      }
+      return null;
+    }
+
+    var inputs = [prInput, noiseInput, highRiskInput, sandboxInput, minRiskSelect];
+    for (var i = 0; i < inputs.length; i++) {
+      inputs[i].addEventListener("input", function () {
+        syncPresetButtons(findMatchingPreset());
+        updateCalculator();
+      });
+      inputs[i].addEventListener("change", function () {
+        syncPresetButtons(findMatchingPreset());
+        updateCalculator();
+      });
+    }
+
     for (var j = 0; j < presetButtons.length; j++) {
       presetButtons[j].addEventListener("click", function () {
         var presetKey = this.getAttribute("data-calc-preset");
         var preset = WORKLOAD_PRESETS[presetKey];
         if (!preset) return;
-        for (var p = 0; p < presetButtons.length; p++) {
-          if (presetButtons[p].getAttribute("data-calc-preset") === presetKey) {
-            presetButtons[p].classList.add("vbg-custom-stage-active");
-          } else {
-            presetButtons[p].classList.remove("vbg-custom-stage-active");
-          }
-        }
+        syncPresetButtons(presetKey);
         prInput.value = preset.prs;
         noiseInput.value = preset.noise;
         highRiskInput.value = preset.highRisk;
@@ -669,12 +730,20 @@
           if (targetEl) textToCopy = targetEl.textContent || "";
         }
         if (navigator.clipboard && navigator.clipboard.writeText && textToCopy) {
-          navigator.clipboard.writeText(textToCopy).then(function () {
-            btn.textContent = "Copied";
-            setTimeout(function () {
-              btn.textContent = originalLabel;
-            }, 1400);
-          });
+          navigator.clipboard
+            .writeText(textToCopy)
+            .then(function () {
+              btn.textContent = "Copied";
+              setTimeout(function () {
+                btn.textContent = originalLabel;
+              }, 1400);
+            })
+            .catch(function () {
+              btn.textContent = "Copy failed";
+              setTimeout(function () {
+                btn.textContent = originalLabel;
+              }, 1400);
+            });
         }
       });
     }
